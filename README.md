@@ -1,5 +1,5 @@
 # Description
 
-Gramma is a simple tool to construct generate fuzzing inputs with extensible
+Gramma is a simple tool to generate fuzzing inputs with a grammar including
 semantic constraints.
 
