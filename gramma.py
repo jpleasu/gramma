@@ -28,7 +28,7 @@ g.gen()
         abcde
 
 
-                r1(seed)
+               r1(seed)
           r2         r3
          [0,2)      [2,5)
          ab         cde
@@ -107,8 +107,22 @@ def mkgen(f):
     return gf
 
 class Gramma:
-    parser = Lark(gramma_grammar, parser='earley', lexer='standard')
+    '''
+        A gramma parsetree represents a distribution on strings.
 
+        A gramma language definition file defines a set of trees, vis a vis, the rules.
+
+        x=Gramma(language_definition)
+
+        For any tree, et, defined by a gramma language definition, x.sample(et)
+        samples a single string.
+
+
+        The methods of Gramma (and subclasses) are invoked recursively by
+        sample with parse tree children and expect a string result.
+    '''
+
+    parser = Lark(gramma_grammar, parser='earley', lexer='standard')
 
     def __init__(x, gramma_text):
         x.t=x.parser.parse(gramma_text)
@@ -128,36 +142,35 @@ class Gramma:
         return eval(l.value)
 
     def lit(x,s):
-        while True:
-            yield s
+        return s
 
-    @mkgen
-    def choose(x,*vals):
-        return random.choice(vals)
+    def choose(x,*ets):
+        return x.sample(random.choice(ets))
 
-    @mkgen
-    def concat(x,*vals):
-        return ''.join(vals)
+    def concat(x,*ets):
+        return ''.join(x.sample(et) for et in ets)
 
-    def rep(x,it,lo,hi,p):
+    def rep(x,et,lo,hi,p):
         hi0=hi
-        while True:
-            if p!=None:
-                hi=poisson(p)
-                if hi0!=None:
-                    hi=min(hi0,hi)
-            else:
-                hi=random.randrange(hi0-lo)
+        if p!=None:
+            hi=poisson(p)
+            if hi0!=None:
+                hi=min(hi0,hi)
+        else:
+            hi=random.randrange(hi0-lo)
 
-            s=''.join(it.next() for _ in xrange(lo))
-            s+=''.join(it.next() for _ in xrange(hi-lo))
-            yield s
+        s=''.join(x.sample(et) for _ in xrange(lo))
+        s+=''.join(x.sample(et) for _ in xrange(hi-lo))
+        return s
 
-    def build(x,et):
+    def sample(x,et):
+        '''
+            take a parsetree and return
+        '''
         if et.data==u'alt': # choice
-            return x.choose(*[x.build(c) for c in et.children])
+            return x.choose(*et.children)
         if et.data==u'cat':
-            return x.concat(*[x.build(c) for c in et.children])
+            return x.concat(*et.children)
         if et.data==u'rep':
             c=et.children[0]
             args=et.children[1].children
@@ -186,11 +199,12 @@ class Gramma:
             if lo==None:
                 raise GrammaParseError, '''can't transform %s''' % et
     
-            return x.rep(x.build(c),lo,hi,p)
+            return x.rep(c,lo,hi,p)
+
         if et.data==u'range':
-            low=ord(eval(et.children[0].value))
+            lo=ord(eval(et.children[0].value))
             hi=ord(eval(et.children[1].value))
-            return x.choose(*[x.lit(chr(v)) for v in range(low,hi+1)])
+            return random.choice([chr(v) for v in range(lo,hi+1)])
         if et.data==u'string':
             return x.lit(eval(et.children[0].value))
         if et.data==u'func':
@@ -202,27 +216,35 @@ class Gramma:
             return getattr(x,fname)(*args)
         if et.data==u'rule':
             rname=et.children[0].value
-            return x.build(x.rule_trees[rname])
+            return x.sample(x.rule_trees[rname])
         else:
             raise GrammaParseError, '''can't transform %s''' % et
     
     def generate(x):
-        it=x.build(x.rule_trees['start'])
         while True:
             x.reset()
-            yield it.next() 
+            yield x.sample(x.rule_trees['start']) 
+
+    def reset(x):
+        pass
 
 class Example(Gramma):
+    g1=r'''
+        start := words . " " . ['1'..'9'] . digit{0,5.};
+
+        digit := ['0' .. '9'];
+
+        words := ( "stink" | "stank" );
+    '''
+
+    g2=r'''
+        start := x;
+        x := "a" | x;
+    '''
+
 
     def __init__(x):
-        Gramma.__init__(x,r'''
-            start := words . " " . ['1'..'9'] . digit{0,5.};
-
-            digit := ['0' .. '9'];
-
-            words := ( "stink" | "stank" );
-
-        ''')
+        Gramma.__init__(x,Example.g2)
 
 def test_example():
     g=Example()
@@ -230,12 +252,11 @@ def test_example():
     for i in xrange(10):
         print(it.next())
 
-
 def test_parser():
     global t
     parser = Lark(gramma_grammar, parser='earley', lexer='standard')
     #    start := ( "a" | "b" ) . ['\xaa'..'\xbb'];
-    t=parser.parse(r'''
+    g1=r'''
         start :=  digits{1}
                 | digits{.2}
                 | digits{3,.4}
@@ -245,12 +266,18 @@ def test_parser():
 
         digits := ['1' .. '9'];
 
-    ''')
+    '''
+    g2=r'''
+        start := x;
+
+        x := x;
+    '''
+    t=parser.parse(g2)
 
     print(t)
 
 if __name__ == '__main__':
-    test_parser()
-    #test_example()
+    #test_parser()
+    test_example()
 
 # vim: ts=4 sw=4
