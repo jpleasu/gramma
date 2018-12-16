@@ -1,51 +1,43 @@
 #!/usr/bin/env python
 '''
 
-    - keep around entropy source per-rule
+    A Gramma language file defines the syntax for a stochastic expression
+    system.  The Gramma class parses and evaluates expressions.  By adding
+    methods in a subclass, new functions can be added.
 
-    class GeneratePoissonRepeats(Generator):
-        def __init__(self, child_generator, poisson_parameter):
-            self.child=child_generator
-        def gen(self):
-            x=random.poisson(param)
-            s=''
-            for i in range(x):
-
-
-
-def CharRangeGenerator(from,to):
-    yield random.choice(charcrange)
-
-
-crg=CharRangeGenerator('a','z')
-crg.next()
-
-g=Generator(crg)
-g.gen()
-
+    TODO:
+        - store the evaluation tree as it's constructed -- make it available to
+          functions -- before and after invoking children will correspond to
+          pre and post visition positions in depth first walk of expression tree.
+        - expose random methods from Gramma that record for later playback
+        - sample subtrees while holding everthing else fixed.
+    
 
 
         abcde
 
-
-               r1(seed)
+                r1
           r2         r3
          [0,2)      [2,5)
          ab         cde
-
 
   support(e) = { k!00, k!10, k!20 }
 
 '''
 
 import sys
+#sys.setrecursionlimit(20000)
+sys.setrecursionlimit(2000000)
+
 import inspect
 
 import random
 
 from lark import Lark
+from lark.lexer import Token
 
-from numpy.random import poisson
+import numpy as np
+
 
 class GrammaParseError(Exception):
     pass
@@ -53,9 +45,9 @@ class GrammaParseError(Exception):
 gramma_grammar = r"""
     ?start : ruledefs
 
-    ruledefs : ruledef+
+    ruledefs : (ruledef|COMMENT)+
 
-    ruledef: NAME ":=" alt ";"
+    ruledef : NAME ":=" alt ";"
 
     ?alt : cat ("|" cat)*
 
@@ -63,8 +55,8 @@ gramma_grammar = r"""
 
     ?rep: atom ( "{" rep_args "}" )?
 
-    rep_args : INT ("," INT)? ("," FLOAT)?
-            | FLOAT
+    rep_args : INT ("," INT)? ("," func)?
+            | func
 
     ?atom : string
          | rule
@@ -74,9 +66,12 @@ gramma_grammar = r"""
 
     rule : NAME
 
-    func.2 : NAME "(" args? ")"
+    func.2 : NAME "(" func_args? ")"
 
-    args : alt ("," (INT|FLOAT|alt))*
+
+    func_args : func_arg ("," func_arg)*
+
+    ?func_arg : alt|INT|FLOAT
 
     range : "[" ESCAPED_CHAR  ".." ESCAPED_CHAR "]"
 
@@ -89,10 +84,13 @@ gramma_grammar = r"""
     ESCAPED_CHAR.2 : /'([^\']|\\([\nrt']|x[0-9a-fA-F][0-9a-fA-F]))'/
     LONG_STRING.2: /[ubf]?r?("(?:"").*?(?<!\\)(\\\\)*?"(?:"")|'''.*?(?<!\\)(\\\\)*?''')/is
 
+    COMMENT : /#[^\n]*/
+
     %import common.WS
     %import common.FLOAT
     %import common.INT
 
+    %ignore COMMENT
     %ignore WS
 """
 
@@ -133,6 +131,8 @@ class Gramma:
             expr_tree=ruledef.children[1]
             x.rule_trees[name]=expr_tree
 
+        x.stack=[]
+
     def getstring(x,et):
         'convert string element to python string'
         if et.data==u'string':
@@ -140,6 +140,17 @@ class Gramma:
         else:
             l=et
         return eval(l.value)
+
+    def getint(x,et):
+        return int(et.value)
+    def getnum(x,et):
+        'convert int or float element to python equivalent'
+        if et.type==u'INT':
+            return int(et.value)
+        elif et.type==u'FLOAT':
+            return float(et.value)
+        else:
+            raise ValueError, 'not a num: %s' % et
 
     def lit(x,s):
         return s
@@ -150,17 +161,40 @@ class Gramma:
     def concat(x,*ets):
         return ''.join(x.sample(et) for et in ets)
 
-    def rep(x,et,lo,hi,p):
-        hi0=hi
-        if p!=None:
-            hi=poisson(p)
-            if hi0!=None:
-                hi=min(hi0,hi)
-        else:
-            hi=random.randrange(hi0-lo)
+    def rep(x,et,*args):
+        args=list(args)
+        a=args[-1]
+        if (not isinstance(a,Token)) and a.data==u'func':
+            fname=a.children[0].value
+            if len(a.children)>1:
+                fargs=a.children[1].children
+            else:
+                fargs=[]
+            fargs=[x.getnum(a) for a in fargs]
+            if fname==u'geom':
+                # "a"{geom(n)} gets an average of n copies of "a"
+                # argument is the average number of 
+                n=np.random.geometric(1/float(fargs[0]+1))-1
+            elif fname=='norm':
+                n=int(np.random.normal(*fargs)+.5)
+            elif fname=='binom':
+                n=np.random.binomial(*fargs)
+            elif fname=='choose':
+                n=random.choice(fargs)
+            else:
+                raise ValueError, 'no dist %s' % (fname)
 
-        s=''.join(x.sample(et) for _ in xrange(lo))
-        s+=''.join(x.sample(et) for _ in xrange(hi-lo))
+            f=lambda lo,hi:min(hi,max(lo,n))
+            args.pop()
+        else:
+            f=lambda lo,hi:random.randrange(lo,hi+1)
+        lo=0 if len(args)==0 else x.getint(args.pop(0))
+        hi=2**32 if len(args)==0 else x.getint(args.pop(0))
+
+        #print('lo=%d hi=%d' % (lo,hi))
+        n=f(lo,hi)
+
+        s=''.join(x.sample(et) for _ in xrange(n))
         return s
 
     def sample(x,et):
@@ -172,34 +206,7 @@ class Gramma:
         if et.data==u'cat':
             return x.concat(*et.children)
         if et.data==u'rep':
-            c=et.children[0]
-            args=et.children[1].children
-            hi,lo,p=None,None,None
-            if len(args)==1:
-                a=args[0]
-                if a.type==u'INT':
-                    lo=hi=int(a.value)
-                elif a.type==u'FLOAT':
-                    lo=0
-                    p=float(a.value)
-            elif len(args)==2:
-                lo=int(args[0].value)
-                a=args[1]
-                if a.type==u'INT':
-                    hi=int(a.value)
-                elif a.type==u'FLOAT':
-                    p=float(a.value)
-                else:
-                    lo=None # force fail
-            elif len(args)==3:
-                lo=int(args[0].value)
-                hi=int(args[1].value)
-                p=float(args[2].value)
-    
-            if lo==None:
-                raise GrammaParseError, '''can't transform %s''' % et
-    
-            return x.rep(c,lo,hi,p)
+            return x.rep(et.children[0], *et.children[1].children)
 
         if et.data==u'range':
             lo=ord(eval(et.children[0].value))
@@ -223,6 +230,7 @@ class Gramma:
     def generate(x):
         while True:
             x.reset()
+            del x.stack[:]
             yield x.sample(x.rule_trees['start']) 
 
     def reset(x):
@@ -268,7 +276,7 @@ def test_parser():
 
     '''
     g2=r'''
-        start := x;
+        start := x{0,1,g(10)};
 
         x := x;
     '''
@@ -277,7 +285,7 @@ def test_parser():
     print(t)
 
 if __name__ == '__main__':
-    #test_parser()
-    test_example()
+    test_parser()
+    #test_example()
 
 # vim: ts=4 sw=4

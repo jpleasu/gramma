@@ -1,10 +1,11 @@
 #!/usr/bin/env python
+import pdb
 
 from gramma import *
 
 class Greatview(Gramma):
     def __init__(x):
-        with open('gv.glf') as infile:
+        with open('gv2.glf') as infile:
             Gramma.__init__(x,infile.read())
         x.remembered={}
 
@@ -35,11 +36,24 @@ class Greatview(Gramma):
         x.exp=None
         x.remembered.clear()
 
-g=Greatview()
-it=g.generate()
-for i in xrange(10):
-    print('---')
-    print(it.next())
+def run():
+    g=Greatview()
+    
+    #np.random.seed(1)
+    #random.seed(1)
+    for x in g.generate():
+        try:
+            print('----')
+            print(x)
+            #print(len(x))
+        except KeyboardInterrupt:
+            break
+        except:
+            pass
+
+
+#pdb.run('run()')
+run()
 
 
 # vim: ts=4 sw=4
