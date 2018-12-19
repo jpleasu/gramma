@@ -6,13 +6,13 @@
     methods in a subclass, new functions can be added.
 
     TODO:
-        - store the evaluation tree as it's constructed -- make it available to
-          functions -- before and after invoking children will correspond to
-          pre and post visition positions in depth first walk of expression tree.
+        - construct a sample tree that stores
+            a) the tree structure
+            b) the entropy sufficient to recreate the result
+
+
         - expose random methods from Gramma that record for later playback
         - sample subtrees while holding everthing else fixed.
-    
-
 
         abcde
 
@@ -23,18 +23,16 @@
 
   support(e) = { k!00, k!10, k!20 }
 
+
 '''
 
 import sys
 #sys.setrecursionlimit(20000)
-sys.setrecursionlimit(2000000)
+sys.setrecursionlimit(200000)
 
 import inspect
 
-import random
-
-from lark import Lark
-from lark.lexer import Token
+import lark
 
 import numpy as np
 
@@ -104,6 +102,46 @@ def mkgen(f):
             yield f(x,*[it.next() for it in its])
     return gf
 
+
+
+class Node(object):
+    __slots__=['parent']
+    def __init__(self,parent):
+        self.parent=parent
+
+    def get_ancestor(self, name):
+        p=self.parent
+        while p!=None:
+            if p.name==name:
+                return p
+            p=p.parent
+        return p
+
+class Tok(Node):
+    __slots__=['value']
+    def __init__(self,parent,value):
+        Node.__init__(self,parent)
+        self.value=value
+
+    def __str__(self):
+        return repr(self.value)
+
+
+class Rule(Node):
+    __slots__=['name','children']
+    def __init__(self,parent,name,ptchildren):
+        Node.__init__(self,parent)
+        self.name=name
+        self.children=[convert_parsetree(c,self) for c in ptchildren]
+
+    def __str__(self):
+        return '%s(%s)' %(self.name, ','.join(str(c) for c in self.children))
+
+def convert_parsetree(pt,parent=None):
+    if isinstance(pt,lark.lexer.Token):
+        return Tok(parent,pt.value)
+    return Rule(parent,pt.data,pt.children)
+
 class Gramma:
     '''
         A gramma parsetree represents a distribution on strings.
@@ -120,13 +158,14 @@ class Gramma:
         sample with parse tree children and expect a string result.
     '''
 
-    parser = Lark(gramma_grammar, parser='earley', lexer='standard')
+    parser = lark.Lark(gramma_grammar, parser='earley', lexer='standard')
 
     def __init__(x, gramma_text):
-        x.t=x.parser.parse(gramma_text)
+        pt=x.parser.parse(gramma_text)
+        et=convert_parsetree(pt)
 
         x.rule_trees={}
-        for ruledef in x.t.children:
+        for ruledef in et.children:
             name=ruledef.children[0].value
             expr_tree=ruledef.children[1]
             x.rule_trees[name]=expr_tree
@@ -135,7 +174,7 @@ class Gramma:
 
     def getstring(x,et):
         'convert string element to python string'
-        if et.data==u'string':
+        if et.name==u'string':
             l=et.children[0]
         else:
             l=et
@@ -156,7 +195,7 @@ class Gramma:
         return s
 
     def choose(x,*ets):
-        return x.sample(random.choice(ets))
+        return x.sample(np.random.choice(ets))
 
     def concat(x,*ets):
         return ''.join(x.sample(et) for et in ets)
@@ -164,7 +203,7 @@ class Gramma:
     def rep(x,et,*args):
         args=list(args)
         a=args[-1]
-        if (not isinstance(a,Token)) and a.data==u'func':
+        if (not isinstance(a,Tok)) and a.name==u'func':
             fname=a.children[0].value
             if len(a.children)>1:
                 fargs=a.children[1].children
@@ -180,14 +219,14 @@ class Gramma:
             elif fname=='binom':
                 n=np.random.binomial(*fargs)
             elif fname=='choose':
-                n=random.choice(fargs)
+                n=np.random.choice(fargs)
             else:
                 raise ValueError, 'no dist %s' % (fname)
 
             f=lambda lo,hi:min(hi,max(lo,n))
             args.pop()
         else:
-            f=lambda lo,hi:random.randrange(lo,hi+1)
+            f=lambda lo,hi:np.random.randint(lo,hi+1)
         lo=0 if len(args)==0 else x.getint(args.pop(0))
         hi=2**32 if len(args)==0 else x.getint(args.pop(0))
 
@@ -197,44 +236,65 @@ class Gramma:
         s=''.join(x.sample(et) for _ in xrange(n))
         return s
 
+    def rlim(x,c,n,o):
+        '''
+            recursion limit - if recursively invoked to a depth < n times,
+                sample c, else sample o
+
+            e.g. 
+
+                R :=  rlim("a" . R, 3, "");
+
+                produces "aaa" 
+            
+        '''
+        x.d+=1
+        n=x.getint(n)
+        res=x.sample(c if x.d<=n else o)
+        x.d-=1
+        return res
+
     def sample(x,et):
         '''
-            take a parsetree and return
+            sample a value from an expression tree composed of Node objects
         '''
-        if et.data==u'alt': # choice
+
+        if et.name==u'alt': # choice
             return x.choose(*et.children)
-        if et.data==u'cat':
+        if et.name==u'cat':
             return x.concat(*et.children)
-        if et.data==u'rep':
+        if et.name==u'rep':
             return x.rep(et.children[0], *et.children[1].children)
 
-        if et.data==u'range':
+        if et.name==u'range':
             lo=ord(eval(et.children[0].value))
             hi=ord(eval(et.children[1].value))
-            return random.choice([chr(v) for v in range(lo,hi+1)])
-        if et.data==u'string':
+            return np.random.choice([chr(v) for v in range(lo,hi+1)])
+        if et.name==u'string':
             return x.lit(eval(et.children[0].value))
-        if et.data==u'func':
+        if et.name==u'func':
             fname=et.children[0].value
             if len(et.children)>1:
                 args=et.children[1].children
             else:
                 args=[]
             return getattr(x,fname)(*args)
-        if et.data==u'rule':
+        if et.name==u'rule':
             rname=et.children[0].value
             return x.sample(x.rule_trees[rname])
         else:
             raise GrammaParseError, '''can't transform %s''' % et
     
     def generate(x):
+        startrule=x.rule_trees['start']
         while True:
             x.reset()
             del x.stack[:]
-            yield x.sample(x.rule_trees['start']) 
+            #randstate=np.random.get_state()
+            yield x.sample(startrule) 
 
     def reset(x):
-        pass
+        x.d=0
 
 class Example(Gramma):
     g1=r'''

@@ -10,17 +10,17 @@ class Greatview(Gramma):
         x.remembered={}
 
     def rand_val(x):
-        x.exp=random.choice([8,16,32])
-        x.lastval=random.randrange(0,2**x.exp-1)
+        x.exp=np.random.choice([8,16,32])
+        x.lastval=np.random.randint(0,2**x.exp-1)
         return '%d' % x.lastval
 
     def bigger_val(x):
-        v=random.randrange(x.lastval+1,2**x.exp)
+        v=np.random.randint(x.lastval+1,2**x.exp)
         return '%d' % v
 
     def old(x,namespace):
         namespace=x.getstring(namespace)
-        return random.choice(list(x.remembered.get(namespace)))
+        return np.random.choice(list(x.remembered.get(namespace)))
         
     def new(x,namespace,child):
         namespace=x.getstring(namespace)
@@ -30,8 +30,30 @@ class Greatview(Gramma):
             n=x.sample(child)
         names.add(n)
         return n
-            
+
+    def ifdef(x, namespace, child):
+        namespace=x.getstring(namespace)
+        if len(x.remembered.get(namespace,[]))!=0:
+            return x.sample(child)
+        return ''
+
+    def push(x,child):
+        n=x.sample(child)
+        x.idstack.append(n)
+        return n
+
+    def peek(x):
+        return x.idstack[-1]
+
+    def pop(x):
+        x.idstack.pop()
+        return ''
+
+   
     def reset(x):
+        Gramma.reset(x)
+        x.idstack=[]
+
         x.lastval=None
         x.exp=None
         x.remembered.clear()
@@ -39,13 +61,12 @@ class Greatview(Gramma):
 def run():
     g=Greatview()
     
-    #np.random.seed(1)
-    #random.seed(1)
+    np.random.seed(1)
     for x in g.generate():
         try:
-            print('----')
-            print(x)
-            #print(len(x))
+            if len(x)>0:
+                print('----')
+                print(x)
         except KeyboardInterrupt:
             break
         except:
