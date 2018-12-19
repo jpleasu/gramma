@@ -36,6 +36,10 @@ import lark
 
 import numpy as np
 
+from itertools import islice
+
+from collections import namedtuple
+
 
 class GrammaParseError(Exception):
     pass
@@ -137,10 +141,68 @@ class Rule(Node):
     def __str__(self):
         return '%s(%s)' %(self.name, ','.join(str(c) for c in self.children))
 
+class Resampler:
+    def __init__(self,et,parent=None):
+        self.et=et
+        self.parent=parent
+        self.children=[]
+        self.s=None
+        self.inrand=None
+        self.outrand=None
+        self.offset=None
+
+    def visit(self,f):
+        f(self)
+        for c in self.children:
+            c.visit(f)
+
+    def leaves(self):
+        l=[]
+        def f(n):
+            if len(n.children)==0:
+                l.append(n)
+        self.visit(f)
+        return l
+
+    def genwalk(self):
+        yield self
+        for c in self.children:
+            for n in c.genwalk():
+                yield n
+
+    def compute_offsets(self,off=0):
+        self.off=off
+        for c in self.children:
+            c.compute_offsets(off)
+            off+=len(c.s)
+
 def convert_parsetree(pt,parent=None):
     if isinstance(pt,lark.lexer.Token):
         return Tok(parent,pt.value)
     return Rule(parent,pt.data,pt.children)
+
+
+class Random:
+    def __init__(self):
+        pass
+
+    def __getattr__(self,a):
+        return getattr(np.random,a)
+
+
+etfunc_t=namedtuple('etfunc_t','name args')
+def etfunc(et):
+    name=et.children[0].value
+    if len(et.children)>1:
+        args=et.children[1].children
+    else:
+        args=[]
+    return etfunc_t(name,args)
+
+etrule_t=namedtuple('etrule_t', 'name')
+def etrule(et):
+    name=et.children[0].value
+    return etrule_t(name)
 
 class Gramma:
     '''
@@ -172,6 +234,8 @@ class Gramma:
 
         x.stack=[]
 
+        x.random=Random()
+
     def getstring(x,et):
         'convert string element to python string'
         if et.name==u'string':
@@ -191,11 +255,8 @@ class Gramma:
         else:
             raise ValueError, 'not a num: %s' % et
 
-    def lit(x,s):
-        return s
-
     def choose(x,*ets):
-        return x.sample(np.random.choice(ets))
+        return x.sample(x.random.choice(ets))
 
     def concat(x,*ets):
         return ''.join(x.sample(et) for et in ets)
@@ -213,20 +274,20 @@ class Gramma:
             if fname==u'geom':
                 # "a"{geom(n)} gets an average of n copies of "a"
                 # argument is the average number of 
-                n=np.random.geometric(1/float(fargs[0]+1))-1
+                n=x.random.geometric(1/float(fargs[0]+1))-1
             elif fname=='norm':
-                n=int(np.random.normal(*fargs)+.5)
+                n=int(x.random.normal(*fargs)+.5)
             elif fname=='binom':
-                n=np.random.binomial(*fargs)
+                n=x.random.binomial(*fargs)
             elif fname=='choose':
-                n=np.random.choice(fargs)
+                n=x.random.choice(fargs)
             else:
                 raise ValueError, 'no dist %s' % (fname)
 
             f=lambda lo,hi:min(hi,max(lo,n))
             args.pop()
         else:
-            f=lambda lo,hi:np.random.randint(lo,hi+1)
+            f=lambda lo,hi:x.random.randint(lo,hi+1)
         lo=0 if len(args)==0 else x.getint(args.pop(0))
         hi=2**32 if len(args)==0 else x.getint(args.pop(0))
 
@@ -254,9 +315,9 @@ class Gramma:
         x.d-=1
         return res
 
-    def sample(x,et):
+    def osample(x,et):
         '''
-            sample a value from an expression tree composed of Node objects
+            fully stochastic sample function
         '''
 
         if et.name==u'alt': # choice
@@ -265,36 +326,83 @@ class Gramma:
             return x.concat(*et.children)
         if et.name==u'rep':
             return x.rep(et.children[0], *et.children[1].children)
-
         if et.name==u'range':
             lo=ord(eval(et.children[0].value))
             hi=ord(eval(et.children[1].value))
-            return np.random.choice([chr(v) for v in range(lo,hi+1)])
+            return x.random.choice([chr(v) for v in range(lo,hi+1)])
         if et.name==u'string':
-            return x.lit(eval(et.children[0].value))
+            return eval(et.children[0].value)
         if et.name==u'func':
-            fname=et.children[0].value
-            if len(et.children)>1:
-                args=et.children[1].children
-            else:
-                args=[]
-            return getattr(x,fname)(*args)
+            f=etfunc(et)
+            return getattr(x,f.name)(*f.args)
         if et.name==u'rule':
-            rname=et.children[0].value
-            return x.sample(x.rule_trees[rname])
+            r=etrule(et)
+            return x.sample(x.rule_trees[r.name])
         else:
             raise GrammaParseError, '''can't transform %s''' % et
     
     def generate(x):
+        x.sample=x.osample
         startrule=x.rule_trees['start']
         while True:
             x.reset()
-            del x.stack[:]
-            #randstate=np.random.get_state()
             yield x.sample(startrule) 
 
     def reset(x):
         x.d=0
+        del x.stack[:]
+
+    def br_sample(x,et):
+        'resampler structure builder sample function'
+        p=x.stack[-1]
+        r=Resampler(et,p)
+        p.children.append(r)
+
+        x.stack.append(r)
+        r.inrand=x.random.get_state()
+        r.s=x.osample(et)
+        x.stack.pop()
+
+        return r.s
+
+    def buildresampler(x):
+        'build a resampler object'
+        startrule=x.rule_trees['start']
+        x.sample=x.br_sample
+        x.reset()
+        root=Resampler('root')
+        x.stack.append(root)
+        x.sample(startrule)
+        r=root.children[0]
+        r.compute_offsets()
+        return r
+
+    def rsample(x,et):
+        'do the resample - sample replacement'
+        r=x.stack[-1].next()
+        if r.inrand!=None:
+            x.random.set_state(r.inrand)
+
+            x.stack.append(iter(r.children))
+            res=x.osample(r.et)
+            x.stack.pop()
+        else:
+            x.random.seed()
+            x.sample=x.osample
+            res=x.osample(r.et)
+            x.sample=x.rsample
+        return res
+
+    def gen_resamples(x,r):
+        'assume inrand has been cleared for resampler nodes that should be stochastic'
+        startrule=x.rule_trees['start']
+        x.sample=x.rsample
+        while True:
+            x.reset()
+            x.stack.append(iter([r]))
+            yield x.sample(startrule)
+
+
 
 class Example(Gramma):
     g1=r'''

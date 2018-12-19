@@ -58,23 +58,47 @@ class Greatview(Gramma):
         x.exp=None
         x.remembered.clear()
 
-def run():
+def gensamples():
     g=Greatview()
     
     np.random.seed(1)
     for x in g.generate():
-        try:
-            if len(x)>0:
-                print('----')
-                print(x)
-        except KeyboardInterrupt:
-            break
-        except:
-            pass
+        if len(x)>0:
+            print('----')
+            print(x)
 
+def resampletest():
+    global r,x
+    x=Greatview()
+    np.random.seed(1)
+    r=x.buildresampler()
+    print('====')
+    print(r.s)
 
-#pdb.run('run()')
-run()
+    def randomize_news(rr):
+        ''' choose different variables'''
+        if rr.et.name==u'func' and etfunc(rr.et).name=='new':
+            rr.inrand=None
+    r.visit(randomize_news)
 
+    def randomize_olds(rr):
+        ''' choose different variables'''
+        if rr.et.name==u'func' and etfunc(rr.et).name=='old':
+            rr.inrand=None
+    r.visit(randomize_olds)
+
+    def randomize_ints(rr):
+        ''' different random integers'''
+        if rr.et.name==u'rule' and etrule(rr.et).name=='int':
+            for rrr in rr.genwalk():
+                rrr.inrand=None
+    r.visit(randomize_ints)
+
+    for s in islice(x.gen_resamples(r),20):
+        print('----')
+        print(s)
+
+resampletest()
+#gensamples()
 
 # vim: ts=4 sw=4
