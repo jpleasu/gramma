@@ -94,6 +94,12 @@ def resampletest():
                 rrr.inrand=None
     r.visit(randomize_ints)
 
+    # resample one of the 'nesting' rule nodes
+    nesting_nodes=[rr for rr in r.genwalk() if rr.et.name==u'rule' and etrule(rr.et).name=='nesting']
+    np.random.seed(2)
+    np.random.choice(nesting_nodes).inrand=None
+ 
+
     for s in islice(x.gen_resamples(r),20):
         print('----')
         print(s)
