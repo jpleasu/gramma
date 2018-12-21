@@ -19,11 +19,11 @@ class Greatview(Gramma):
         return '%d' % v
 
     def old(x,namespace):
-        namespace=x.getstring(namespace)
+        namespace=namespace.as_str()
         return np.random.choice(list(x.remembered.get(namespace)))
         
     def new(x,namespace,child):
-        namespace=x.getstring(namespace)
+        namespace=namespace.as_str()
         names=x.remembered.setdefault(namespace,set())
         n=x.sample(child)
         while n in names:
@@ -32,7 +32,7 @@ class Greatview(Gramma):
         return n
 
     def ifdef(x, namespace, child):
-        namespace=x.getstring(namespace)
+        namespace=namespace.as_str()
         if len(x.remembered.get(namespace,[]))!=0:
             return x.sample(child)
         return ''
@@ -75,27 +75,27 @@ def resampletest():
     print('====')
     print(r.s)
 
+    # resample all variable name constructions
     def randomize_news(rr):
-        ''' choose different variables'''
-        if rr.et.name==u'func' and etfunc(rr.et).name=='new':
+        if isinstance(rr.gt, GFunc) and rr.gt.fname=='new':
             rr.inrand=None
     r.visit(randomize_news)
 
+    # resample every variable selection
     def randomize_olds(rr):
-        ''' choose different variables'''
-        if rr.et.name==u'func' and etfunc(rr.et).name=='old':
+        if isinstance(rr.gt, GFunc) and rr.gt.fname=='old':
             rr.inrand=None
     r.visit(randomize_olds)
 
+    # resample integer generation
     def randomize_ints(rr):
-        ''' different random integers'''
-        if rr.et.name==u'rule' and etrule(rr.et).name=='int':
+        if isinstance(rr.gt, GFunc) and rr.gt.fname=='int':
             for rrr in rr.genwalk():
                 rrr.inrand=None
     r.visit(randomize_ints)
 
     # resample one of the 'nesting' rule nodes
-    nesting_nodes=[rr for rr in r.genwalk() if rr.et.name==u'rule' and etrule(rr.et).name=='nesting']
+    nesting_nodes=[rr for rr in r.genwalk() if isinstance(rr.gt,GRule) and rr.gt.rname=='nesting']
     np.random.seed(2)
     np.random.choice(nesting_nodes).inrand=None
  
