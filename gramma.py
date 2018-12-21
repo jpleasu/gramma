@@ -6,16 +6,7 @@
     methods in a subclass, new functions can be added.
 
     TODO:
-        - parse Gramma to a GTree
-        - sampling is making all of the available decisions.. building
-          (followed by setting inrand to None for some nodes) corresponds to
-          making only some of the decisions.
 
-        - why turn gtree sampling inside out?
-            - put sample code "inside" generator, rather than in a big switch
-              statement .. faster.. tidier
-            - "proxy" generator object references original generator and, for
-              example, random state
 
         abcde
 
@@ -42,6 +33,38 @@ import numpy as np
 from itertools import islice
 
 from collections import namedtuple
+
+from functools import wraps
+
+def gfunc(*args,**kw):
+    '''
+        a Gramma function decorator
+    '''
+    def _decorate(f,name):
+        @wraps(f)
+        def g(x,*l,**kw):
+            return f(x,*l,**kw)
+        g.is_gfunc=True
+        g.fname=name
+        return g
+
+    if len(args)==0 or not callable(args[0]):
+        if len(args)>=1:
+            name=args[0]
+        else:
+            name=kw.get('name')
+        return lambda f:_decorate(f,name=name)
+    f=args[0]
+    return _decorate(f,name=f.func_name)
+
+def decorator(original_function=None, optional_argument1=None, optional_argument2=None):
+    def _decorate(function):
+        @wraps(function)
+        def wrapped_function(*args, **kwargs):
+            return wrapped_function
+    if original_function:
+        return _decorate(original_function)
+    return _decorate
 
 
 class GrammaParseError(Exception):
@@ -116,18 +139,11 @@ class GTree(object):
             p=p.parent
         return p
 
-def pttok2num(pt):
-    if pt.type==u'INT':
-        return int(pt.value)
-    elif pt.type==u'FLOAT':
-        return float(pt.value)
-    else:
-        raise ValueError, 'not a num: %s' % pt
-
 class GTok(GTree):
-    __slots__=['value']
-    def __init__(gt,parent,value):
+    __slots__=['type','value']
+    def __init__(gt,parent,type,value):
         GTree.__init__(gt,parent)
+        gt.type=type
         gt.value=value
 
     def __str__(gt):
@@ -141,6 +157,15 @@ class GTok(GTree):
 
     def sample(gt,x):
         return gt.as_str()
+
+    def as_num(gt):
+        if gt.type==u'INT':
+            return int(gt.value)
+        elif gt.type==u'FLOAT':
+            return float(gt.value)
+        else:
+            raise ValueError, 'not a num: %s' % gt
+
 
 class GInternal(GTree):
     __slots__=['name','children']
@@ -179,7 +204,7 @@ class GRep(GInternal):
                 ptargs=a.children[1].children
             else:
                 ptargs=[]
-            ptargs=[x.pttok2num(a) for a in ptargs]
+            ptargs=[a.as_num() for a in ptargs]
             if fname==u'geom':
                 # "a"{geom(n)} has an average of n copies of "a"
                 parm=1/float(ptargs[0]+1)
@@ -227,7 +252,7 @@ class GFunc(GInternal):
             gt.fargs=[]
 
     def sample(gt,x):
-        return getattr(x,gt.fname)(*gt.fargs)
+        return x.func_trees[gt.fname](*gt.fargs)
 
 class GRule(GInternal):
     __slots__=['rname']
@@ -241,7 +266,7 @@ class GRule(GInternal):
 
 def parse_generator(pt,parent=None):
     if isinstance(pt,lark.lexer.Token):
-        return GTok(parent,pt.value)
+        return GTok(parent,pt.type,pt.value)
     if pt.data=='alt':
         return GAlt(parent,pt.children)
     if pt.data=='cat':
@@ -255,11 +280,11 @@ def parse_generator(pt,parent=None):
     if pt.data=='rule':
         return GRule(parent,pt.children)
     if pt.data=='string':
-        return GTok(parent,pt.children[0].value)
+        return GTok(parent,'string',pt.children[0].value)
     return GInternal(parent,pt.data,pt.children)
 
 
-class Resampler:
+class Sample:
     def __init__(self,gt,parent=None):
         self.gt=gt
         self.parent=parent
@@ -329,52 +354,33 @@ class Gramma:
             expr_tree=ruledef.children[1]
             x.rule_trees[name]=expr_tree
 
-        x.stack=[]
+        x.func_trees={}
+        for n,f in inspect.getmembers(x,predicate=inspect.ismethod):
+            if hasattr(f,'is_gfunc'):
+                x.func_trees[f.fname]=f
 
+    def reset(x):
         x.random=Random()
-
-
-    def rlim(x,c,n,o):
-        '''
-            recursion limit - if recursively invoked to a depth < n times,
-                sample c, else sample o
-
-            e.g. 
-
-                R :=  rlim("a" . R, 3, "");
-
-                produces "aaa" 
-            
-        '''
-        x.d+=1
-        n=n.as_int()
-        res=x.sample(c if x.d<=n else o)
-        x.d-=1
-        return res
+        x.d=0
 
     def osample(x,gt):
-        '''
-            fully stochastic sample function
-        '''
-        if hasattr(gt, 'sample'):
-            return gt.sample(x)
-        raise GrammaParseError, '''can't sample %s''' % gt
+        return gt.sample(x)
     
     def generate(x):
+        '''
+            yield random_state, string
+        '''
         x.sample=x.osample
         startrule=x.rule_trees['start']
         while True:
             x.reset()
-            yield x.sample(startrule) 
-
-    def reset(x):
-        x.d=0
-        del x.stack[:]
+            st=x.random.get_state()
+            yield st, x.sample(startrule) 
 
     def br_sample(x,gt):
         'resampler structure builder sample function'
         p=x.stack[-1]
-        r=Resampler(gt,p)
+        r=Sample(gt,p)
         p.children.append(r)
 
         x.stack.append(r)
@@ -389,8 +395,8 @@ class Gramma:
         startrule=x.rule_trees['start']
         x.sample=x.br_sample
         x.reset()
-        root=Resampler('root')
-        x.stack.append(root)
+        root=Sample('root')
+        x.stack=[root]
         x.sample(startrule)
         r=root.children[0]
         r.compute_offsets()
@@ -418,14 +424,36 @@ class Gramma:
         x.sample=x.rsample
         while True:
             x.reset()
-            x.stack.append(iter([r]))
+            x.stack=[iter([r])]
             yield x.sample(startrule)
+
+
+
+    @gfunc
+    def rlim(x,c,n,o):
+        '''
+            recursion limit - if recursively invoked to a depth < n times,
+                sample c, else sample o
+
+            e.g. 
+
+                R :=  rlim("a" . R, 3, "");
+
+                produces "aaa" 
+            
+        '''
+        x.d+=1
+        n=n.as_int()
+        res=x.sample(c if x.d<=n else o)
+        x.d-=1
+        return res
+
 
 
 
 class Example(Gramma):
     g1=r'''
-        start := words . " " . ['1'..'9'] . digit{0,5.};
+        start := words . " " . ['1'..'9'] . digit{geom(5)};
 
         digit := ['0' .. '9'];
 
@@ -434,18 +462,18 @@ class Example(Gramma):
 
     g2=r'''
         start := x;
-        x := "a" | x;
+        x := "a" | "b" . x;
     '''
 
 
     def __init__(x):
-        Gramma.__init__(x,Example.g2)
+        Gramma.__init__(x,Example.g1)
 
 def test_example():
     g=Example()
     it=g.generate()
     for i in xrange(10):
-        print(it.next())
+        print(it.next()[1])
 
 def test_parser():
     global t
@@ -472,7 +500,7 @@ def test_parser():
     print(t)
 
 if __name__ == '__main__':
-    test_parser()
-    #test_example()
+    #test_parser()
+    test_example()
 
 # vim: ts=4 sw=4
