@@ -6,23 +6,32 @@ from itertools import islice
 
 import gen_greatview as greatview
 
-cnt = 0
+errcnt = 0
+segfault = 0
 def slam_one(binary, input):
-    global cnt
+    global errcnt,segfault
     input = input + '\x00'
-    fake_fd = StringIO.StringIO(input)
+    #input=open('../greatview/pov/pov','rb').read()
     p = subprocess.Popen(binary, shell=True, stdin=subprocess.PIPE,
                          stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    o,e = p.communicate(input)
+    if 'Segmentation fault' in e:
+        segfault += 1
+    elif p.returncode != 0:
+        errcnt += 1
+        #print '----'
+        #print input
 
-    r = p.communicate(fake_fd.read())
-#    print p.returncode
-    if p.returncode != 0:
-        cnt += 1
 
-
+tot = 0
 g = greatview.Greatview(sys.argv[2])
-for x in islice(g.generate(), 100):
+for st,x in islice(g.generate(), 1000):
     if len(x) > 0:
+        tot+=1
         slam_one(sys.argv[1], x)
 
-print cnt
+if segfault>0:
+    print '*******************************************'
+print 'tot=%d' % tot
+print 'errcnt=%d' % errcnt
+print 'segfault=%d' % segfault

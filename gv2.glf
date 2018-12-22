@@ -1,4 +1,5 @@
-int := ['1'..'9'].['0'..'9']{0,9};
+#int := ['1'..'9'].['0'..'9']{0,9};
+int := "0" | "1" | "1207963648" | "4294967295";
 
 id := ['a'..'z']{3,10};
    
@@ -26,7 +27,7 @@ set_arr := "set " . old('arr') . " " . int . " " . int . "\n";
 
 set_num	:= "set " . old('num') . " " . int . "\n";
 	
-set_view := "set " . id . " byteSize " . id . "\n";
+set_view := "set " . old('view') . " byteSize " . old('num') . "\n";
 
 del := "del " . (old('num') | old('arr') | old('view')) . "\n";
 
@@ -34,6 +35,7 @@ nesting :=  rlim(
       new_num . nesting{0,2} . get_num
     | new_arr . nesting{0,2} . new_view{0,1} . nesting{0,2} . get_arr. nesting{0,1}
     | ifdef('arr', "del ". old('arr')."\n")
+    | ifdef('view', ifdef('num', set_view))
   , 5, "")
 ;
 

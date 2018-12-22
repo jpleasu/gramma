@@ -17,6 +17,10 @@
 
   support(e) = { k!00, k!10, k!20 }
 
+    My real problem is that I want Gramma to be a sample with a recursive
+    function that I can change .. selectively?
+
+
 
 '''
 
@@ -252,7 +256,7 @@ class GFunc(GInternal):
             gt.fargs=[]
 
     def sample(gt,x):
-        return x.func_trees[gt.fname](*gt.fargs)
+        return x.func_trees[gt.fname](x,*gt.fargs)
 
 class GRule(GInternal):
     __slots__=['rname']
@@ -284,13 +288,30 @@ def parse_generator(pt,parent=None):
     return GInternal(parent,pt.data,pt.children)
 
 
-class Sample:
+class Random:
+    def __init__(self):
+        pass
+
+    def __getattr__(self,a):
+        return getattr(np.random,a)
+
+class RichSample:
+    '''
+        a GTree sample with everthing that went in to generating it.
+
+        This structure is used to identify and resample subtrees.
+    '''
     def __init__(self,gt,parent=None):
         self.gt=gt
+
+        # the RichSample hierarchy constructed during the sample
         self.parent=parent
         self.children=[]
+
         self.s=None
+        # the random state when gt was sampled to produce s
         self.inrand=None
+        # the offset of s from the start of the root's s
         self.off=None
 
     def visit(self,f):
@@ -318,12 +339,53 @@ class Sample:
             c.compute_offsets(off)
             off+=len(c.s)
 
-class Random:
-    def __init__(self):
-        pass
+
+class Sampler(object):
+    def __init__(self,base):
+        self.base=base
 
     def __getattr__(self,a):
-        return getattr(np.random,a)
+        return getattr(self.base,a)
+
+    def reset(x):
+        x.base.reset()
+
+    def sample(x,gt):
+        return gt.sample(x)
+
+class RichSampler(Sampler):
+    def __init__(self,base):
+        self.base=base
+
+    def sample(x,gt):
+        'build a RichSample while sampling'
+        p=x.stack[-1]
+        r=RichSample(gt,p)
+        p.children.append(r)
+
+        x.stack.append(r)
+        r.inrand=x.random.get_state()
+        r.s=gt.sample(x)
+        x.stack.pop()
+
+        return r.s
+
+    def reset(x):
+        Sampler.reset(x)
+
+        x.root=RichSample('root')
+        x.stack=[x.root]
+
+    def build(x,randstate=None):
+        'returns a RichSample'
+
+        if randstate==None:
+            x.random.set_state(randstate)
+        x.reset()
+        x.sample(x.rule_trees['start'])
+        r=x.root.children[0]
+        r.compute_offsets()
+        return r
 
 
 class Gramma:
@@ -341,7 +403,6 @@ class Gramma:
         The methods of Gramma (and subclasses) are invoked recursively by
         sample with parse tree children and expect a string result.
     '''
-
     parser = lark.Lark(gramma_grammar, parser='earley', lexer='standard')
 
     def __init__(x, gramma_text):
@@ -357,50 +418,31 @@ class Gramma:
         x.func_trees={}
         for n,f in inspect.getmembers(x,predicate=inspect.ismethod):
             if hasattr(f,'is_gfunc'):
-                x.func_trees[f.fname]=f
+                x.func_trees[f.fname]=f.__func__
+
+        x.random=Random()
 
     def reset(x):
-        x.random=Random()
         x.d=0
 
-    def osample(x,gt):
+    def simple_sample(x,gt):
+        'straight sample, no additional side effects'
         return gt.sample(x)
     
     def generate(x):
         '''
             yield random_state, string
         '''
-        x.sample=x.osample
+        x=Sampler(x)
         startrule=x.rule_trees['start']
         while True:
-            x.reset()
             st=x.random.get_state()
+            x.reset()
             yield st, x.sample(startrule) 
 
-    def br_sample(x,gt):
-        'resampler structure builder sample function'
-        p=x.stack[-1]
-        r=Sample(gt,p)
-        p.children.append(r)
-
-        x.stack.append(r)
-        r.inrand=x.random.get_state()
-        r.s=x.osample(gt)
-        x.stack.pop()
-
-        return r.s
-
-    def buildresampler(x):
-        'build a resampler object'
-        startrule=x.rule_trees['start']
-        x.sample=x.br_sample
-        x.reset()
-        root=Sample('root')
-        x.stack=[root]
-        x.sample(startrule)
-        r=root.children[0]
-        r.compute_offsets()
-        return r
+    def build_richsample(x,randstate=None):
+        'build a RichSample object'
+        return RichSampler(x).build(randstate)
 
     def rsample(x,gt):
         'do the resample - sample replacement'
@@ -409,12 +451,12 @@ class Gramma:
             x.random.set_state(r.inrand)
 
             x.stack.append(iter(r.children))
-            res=x.osample(r.gt)
+            res=x.simple_sample(r.gt)
             x.stack.pop()
         else:
             x.random.seed()
-            x.sample=x.osample
-            res=x.osample(r.gt)
+            x.sample=x.simple_sample
+            res=x.simple_sample(r.gt)
             x.sample=x.rsample
         return res
 

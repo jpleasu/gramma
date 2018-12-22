@@ -4,13 +4,14 @@ import pdb
 from gramma import *
 
 class Greatview(Gramma):
-    def __init__(x):
-        with open('gv2.glf') as infile:
+    def __init__(x, gvglf_path):
+        with open(gvglf_path) as infile:
             Gramma.__init__(x,infile.read())
         x.remembered={}
    
     def reset(x):
         Gramma.reset(x)
+
         x.idstack=[]
 
         x.lastval=None
@@ -51,6 +52,12 @@ class Greatview(Gramma):
         return ''
 
     @gfunc
+    def nonempty(x,child):
+        while True:
+            s=x.sample(child)
+            if len(s)!=0:
+                return s
+    @gfunc
     def push(x,child):
         n=x.sample(child)
         x.idstack.append(n)
@@ -68,7 +75,7 @@ class Greatview(Gramma):
 
 
 def gensamples():
-    g=Greatview()
+    g=Greatview('gv2.glf')
     
     np.random.seed(1)
     for st,x in g.generate():
@@ -78,9 +85,9 @@ def gensamples():
 
 def resampletest():
     global r,x
-    x=Greatview()
+    x=Greatview('gv2.glf')
     np.random.seed(1)
-    r=x.buildresampler()
+    r=x.build_richsample(np.random.get_state())
     print('====')
     print(r.s)
 
@@ -105,7 +112,8 @@ def resampletest():
 
     # resample one of the 'nesting' rule nodes
     nesting_nodes=[rr for rr in r.genwalk() if isinstance(rr.gt,GRule) and rr.gt.rname=='nesting']
-    np.random.seed(2)
+    #nesting_nodes=[rr for rr in r.genwalk() if isinstance(rr.gt,GRule) and rr.gt.rname=='oneline']
+    np.random.seed(4)
     np.random.choice(nesting_nodes).inrand=None
  
 
@@ -113,7 +121,8 @@ def resampletest():
         print('----')
         print(s)
 
-resampletest()
-#gensamples()
+if __name__=='__main__':
+    resampletest()
+    #gensamples()
 
 # vim: ts=4 sw=4
