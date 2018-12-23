@@ -1,4 +1,5 @@
 #!/usr/bin/env python
+import numpy as np
 from os import environ
 import StringIO
 import subprocess
@@ -6,6 +7,7 @@ import sys
 from itertools import islice
 from sysv_ipc import SharedMemory, IPC_PRIVATE, IPC_CREAT, IPC_EXCL
 
+from gramma import *
 import gen_greatview as greatview
 
 cnt = 0
@@ -32,29 +34,27 @@ class Slammer():
             self._bin_table[x] = 64
         for x in range(128,256):
             self._bin_table[x] = 128
-        self._trace_bits = bytearray(65536)
+
         self._shm = SharedMemory(IPC_PRIVATE, IPC_CREAT | IPC_EXCL, 0600, 65536)
-        self._shm.detach()
         environ['__AFL_SHM_ID'] = str(self._shm.id)
->>>>>>> slam now counts uniq afl bitmaps
 
-        self._hits = {}
+        self._virgin_bits = bytearray('\xff' * 65536)
+        self._cov = 0
+        self._cnt = 0
 
-<<<<<<< 8ff333a80a3dafd9a40792aec5cc44bc44db1651
-tot = 0
-g = greatview.Greatview(sys.argv[2])
-for st,x in islice(g.generate(), 1000):
-    if len(x) > 0:
-        tot+=1
-        slam_one(sys.argv[1], x)
-
-if segfault>0:
-    print '*******************************************'
-print 'tot=%d' % tot
-print 'errcnt=%d' % errcnt
-print 'segfault=%d' % segfault
-=======
+        self.tests = 0
+        
+    def _stats(self):
+        if self.tests % 100 == 0 and self.tests <> 0:
+            print 'cnt:',self.tests, 'cov:', self._cov, 'cnt:', self._cnt, 'errcnt:', self.errcnt, 'segfaults:', self.segfaults
+            sys.stdout.flush()
+        
     def slam_one(self, input):
+        if len(input) == 0:
+            return
+        self._stats()
+        self.tests += 1
+            
         input = input + '\x00'
         fake_fd = StringIO.StringIO(input)
         p = subprocess.Popen(self.binary, shell=True, stdin=subprocess.PIPE,
@@ -67,21 +67,32 @@ print 'segfault=%d' % segfault
             self.errcnt += 1
             
     def afl_one(self, input):
-        self._shm.attach()
+        if len(input) == 0:
+            return
         self._shm.write('\x00'*65536)
         self.slam_one(input)
 
         # todo: this is SLOWWWWWW. Use carter's approach instead
+        x = self._shm.read()
+        cov = 0
         for i,b in enumerate(self._shm.read()):
             b = ord(b)
-            self._trace_bits[i] = self._bin_table[b]
+            b = self._bin_table[b]
+            vb = self._virgin_bits[i]
+            v = (vb & ~b) & 0xff
+            if v <> vb:
+                if vb == 0xff:
+                    cov = 1
+                elif cov == 0:
+                    cov = 2
+            self._virgin_bits[i] = v
 
-        self._shm.detach()
-        h = hash(str(self._trace_bits))
-        if h in self._hits:
-            self._hits[h] += 1
-        else:
-            self._hits[h] = 1
+        if cov == 1:
+            self._cov += 1
+        elif cov == 2:
+            self._cnt += 1
+
+        return cov
 
 slammer = Slammer(sys.argv[1])
 g = greatview.Greatview(sys.argv[2])
@@ -90,16 +101,25 @@ g = greatview.Greatview(sys.argv[2])
 #exit(0)
 
 tests = 0
-for x in g.generate():
-    if len(x) > 0:
+
+def no_resample():
+    global tests
+    for (st, x) in g.generate():
+        #slammer.slam_one(x)
         slammer.afl_one(x)
-        if tests % 100 == 0:
-            print 'cnt:',tests, 'uniq:', len(slammer._hits), 'winners:', slammer.errcnt, 'segfaults:', slammer.segfaults
-            sys.stdout.flush()
-        # slammer.slam_one(x)
-#        if tests >= 1000:
-#            break
-        tests += 1
 
-print 'cnt:',tests, 'uniq:', len(slammer._hits), 'winners:', slammer.errcnt, 'segfaults:', slammer.segfaults
+def use_resample():
+    while True:
+        x = g.build_richsample(np.random.get_state())
+        progress = slammer.afl_one(x.s)
+        # progress = 0
+        if progress:
+            nesting_nodes=[rr for rr in x.genwalk() if isinstance(rr.gt,GRule) and rr.gt.rname=='nesting']
+            np.random.choice(nesting_nodes).inrand=None
+            for s in islice(g.gen_resamples(x),20):
+                slammer.afl_one(s)
 
+        if slammer.tests > 10000:
+            break
+        
+use_resample()
