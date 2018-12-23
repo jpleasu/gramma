@@ -12,7 +12,8 @@ cnt = 0
 class Slammer():
     def __init__(self, binary):
         self.binary = binary
-        self.winners = 0
+        self.errcnt = 0
+        self.segfaults = 0
 
         self._bin_table = bytearray(256)
         self._bin_table[0] = 0
@@ -59,9 +60,11 @@ print 'segfault=%d' % segfault
         p = subprocess.Popen(self.binary, shell=True, stdin=subprocess.PIPE,
                              stdout=subprocess.PIPE, stderr=subprocess.PIPE)
 
-        r = p.communicate(fake_fd.read())
-        if p.returncode == 0:
-            self.winners += 1
+        (o,e) = p.communicate(fake_fd.read())
+        if 'Segmentation fault' in e:
+            self.segfaults += 1
+        elif p.returncode != 0:
+            self.errcnt += 1
             
     def afl_one(self, input):
         self._shm.attach()
@@ -90,9 +93,13 @@ tests = 0
 for x in g.generate():
     if len(x) > 0:
         slammer.afl_one(x)
+        if tests % 100 == 0:
+            print 'cnt:',tests, 'uniq:', len(slammer._hits), 'winners:', slammer.errcnt, 'segfaults:', slammer.segfaults
+            sys.stdout.flush()
         # slammer.slam_one(x)
-        if tests >= 1000:
-            break
+#        if tests >= 1000:
+#            break
         tests += 1
 
-print 'cnt:',tests, 'uniq:', len(slammer._hits), 'winners:', slammer.winners
+print 'cnt:',tests, 'uniq:', len(slammer._hits), 'winners:', slammer.errcnt, 'segfaults:', slammer.segfaults
+
