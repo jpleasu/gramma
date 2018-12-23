@@ -95,7 +95,7 @@ def resampletest():
     def randomize_news(rr):
         if isinstance(rr.gt, GFunc) and rr.gt.fname=='new':
             rr.inrand=None
-    r.visit(randomize_news)
+#    r.visit(randomize_news)
 
     # resample every variable selection
     def randomize_olds(rr):
@@ -108,7 +108,7 @@ def resampletest():
         if isinstance(rr.gt, GFunc) and rr.gt.fname=='int':
             for rrr in rr.genwalk():
                 rrr.inrand=None
-    r.visit(randomize_ints)
+#    r.visit(randomize_ints)
 
     # resample one of the 'nesting' rule nodes
     nesting_nodes=[rr for rr in r.genwalk() if isinstance(rr.gt,GRule) and rr.gt.rname=='nesting']
