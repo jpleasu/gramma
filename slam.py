@@ -1,4 +1,5 @@
 #!/usr/bin/env python
+import ctypes
 import numpy as np
 from os import environ
 import StringIO
@@ -12,33 +13,37 @@ import gen_greatview as greatview
 
 cnt = 0
 class Slammer():
-    def __init__(self, binary):
+    def __init__(self, binary, native=False):
         self.binary = binary
         self.errcnt = 0
         self.segfaults = 0
+        self._native = native
+        
+        if native:
+            self._afl = ctypes.CDLL('afl.so')
+            environ['__AFL_SHM_ID'] = str(self._afl.init())
+        else:
+            self._bin_table = bytearray(256)
+            self._bin_table[0] = 0
+            self._bin_table[1] = 1
+            self._bin_table[2] = 2
+            self._bin_table[3] = 4
+            for x in range(4,8):
+                self._bin_table[x] = 8
+            for x in range(8,16):
+                self._bin_table[x] = 16
+            for x in range(16,32):
+                self._bin_table[x] = 32
+            for x in range(32,127):
+                self._bin_table[x] = 64
+            for x in range(128,256):
+                self._bin_table[x] = 128
 
-        self._bin_table = bytearray(256)
-        self._bin_table[0] = 0
-        self._bin_table[1] = 1
-        for x in range(2,4):
-            self._bin_table[x] = 2
-        for x in range(4,8):
-            self._bin_table[x] = 4
-        for x in range(8,16):
-            self._bin_table[x] = 8
-        for x in range(16,32):
-            self._bin_table[x] = 16
-        for x in range(32,64):
-            self._bin_table[x] = 32
-        for x in range(64,128):
-            self._bin_table[x] = 64
-        for x in range(128,256):
-            self._bin_table[x] = 128
+            self._shm = SharedMemory(IPC_PRIVATE, IPC_CREAT | IPC_EXCL, 0600, 65536)
+            environ['__AFL_SHM_ID'] = str(self._shm.id)
 
-        self._shm = SharedMemory(IPC_PRIVATE, IPC_CREAT | IPC_EXCL, 0600, 65536)
-        environ['__AFL_SHM_ID'] = str(self._shm.id)
-
-        self._virgin_bits = bytearray('\xff' * 65536)
+            self._virgin_bits = bytearray('\xff' * 65536)
+        
         self._cov = 0
         self._cnt = 0
 
@@ -69,30 +74,38 @@ class Slammer():
     def afl_one(self, input):
         if len(input) == 0:
             return
-        self._shm.write('\x00'*65536)
+        if self._native:
+            self._afl.clear_trace()
+        else:
+            self._shm.write('\x00'*65536)
+        
         self.slam_one(input)
 
-        # todo: this is SLOWWWWWW. Use carter's approach instead
-        x = self._shm.read()
-        cov = 0
-        for i,b in enumerate(self._shm.read()):
-            b = ord(b)
-            b = self._bin_table[b]
-            vb = self._virgin_bits[i]
-            v = (vb & ~b) & 0xff
-            if v <> vb:
-                if vb == 0xff:
-                    cov = 1
-                elif cov == 0:
-                    cov = 2
-            self._virgin_bits[i] = v
+        if self._native:
+            res = self._afl.has_new_bits()
+        else:
+            x = self._shm.read()
+            res = 0
+            for i,b in enumerate(self._shm.read()):
+                b = ord(b)
+                b = self._bin_table[b]
+                vb = self._virgin_bits[i]
+                v = (vb & ~b) & 0xff
+                if v <> vb:
+                    if vb == 0xff:
+                        res = 2
+                    elif res == 0:
+                        res = 1
+                self._virgin_bits[i] = v
 
-        if cov == 1:
+        if res == 2:
             self._cov += 1
-        elif cov == 2:
+        elif res == 1:
             self._cnt += 1
 
-        return cov
+        return res
+
+np.random.seed(1)
 
 slammer = Slammer(sys.argv[1])
 g = greatview.Greatview(sys.argv[2])
