@@ -112,14 +112,17 @@ def use_resample():
     while True:
         x = g.build_richsample(np.random.get_state())
         progress = slammer.afl_one(x.s)
-        # progress = 0
+        progress = 0
         if progress:
             nesting_nodes=[rr for rr in x.genwalk() if isinstance(rr.gt,GRule) and rr.gt.rname=='nesting']
-            np.random.choice(nesting_nodes).inrand=None
-            for s in islice(g.generate(x),20):
+            node = np.random.choice(nesting_nodes)
+            saved_state = node.inrand
+            node.inrand = None
+            for s in islice(g.gen_resamples(x),20):
                 slammer.afl_one(s)
-
-        if slammer.tests > 10000:
-            break
+            node.inrand = saved_state
+            
+#        if slammer.tests > 1000000:
+#            break
         
 use_resample()

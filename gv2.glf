@@ -23,6 +23,8 @@ get_num	:= "get " . old('num') . "\n";
 	
 get_arr	:= "get " . old('arr') . " " . int . "\n";
 
+get_view := "get " . old('view') . " " . int . "\n";
+
 set_arr := "set " . old('arr') . " " . int . " " . int . "\n";
 
 set_num	:= "set " . old('num') . " " . int . "\n";
@@ -34,14 +36,15 @@ del := "del " . (old('num') | old('arr') | old('view')) . "\n";
 nesting :=  rlim(
       new_num . nesting{0,2} . get_num
     | new_arr . nesting{0,2} . new_view{0,1} . nesting{0,2} . get_arr. nesting{0,1}
+    | ifdef('num', set_num)
     | ifdef('arr', "del ". old('arr')."\n")
-    | ifdef('view', ifdef('num', set_view))
+    | ifdef('view', ifdef('num', set_view|get_view))
   , 5, "")
 ;
 
+# nesting := new_num . new_arr . new_view . set_view . set_num . get_view
+
 start := nesting;
-
-
 
 
 # instance bound ids 
