@@ -13,7 +13,7 @@ import gen_greatview as greatview
 
 cnt = 0
 class Slammer():
-    def __init__(self, binary, native=False):
+    def __init__(self, binary, native=True):
         self.binary = binary
         self.errcnt = 0
         self.segfaults = 0
@@ -105,7 +105,7 @@ class Slammer():
 
         return res
 
-np.random.seed(1)
+#np.random.seed(1)
 
 slammer = Slammer(sys.argv[1])
 g = greatview.Greatview(sys.argv[2])
@@ -125,7 +125,7 @@ def use_resample():
     while True:
         x = g.build_richsample(np.random.get_state())
         progress = slammer.afl_one(x.s)
-        progress = 0
+        # progress = 0
         if progress:
             nesting_nodes=[rr for rr in x.genwalk() if isinstance(rr.gt,GRule) and rr.gt.rname=='nesting']
             node = np.random.choice(nesting_nodes)
