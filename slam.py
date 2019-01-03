@@ -116,7 +116,7 @@ def use_resample():
         if progress:
             nesting_nodes=[rr for rr in x.genwalk() if isinstance(rr.gt,GRule) and rr.gt.rname=='nesting']
             np.random.choice(nesting_nodes).inrand=None
-            for s in islice(g.gen_resamples(x),20):
+            for s in islice(g.generate(x),20):
                 slammer.afl_one(s)
 
         if slammer.tests > 10000:

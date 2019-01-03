@@ -86,43 +86,71 @@ def gensamples():
 def resampletest():
     global r,x
     x=Greatview('gv2.glf')
-    np.random.seed(1)
-    r=x.build_richsample(np.random.get_state())
+    x.random.seed(3)
+    while True:
+        r=x.build_richsample(np.random.get_state())
+        if len(r.s)>0:
+            ss=x.generate(r).next()[1]
+            if r.s!=ss:
+                print('====')
+                print(r.s)
+                print('~~~~')
+                print(ss)
+
+def resampletest2():
+    global r,x
+    x=Greatview('gv2.glf')
+    x.random.seed(4)
+    while True:
+        rseed=np.random.get_state()
+        r=x.build_richsample(rseed)
+        if len(r.s)>0:
+            break
     print('====')
     print(r.s)
+    print('~~~~')
+    print(r)
+
 
     # resample all variable name constructions
     def randomize_news(rr):
-        if isinstance(rr.gt, GFunc) and rr.gt.fname=='new':
+        if isinstance(rr.ogt, GFunc) and rr.ogt.fname=='new':
             rr.inrand=None
-#    r.visit(randomize_news)
+    #r.visit(randomize_news)
 
     # resample every variable selection
     def randomize_olds(rr):
-        if isinstance(rr.gt, GFunc) and rr.gt.fname=='old':
+        if isinstance(rr.ogt, GFunc) and rr.ogt.fname=='old':
             rr.inrand=None
-    r.visit(randomize_olds)
+    #r.visit(randomize_olds)
 
     # resample integer generation
     def randomize_ints(rr):
-        if isinstance(rr.gt, GFunc) and rr.gt.fname=='int':
-            for rrr in rr.genwalk():
-                rrr.inrand=None
-#    r.visit(randomize_ints)
+        if isinstance(rr.ogt, GRule) and rr.ogt.rname=='int':
+            rr.inrand=None
+    #r.visit(randomize_ints)
+
 
     # resample one of the 'nesting' rule nodes
-    nesting_nodes=[rr for rr in r.genwalk() if isinstance(rr.gt,GRule) and rr.gt.rname=='nesting']
-    #nesting_nodes=[rr for rr in r.genwalk() if isinstance(rr.gt,GRule) and rr.gt.rname=='oneline']
-    np.random.seed(4)
-    np.random.choice(nesting_nodes).inrand=None
- 
+    nesting_nodes=[rr for rr in r.genwalk() if isinstance(rr.ogt,GRule) and rr.ogt.rname=='nesting']
+    #nesting_nodes=[rr for rr in r.genwalk() if isinstance(rr.ogt,GRule) and rr.ogt.rname=='oneline']
 
-    for s in islice(x.gen_resamples(r),20):
+    #for rr in nesting_nodes:
+    #    print rr
+
+    np.random.seed(8)
+    np.random.choice(nesting_nodes).inrand=None
+
+    #for rr in r.genwalk():
+    #    rr.inrand=None
+
+    for randstate, s in islice(x.generate(r),3):
         print('----')
         print(s)
 
 if __name__=='__main__':
-    resampletest()
+    #resampletest()
+    resampletest2()
     #gensamples()
 
 # vim: ts=4 sw=4

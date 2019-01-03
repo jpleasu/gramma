@@ -67,7 +67,7 @@ segfault1 :=
 
 #start := segfault;
 #start := segfault1;
-start := oneline{10,20};
+start := oneline{20,100};
 
 
 # instance bound ids 
