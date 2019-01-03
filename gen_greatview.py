@@ -106,10 +106,10 @@ def resampletest2():
         r=x.build_richsample(rseed)
         if len(r.s)>0:
             break
-    print('====')
+    print('== r.s ==')
     print(r.s)
-    print('~~~~')
-    print(r)
+    print('~~ r.to_gtree() ~~')
+    print(r.to_gtree(x))
 
 
     # resample all variable name constructions
@@ -141,8 +141,8 @@ def resampletest2():
     np.random.seed(8)
     np.random.choice(nesting_nodes).inrand=None
 
-    #for rr in r.genwalk():
-    #    rr.inrand=None
+    print('~~ r.to_gtree() ~~')
+    print(r.to_gtree(x))
 
     for randstate, s in islice(x.generate(r),3):
         print('----')

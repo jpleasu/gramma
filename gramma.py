@@ -420,6 +420,11 @@ class RichSample(GTree):
 
         # the random state when ogt was sampled to produce s
         self.inrand=None
+
+        # the random state on completion of the ogt sample
+        self.outrand=None
+
+
         # the offset of s from the start of the root's s
         self.off=None
 
@@ -468,6 +473,7 @@ class RichSample(GTree):
                 #print('enable default_random with %s and sampler %s' % (self.ogt, x))
                 res=self.do_sample(x)
                 x.using_default_random=False
+                x.random.set_state(self.outrand)
                 return res
             else:
                 #print('repeating %s, should get children %s' % (self.ogt, self.children))
@@ -551,6 +557,7 @@ class RichSampler(Sampler):
         self.stack.append(r)
         r.inrand=self.random.get_state()
         r.s=gt.do_sample(self)
+        r.outrand=self.random.get_state()
         self.stack.pop()
 
         return r.s
