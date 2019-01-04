@@ -17,6 +17,7 @@ static u8 *trace_bits;
 
 static void init_count_class16(void);
 static inline void classify_counts(u64* mem);
+static inline u32 hash32(const void* key, u32 len, u32 seed);
 
 int init()
 {
@@ -37,27 +38,44 @@ int clear_trace() {
   return 0;
 }
 
+static struct {
+  u32 len;
+  struct {
+    u32 idx;
+    u8 v;
+  } values[MAP_SIZE];
+} syndrome;
+
 int has_new_bits() {
   u64* current = (u64*)trace_bits;
   u64* virgin  = (u64*)virgin_map;
 
   classify_counts(current);
-
+  syndrome.len = 0;
   u32  i = (MAP_SIZE >> 3);
   int   ret = 0;
+  u32 idx = 0;
 
   while (i--) {
     /* Optimize for (*current & *virgin) == 0 - i.e., no bits in current bitmap
        that have not been already cleared from the virgin map - since this will
        almost always be the case. */
 
+    u32 j;
+    u8* cur = (u8*)current;
+    u8* vir = (u8*)virgin;
+    for (j = 0; j < 8; j++) {
+      u8 v = vir[j] & cur[j];
+      if (v > 0) {
+	syndrome.values[syndrome.len].idx = idx+j;
+	syndrome.values[syndrome.len].v = v;
+	syndrome.len++;
+      }
+    }
+    
     if (unlikely(*current) && unlikely(*current & *virgin)) {
 
       if (likely(ret < 2)) {
-
-        u8* cur = (u8*)current;
-        u8* vir = (u8*)virgin;
-
         /* Looks like we have not found any new bytes yet; see if any non-zero
            bytes in current[] are pristine in virgin[]. */
 
@@ -73,6 +91,7 @@ int has_new_bits() {
 
     }
 
+    idx += 8;
     current++;
     virgin++;
 
@@ -80,6 +99,19 @@ int has_new_bits() {
 
   return ret;
 
+}
+
+
+int hash() {
+  return hash32(trace_bits, MAP_SIZE, 0xa5b35705);
+}
+
+void *get_syndrome() {
+  return &syndrome;
+}
+
+u8 *get_trace_bits() {
+  return trace_bits;
 }
 
 static const u8 count_class_lookup8[256] = {
@@ -135,3 +167,36 @@ static inline void classify_counts(u64* mem) {
 
 }
 
+
+#define ROL64(_x, _r)  ((((u64)(_x)) << (_r)) | (((u64)(_x)) >> (64 - (_r))))
+
+static inline u32 hash32(const void* key, u32 len, u32 seed) {
+
+  const u64* data = (u64*)key;
+  u64 h1 = seed ^ len;
+
+  len >>= 3;
+
+  while (len--) {
+
+    u64 k1 = *data++;
+
+    k1 *= 0x87c37b91114253d5ULL;
+    k1  = ROL64(k1, 31);
+    k1 *= 0x4cf5ad432745937fULL;
+
+    h1 ^= k1;
+    h1  = ROL64(h1, 27);
+    h1  = h1 * 5 + 0x52dce729;
+
+  }
+
+  h1 ^= h1 >> 33;
+  h1 *= 0xff51afd7ed558ccdULL;
+  h1 ^= h1 >> 33;
+  h1 *= 0xc4ceb9fe1a85ec53ULL;
+  h1 ^= h1 >> 33;
+
+  return h1;
+
+}
