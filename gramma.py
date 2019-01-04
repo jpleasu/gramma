@@ -5,27 +5,61 @@
     system.  The Gramma class parses and evaluates expressions.  By adding
     methods in a subclass, new functions can be added.
 
-    A Gramma expression defines a distribution on strings, so samples are
-    strings.  Each sample is produced via a (stoachastic) evaluation of its
-    Gramma expression.  The RichSample object records the subexpressions
-    evaluated during sample genreation as well as the random state at
-    generation time.  By reconfiguring a RichSample object, we effectively
-    "resample" subexpressions.
+    Gramma expressions represent random variables with string type.
+    Expressions are built from literals, operators, and functions.
+        - literals - same syntax as Pytnon strings
+            'this is a string'
+            """so is this"""
+        - concatenation (.) - definite concatenation
+            a . b
+        - alternation (|) - random choice from alternatives
+            a | b
+        - functions - as defined in Gramma child class
+            f(arg)
+
+    Sampling a Gramma expression is done by _stochastic_ evaluation.  The
+    RichSampler will store the intermediate definite results of the evaluation.
+    A RichSample can be _relaxed_ at select nodes in order to produce a similar
+    random variable.
 
     TODO:
-        - RichSample is now sampleable, but it would be nice to "seal" the
-          result into a normal GTree.. for GFuncs, we need to use a "realize"
-          for child samples.. it's still possible to get it wrong.. e.g.
-            f(a)
-                rand
-                a (resampled)
-                rand
-            the second rand won't have the correct state -- e.g. according to
-            the influence of the resampled a.
+        - ReplacingSampler and the "replace" function.
+            - expressions composed of stochastic operations that don't
+              influence state are definite strings.
+            - stateful operations must be re-executed with the same incoming
+              state in order to recreate the same (sub)result.
+              - if functions used _labeled_ state, we could define a scope and
+                avoid computation. If all nodes below the sup of nodes using a
+                given label were definite, we could make those functions
+                definite.
 
-        - inrand=None must correspond to an outrand to avoid the above.
+                f(x).x.X.x.g(x)
 
+        - document weird effects
+            - with functions:
+                @gfunc
+                def f(x):
+                    x.value=x.random.random_sample() >.5:
+                    return ''
+                @gfunc
+                def g(x,arg1,arg2):
+                    if x.value:
+                        return x.sample(arg1)
+                    else:
+                        return x.sample(arg2)
+            - and grammar
+                A := f();
+                B := g('1','2');
+                start := A . B;
+            - if we choose to resample A while leaving B "definite", what do we
+              expect to see?
+                - we should get an x.value as set randomly by f
+                - we will execute g because it's stateful, but where should its
+                  sample come from?  we should have to re-sample arg1 or arg2,
+                  whichever is chosen implicitly by f.. The replacing sampler
+                  will be wrong half the time.
 
+        
 
 
         abcde
@@ -36,8 +70,6 @@
          ab         cde
 
   support(e) = { k!00, k!10, k!20 }
-
-
 
 
 '''
@@ -52,32 +84,40 @@ import lark
 
 import numpy as np
 
-from itertools import islice
+from itertools import islice,groupby
 
 from collections import namedtuple
 
 from functools import wraps
 
+_gfunc_defaults=dict(
+        stateful=True
+)
 def gfunc(*args,**kw):
     '''
         a Gramma function decorator
     '''
-    def _decorate(f,fname):
+    kw=dict(_gfunc_defaults, **kw)
+
+    def _decorate(f,**kw):
+        kw=dict(_gfunc_defaults,**kw)
         @wraps(f)
         def g(x,*l,**kw):
             return f(x,*l,**kw)
         g.is_gfunc=True
-        g.fname=fname
+        g.fname=kw.get('fname',f.func_name)
+        g.stateful=kw.get('stateful')
         return g
 
     if len(args)==0 or not callable(args[0]):
         if len(args)>=1:
-            fname=args[0]
+            name=args[0]
         else:
-            fname=kw.get('name')
-        return lambda f:_decorate(f,fname=name)
+            name=kw.get('name')
+        return lambda f:_decorate(f,**kw)
     f=args[0]
-    return _decorate(f,fname=f.func_name)
+    kw['fname']=f.func_name
+    return _decorate(f,**kw)
 
 def decorator(original_function=None, optional_argument1=None, optional_argument2=None):
     def _decorate(function):
@@ -171,6 +211,12 @@ class GTree(object):
 
     def isrule(self, rname):
         return False
+    
+    def is_stateful(self,x,assume_no=None):
+        '''
+            does sampling have side effects on the sampler other than using x.random?
+        '''
+        return True
 
     # tag2cls[lark_tree_node.data]=GTree_with_parse_larktree_method
     tag2cls={}
@@ -188,7 +234,12 @@ class GTree(object):
         return cls.parse_larktree(lt)
  
 
-    
+    def copy(self):
+        return None
+
+    def simplify(self):
+        'copy self.. caller must ultimately set parent attribute'
+        return self.copy()
 
 class GTok(GTree):
     __slots__=['type','value']
@@ -196,6 +247,9 @@ class GTok(GTree):
         GTree.__init__(self)
         self.type=type
         self.value=value
+
+    def copy(self):
+        return GTok(self.type,self.value)
 
     def __str__(self,children=None):
         return self.value
@@ -217,6 +271,16 @@ class GTok(GTree):
         else:
             raise ValueError, 'not a num: %s' % self
 
+    @staticmethod
+    def join(tok_iter):
+        return GTok('string',repr(''.join(t.as_str() for t in tok_iter)))
+
+    def is_stateful(self,x,assume_no=None):
+        return False
+
+    @staticmethod
+    def new_empty():
+        return GTok('string',repr(''))
 
 class GInternal(GTree):
     '''
@@ -238,6 +302,21 @@ class GInternal(GTree):
     @classmethod
     def parse_larktree(cls,lt):
         return cls([GTree.parse_larktree(cpt) for cpt in lt.children])
+    
+    def copy(self):
+        cls=self.__class__
+        return cls([c.copy() for c in self.children])
+
+    def flat_simple_children(self):
+        cls=self.__class__
+        children=[]
+        for c in self.children:
+            c=c.simplify()
+            if isinstance(c,cls):
+                children.extend(c.children)
+            else:
+                children.append(c)
+        return children
 
 class GAlt(GInternal):
     tag='alt'
@@ -251,6 +330,29 @@ class GAlt(GInternal):
             return '(%s)' % s
         return s
 
+    def is_stateful(self,x,assume_no=None):
+        return any(c.is_stateful(x,assume_no) for c in self.children)
+
+    def simplify(self):
+        children=self.flat_simple_children()
+
+        # dedupe (and sort) by string representation
+        children=[v for k,v in sorted(dict( (str(c),c) for c in children).items())]
+        #haveit=set()
+        #l=[]
+        #for c in children:
+        #    s=str(c)
+        #    if not s in haveit:
+        #        l.append(c)
+        #        haveit.add(s)
+        #children=l
+
+        if len(children)==0:
+            return GTok.new_empty()
+        if len(children)==1:
+            return self.children[0].simplify()
+        return GAlt(children)
+
 class GCat(GInternal):
     tag='cat'
 
@@ -262,6 +364,26 @@ class GCat(GInternal):
         if self.parent!=None and isinstance(self.parent, GRep):
             return '(%s)' % s
         return s
+
+    def is_stateful(self,x,assume_no=None):
+        return any(c.is_stateful(x,assume_no) for c in self.children)
+
+    def simplify(self):
+        children=self.flat_simple_children()
+        if len(children)==0:
+            return GTok.new_empty()
+        if len(children)==1:
+            return children[0]
+
+        l=[]
+        for t,cl in groupby(children,lambda c:isinstance(c,GTok)):
+            if t:
+                l.append(GTok.join(cl))
+            else:
+                l.extend(cl)
+        if len(children)==1:
+            return children[0]
+        return GCat(l)
 
 class GRep(GInternal):
     tag='rep'
@@ -282,6 +404,14 @@ class GRep(GInternal):
     def do_sample(self,x):
         return ''.join(x.sample(self.child) for _ in xrange(self.rgen(x)))
 
+    def is_stateful(self,x,assume_no=None):
+        return self.child.is_stateful(x,assume_no)
+
+    def copy(self):
+        return GRep([self.child.copy()],self.lo,self.hi,self.rgen,self.dist)
+
+    def simplify(self):
+        return GRep([self.child.simplify()],self.lo,self.hi,self.rgen,self.dist)
 
     def __str__(self,children=None):
         child=children[0] if children else self.child
@@ -331,6 +461,17 @@ class GRange(GTree):
         self.lo=lo
         self.hi=hi
 
+    def copy(self):
+        return GRange(self.lo,self.hi)
+
+    def simplify(self):
+        if self.hi-self.lo==1:
+            return GTok('string', repr(chr(self.lo)))
+        return self.copy()
+
+    def is_stateful(self,x,assume_no=None):
+        return False
+
     def do_sample(self,x):
         return chr(x.random.randint(self.lo,self.hi+1))
 
@@ -350,6 +491,12 @@ class GFunc(GInternal):
     def __init__(self, fname, fargs):
         GInternal.__init__(self,fargs)
         self.fname=fname
+
+    def copy(self):
+        return GFunc(self.fname,[c.copy() for c in self.fargs])
+
+    def simplify(self):
+        return GFunc(self.fname,[c.simplify() for c in self.fargs])
 
     @property
     def fargs(self):
@@ -372,6 +519,16 @@ class GFunc(GInternal):
 
         return GFunc(fname,fargs)
 
+    def is_stateful(self,x,assume_no=None):
+        # functions can recurse too
+        if assume_no==None:
+            assume_no=set()
+        if self.fname in assume_no:
+            return False
+        #XXX function and rule collision
+        assume_no.add(self.fname)
+        return x.funcdefs[self.fname].stateful or any(c.is_stateful(x,assume_no) for c in self.fargs)
+
 class GRule(GTree):
     'this is a _reference_ to a rule.. the rule definition is part of the Gramma class'
 
@@ -381,6 +538,9 @@ class GRule(GTree):
     def __init__(self,rname):
         GTree.__init__(self)
         self.rname=rname
+
+    def copy(self):
+        return GRule(self.rname)
 
     def do_sample(self,x):
         return x.sample(x.ruledefs[self.rname])
@@ -394,6 +554,14 @@ class GRule(GTree):
     @classmethod
     def parse_larktree(cls,lt):
         return GRule(lt.children[0].value)
+
+    def is_stateful(self,x,assume_no=None):
+        if assume_no==None:
+            assume_no=set()
+        if self.rname in assume_no:
+            return False
+        assume_no.add(self.rname)
+        return x.ruledefs[self.rname].is_stateful(x,assume_no)
 
 for cls in GAlt, GCat, GRep, GFunc,   GRange, GRule:
     GTree.tag2cls[cls.tag]=cls
@@ -478,44 +646,84 @@ class RichSample(GTree):
             else:
                 #print('repeating %s, should get children %s' % (self.ogt, self.children))
                 x.random.set_state(self.inrand)
-                return self.ogt.do_sample(RealizingSampler(x,self.children)) # when ogt calls x.sample, it will get self.children in order
+                return self.ogt.do_sample(ReplacingSampler(x,self.children)) # when ogt calls x.sample, it will get self.children in order
 
-    def to_gtree(self,x):
+    def needs_sampling(self,x,assume_no=None):
         '''
-            create on ordinary gtree that can be resampled again..
+            RichSample nodes need to be resampled if either they are stateful
+            or they use any random.. e.g. inrand==None
         '''
         if self.inrand==None:
-            return self.ogt
+            return True
+        if isinstance(self.ogt,(GTok,GRange)):
+            return False
+        if isinstance(self.ogt,GFunc):
+            if assume_no==None:
+                assume_no=set()
+            if self.ogt.fname in assume_no:
+                return False
+            #XXX function and rule collision
+            assume_no.add(self.ogt.fname)
+            return x.funcdefs[self.ogt.fname].stateful or any(c.needs_sampling(x,assume_no) for c in self.children)
+        if isinstance(self.ogt,GRule):
+            if assume_no==None:
+                assume_no=set()
+            if self.ogt.rname in assume_no:
+                return False
+            assume_no.add(self.ogt.rname)
+            return any(c.needs_sampling(x,assume_no) for c in self.children)
+        return any(c.needs_sampling(x,assume_no) for c in self.children)
 
-        if isinstance(self.ogt, GTok):
-            return self.ogt
+    def to_gtree(self,x,assume_constant=None):
+        '''
+            create on ordinary gtree that can be resampled again..
+
+            XXX: parent attributes haven't been set
+        '''
+
+        if self.inrand==None:
+            return self.ogt.copy()
+
+        if not self.needs_sampling(x,assume_constant):
+            return GTok('string', repr(self.s))
+
         if isinstance(self.ogt,GCat):
-            return GCat([c.to_gtree(x) for c in self.children])
+            return GCat([c.to_gtree(x,assume_constant) for c in self.children])
         if isinstance(self.ogt,GAlt):
-            return self.children[0].to_gtree(x)
+            return self.children[0].to_gtree(x,assume_constant)
         if isinstance(self.ogt,GRange):
             x.random.set_state(self.inrand)
             c=self.ogt.do_sample(x)
             return GTok('string',repr(c))
         if isinstance(self.ogt,GRule):
-            return self.children[0].to_gtree(x)
+            return self.children[0].to_gtree(x,assume_constant)
         if isinstance(self.ogt,GRep):
             if len(self.children)==0:
-                return GTok('string',repr(''))
+                return GTok.new_empty()
             if len(self.children)==1:
-                return self.children[0].to_gtree(x)
-            return GCat([c.to_gtree(x) for c in self.children])
+                return self.children[0].to_gtree(x,assume_constant)
+            return GCat([c.to_gtree(x,assume_constant) for c in self.children])
 
         if isinstance(self.ogt,GFunc):
             # we need any entropy drawn in the func to remain the same
             # maybe by wrapping it while unwrapping children??
             # we don't even know how the func will sample its arguments..
             # possibly multiple times..  The wrapper would look exactly like
-            # the RealizingSampler above. How do we add that the to Gramma syntax?
+            # the ReplacingSampler above. How do we add that the to Gramma syntax?
             #
-            #   realize(f(a,b,c), randstate, alt_samples))
-            return GFunc('realize', [self.ogt, GRule('randstate###')] + [c.to_gtree(x) for c in self.children])
+            #   replace(f(a,b,c), randstate, alt_samples))
+            #     maybe
+            #   replace(f, a,b,c,  randstate,  alt_samples))
+            #   elements should represent random variables.. so writing
+            #   f(a,b,c) as the argument to replace is wrong.  We are really passing the function named 'f'
+            if self.needs_sampling(x,assume_constant):
+                return GFunc('replace', [self.ogt, GRule('randstate###')] + [c.to_gtree(x,assume_constant) for c in self.children])
+            else:
+                return GTok('string',repr(self.s))
         raise GParseError, '''can't convert %s''' % self.ogt
+
+       
+
 
 class Sampler(object):
     __slots__=['base']
@@ -534,7 +742,7 @@ class Sampler(object):
     def sample(self,gt):
         return gt.do_sample(self)
 
-class RealizingSampler(Sampler):
+class ReplacingSampler(Sampler):
     def __init__(self,base, children):
         Sampler.__init__(self,base)
         # instance attribute, do not set at base
@@ -627,7 +835,6 @@ class Gramma:
         self.d=0
 
     def simple_sample(self,gt):
-        'straight sample, no additional side effects'
         return gt.do_sample(self)
     
     def generate(self,startrule=None):

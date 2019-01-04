@@ -51,7 +51,7 @@ class Greatview(Gramma):
             return x.sample(child)
         return ''
 
-    @gfunc
+    @gfunc(stateful=False)
     def nonempty(x,child):
         while True:
             s=x.sample(child)
@@ -108,8 +108,8 @@ def resampletest2():
             break
     print('== r.s ==')
     print(r.s)
-    print('~~ r.to_gtree() ~~')
-    print(r.to_gtree(x))
+    print('~~ r.to_gtree().simplify() ~~')
+    print(r.to_gtree(x).simplify())
 
 
     # resample all variable name constructions
@@ -141,8 +141,8 @@ def resampletest2():
     np.random.seed(8)
     np.random.choice(nesting_nodes).inrand=None
 
-    print('~~ r.to_gtree() ~~')
-    print(r.to_gtree(x))
+    print('~~ r.to_gtree().simplify() ~~')
+    print(r.to_gtree(x).simplify())
 
     for randstate, s in islice(x.generate(r),3):
         print('----')

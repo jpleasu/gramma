@@ -10,12 +10,17 @@ class Example(Gramma):
 
         ab := ['a' .. 'b'];
         cd := ['c' .. 'd']{1,3};
-        ef := rando(['e' .. 'f']);
+        #ef := rando(['e' .. 'f']);
+        ef := randchar();
 
     '''
-    @gfunc
+    @gfunc(stateful=False)
     def rando(x,arg):
         return '|%s|' % x.sample(arg)
+
+    @gfunc(stateful=False)
+    def randchar(x):
+        return 'f'
 
     def __init__(x):
         Gramma.__init__(x,Example.g)
