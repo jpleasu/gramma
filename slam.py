@@ -10,7 +10,6 @@ from itertools import islice
 from sysv_ipc import SharedMemory, IPC_PRIVATE, IPC_CREAT, IPC_EXCL
 
 from gramma import *
-import gen_greatview as greatview
 
 def print_syndrome(prefix, syndrome):
     print prefix,
@@ -191,7 +190,12 @@ class Slammer():
 #np.random.seed(1)
 
 slammer = Slammer(sys.argv[1])
-g = greatview.Greatview(sys.argv[2])
+
+#import gen_greatview as greatview
+#g = greatview.Greatview(sys.argv[2])
+
+import cml
+g = cml.Cml(sys.argv[2])
 
 #slammer.afl_one('new num a 20')
 #exit(0)
@@ -220,7 +224,63 @@ def use_resample():
                 slammer.afl_one(s)
             node.inrand = saved_state
             
-#        if slammer.tests > 1000000:
-#            break
-        
-use_resample()
+np.random.seed()
+def slam_sample():
+    x = g.build_richsample(np.random.get_state())
+    nesting_nodes=[rr for rr in x.genwalk() if isinstance(rr.ogt,GRule) and rr.ogt.rname=='nesting']
+    l = len(nesting_nodes)
+    rule_cnt = [0 for y in xrange(0, l)]
+    slammer.afl_one(x.s)
+    while True:
+        idx = np.random.randint(l)
+        node = nesting_nodes[idx]
+        saved_state = node.inrand
+        node.inrand = None
+
+        for s in islice(g.gen_resamples(x),1):
+            res = slammer.afl_one(s)
+            if res > 0:
+                rule_cnt[idx] += 1
+                print 'cnt:', rule_cnt
+        node.inrand = saved_state
+            
+def slam_sample():
+    x = g.build_richsample(np.random.get_state())
+    nesting_nodes=[rr for rr in x.genwalk()]
+    l = len(nesting_nodes)
+    rule_cnt = [0 for y in xrange(0, l)]
+    slammer.afl_one(x.s)
+    while True:
+        idx = np.random.randint(l)
+        node = nesting_nodes[idx]
+        saved_state = node.inrand
+        node.inrand = None
+
+        for s in islice(g.gen_resamples(x),10):
+            res = slammer.afl_one(s)
+            if res > 0:
+                rule_cnt[idx] += 1
+#                print 'cnt:', rule_cnt
+        node.inrand = saved_state
+            
+def slam_det():
+    x = g.build_richsample(np.random.get_state())
+    nesting_nodes=[rr for rr in x.genwalk()]
+    l = len(nesting_nodes)
+    rule_cnt = [0 for y in xrange(0, l)]
+    slammer.afl_one(x.s)
+    for idx in xrange(0,l):
+        node = nesting_nodes[idx]
+        saved_state = node.inrand
+        node.inrand = None
+
+        for s in islice(g.gen_resamples(x),100):
+            res = slammer.afl_one(s)
+            if res > 0:
+                rule_cnt[idx] += 1
+                print 'cnt:', rule_cnt
+        node.inrand = saved_state
+            
+#use_resample()
+slam_sample()
+#slam_det()
