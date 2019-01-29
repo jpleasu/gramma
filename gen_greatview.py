@@ -20,19 +20,19 @@ class Greatview(Gramma):
 
     @gfunc
     def rand_val(x):
-        x.exp=np.random.choice([8,16,32])
-        x.lastval=np.random.randint(0,2**x.exp-1)
+        x.exp=x.random.choice([8,16,32])
+        x.lastval=x.random.randint(0,2**x.exp-1)
         return '%d' % x.lastval
 
     @gfunc
     def bigger_val(x):
-        v=np.random.randint(x.lastval+1,2**x.exp)
+        v=x.random.randint(x.lastval+1,2**x.exp)
         return '%d' % v
 
     @gfunc
     def old(x,namespace):
         namespace=namespace.as_str()
-        return np.random.choice(list(x.remembered.get(namespace)))
+        return x.random.choice(list(x.remembered.get(namespace)))
         
     @gfunc
     def new(x,namespace,child):
@@ -77,7 +77,7 @@ class Greatview(Gramma):
 def gensamples():
     g=Greatview('gv2.glf')
     
-    np.random.seed(1)
+    g.random.seed(1)
     for st,x in g.generate():
         if len(x)>0:
             print('----')
@@ -88,7 +88,7 @@ def resampletest():
     x=Greatview('gv2.glf')
     x.random.seed(3)
     while True:
-        r=x.build_richsample(np.random.get_state())
+        r=x.build_richsample(x.random.get_state())
         if len(r.s)>0:
             ss=x.generate(r).next()[1]
             if r.s!=ss:
@@ -102,7 +102,7 @@ def resampletest2():
     x=Greatview('gv2.glf')
     x.random.seed(4)
     while True:
-        rseed=np.random.get_state()
+        rseed=x.random.get_state()
         r=x.build_richsample(rseed)
         if len(r.s)>0:
             break

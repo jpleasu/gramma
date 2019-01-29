@@ -1,26 +1,105 @@
 #!/usr/bin/env python
-'''
+r'''
+    Overview
+    ========
 
-    A Gramma language file defines the syntax for a stochastic expression
-    system.  The Gramma class parses and evaluates expressions.  By adding
-    methods in a subclass, new functions can be added.
-
-    Gramma expressions represent random variables with string type.
+    A Gramma expression is a stochastic expression with string value.
     Expressions are built from literals, operators, and functions.
+
+    The Gramma Language
+    ===================
+
         - literals - same syntax as Pytnon strings
             'this is a string'
-            """so is this"""
-        - concatenation (.) - definite concatenation
-            a . b
+            """this is a (possibly 
+                multiline) string"""
         - alternation (|) - random choice from alternatives
-            a | b
-        - functions - as defined in Gramma child class
-            f(arg)
+            x | y
+        - concatenation (.) - definite concatenation
+            x . y
+        - repetition ({}) - randome repeats
+            x{3}
+                - generate x exactly 3 times
+            x{1,3}
+                - generate a number n uniformly in [1,3] then generate x n
+                  times
+            x{geom(3)}
+                - sample a number n from a geometric distribution with mean 3,
+                  then generate x n times
+            x{1,5,geom(3)}
+                - same as above, but reject n outside of the interval [1,5]
+        - function call (gfuncs) - as defined by Gramma extension
+            f(x)
 
-    Sampling a Gramma expression is done by _stochastic_ evaluation.  The
-    RichSampler will store the intermediate definite results of the evaluation.
-    A RichSample can be _relaxed_ at select nodes in order to produce a similar
-    random variable.
+            - by inheriting the Gramma class and adding decorated functions,
+              the syntax can be extended.  See below.
+            - functions can be stateful, meaning they rely on information
+              stored in the Gramma object.
+            - evaluation is left to right.
+            - functions aren't allowed to "look up" the execution stack, only
+              back.
+
+    gfuncs
+    ------
+    Functions in Gramma are implemented by @gfunc decorated methods of the
+    Gramma sampler object.  Without narrowing the influence of a gfunc, Gramma
+    assumes it might use any state, which restricts Gramma's ability to optmize
+    sampling from contrained expressions that use it.  For example, consider
+    the expression
+        f() . ("a" | "b") . f()
+    under the constraint
+        cat(child1="x", child2=alt(c=2,alt(c=2,"b")))
+    Because the first call to 'f' might have side effects that the second call
+    relies on, we can't replace it with a constant "x". If, on the other hand,
+    we knew that 'f' was stateless, we could compile the constraints expression
+    to
+        "xa".f()
+    PyDoc of the gfunc decorator gives details.
+
+
+
+
+    Constraints
+    ===========
+
+    For parameter estimation and resampling conditional distribtuions, Gramma
+    provides a mechanism to construct and apply _tree constraints_.
+
+    "Tree constraints" provide a restricted, but useful, filter for the
+    evaluation of a Gramma expression. For example, sampling from
+        ("a" | "b"){1,2}
+    results in "a", "b", "aa", "ab", "ba", "bb", with the diagraphs half as
+    likely as the single character strings.
+
+    The execution resulting in "ab" can be depicted with a tree as follows:
+
+        rep
+        / \
+      alt alt
+       |   |
+       a   b
+
+    Where the rep and each alt have made random choices.  We might be
+    intersested in the other results where some, but not all, of those random
+    decisions are made same way.
+
+    For example, we might want the root, rep, to always choose 2 and the second
+    alt to choose "b" -- the resulting constrained sampler would produce "ab"
+    and "bb" with equal probability.
+
+    Whatever the representation for constraints, we should be able to combine
+    them with conjuction (and disjunction?) to be efficient.  Tree regular
+    predicate language?
+
+    The _defining_ constaint on ("a"|"b"){1,2} that produced "ab" is
+        rep(n=2,child1=alt(c=1,child="a"), child2=alt(c=2,child="b"))
+    By omitting the constraint on child1 of the root rep, we get
+        rep(n=2,child2=alt(c=2,child="b"))
+    In this case, we can compile this constrained expression to
+        ("a"|"b")."b"
+
+
+
 
     TODO:
         - ReplacingSampler and the "replace" function.
@@ -35,31 +114,51 @@
 
                 f(x).x.X.x.g(x)
 
-        - document weird effects
-            - with functions:
-                @gfunc
-                def f(x):
-                    x.value=x.random.random_sample() >.5:
-                    return ''
-                @gfunc
-                def g(x,arg1,arg2):
-                    if x.value:
-                        return x.sample(arg1)
-                    else:
-                        return x.sample(arg2)
-            - and grammar
-                A := f();
-                B := g('1','2');
-                start := A . B;
-            - if we choose to resample A while leaving B "definite", what do we
-              expect to see?
-                - we should get an x.value as set randomly by f
-                - we will execute g because it's stateful, but where should its
-                  sample come from?  we should have to re-sample arg1 or arg2,
-                  whichever is chosen implicitly by f.. The replacing sampler
-                  will be wrong half the time.
+        - weird effects
+            - Gramma can't guarantee sample production when some stateful nodes
+              are resampled and others are definitized.
+                - with functions:
+                    @gfunc
+                    def f(x):
+                        x.value=x.random.random_sample() >.5:
+                        return ''
+                    @gfunc
+                    def g(x,arg1,arg2):
+                        if x.value:
+                            return x.sample(arg1)
+                        else:
+                            return x.sample(arg2)
+                - and grammar
+                    start := f() . g(A,B);
+                - if we choose to resample f() only
+                    - x.value is set randomly by f
+                    - g is executed because it's stateful, but what variable
+                      does it sample?  we should sample arg1 or arg2, whichever
+                      is chosen implicitly by f.. The replacing sampler will be
+                      wrong half the time.
+                    - what if we resample f() as well as A.  We can only
+                      sensibly do this if we have a sample for B already.
+                    - the idea of re-sampling doesn't make sense, since we
+                      never sampled one of the arguments at all in the first
+                      run.
+            - a more drastic example of the same
+                - with functions:
+                    @gfunc
+                    def f(x):
+                        x.value=x.random.randint(10)
+                        return ''
+                    @gfunc
+                    def g(x,arg):
+                        return ''.join(x.sample(arg) for i in xrange(x.value))
 
-        
+                - and grammar
+                    A := f();
+                    B := g('1');
+                    start := A . B;
+                - again, resample only A.  With the ReplacingSampler, B can run
+                  out of samples in an attempt to use the x.value set by g.
+
+                    
 
 
         abcde
@@ -73,16 +172,19 @@
 
 
 '''
+from __future__ import absolute_import, division, print_function
+from builtins import (bytes, str, open, super, range,
+                              zip, round, input, int, pow, object)
 
 import sys
 #sys.setrecursionlimit(20000)
 sys.setrecursionlimit(200000)
 
-import inspect
-
 import lark
 
 import numpy as np
+
+import inspect,ast
 
 from itertools import islice,groupby
 
@@ -95,7 +197,65 @@ _gfunc_defaults=dict(
 )
 def gfunc(*args,**kw):
     '''
-        a Gramma function decorator
+        Gramma function decorator.
+
+        To add functions to a Gramma extension language, annote methods of the
+        Gramma child class with @gfunc.
+
+        A gfunc
+            1) mustn't be static - so it's first argument will be the Gramma
+               instance it's designed for
+            2) mustn't access global variables
+            3) must store any state as fields of the Gramma instance
+            4) may accept additional GTree arguments
+            5) mustn't take keyword arguments
+            6) may sample from GTree arguments using the Gramma instance
+            7) may access entropy from the Gramma instance
+        
+        The field names of a Gramma instance used as state in gfunc coincide
+        with "state spaces".  This is important when sampling from a
+        constrained Gramma expression, in particular Gramma cannot break the
+        "intervals of consequence" for any state space.
+
+
+        Keywork arguments
+            statespaces = list/set
+                state space names which this gfunc depends on
+            fname = string
+                provides a name other than the method name to use in Gramma syntax
+
+        XXX Rule scoped state spaces
+            - state spaces that only exist within the context of a rule, e.g.
+                    r:= def() . use() . r . use() . use() | "term";
+                entering r, a "rule scoped" variable should be reset, and
+                pushed onto a stack.  it's then available for _that rule only_.
+
+                During optimization, we assume that deeper nodes are independent.
+
+
+        For example:
+
+            class MyGramma(Gramma):
+
+                # don't foreget to initialize any gfunc state
+                def reset(self):
+                    super().reset()
+                    self.f_state=False
+
+                @gfunc
+                def f(self,arg):
+                    # 'f_state' is the only state space used by the gfunc f
+                    self.f_state=not self.f_state
+                    if self.f_state:
+                        # f uses random
+                        return self.random.choice('a', 'b')
+                    else:
+                        # .. and f samples
+                        return self.sample(arg)
+
+            # now f(expr) is available in the extended grammar
+
+            
     '''
     kw=dict(_gfunc_defaults, **kw)
 
@@ -113,7 +273,7 @@ def gfunc(*args,**kw):
         if len(args)>=1:
             name=args[0]
         else:
-            name=kw.get('name')
+            name=kw.get('fname')
         return lambda f:_decorate(f,**kw)
     f=args[0]
     kw['fname']=f.func_name
@@ -446,10 +606,18 @@ class GRep(GInternal):
         else:
             dist='unif'
             f=lambda lo,hi:lambda x:x.random.randint(lo,hi+1)
-        lo=0 if len(args)==0 else args.pop(0).as_int()
-        hi=2**32 if len(args)==0 else args.pop(0).as_int()
+
+        if len(args)==0:
+            lo=0
+            hi=2**32
+        elif len(args)==1:
+            lo=hi=args.pop(0).as_int()
+        else:
+            lo=args.pop(0).as_int()
+            hi=args.pop(0).as_int()
 
         rgen=f(lo,hi)
+        #print('lo=%d hi=%d' % (lo,hi))
         return GRep([child],lo,hi,rgen,dist)
 
 class GRange(GTree):
@@ -787,6 +955,98 @@ class RichSampler(Sampler):
         r.compute_offsets()
         return r
 
+class GFuncAnalyzeVisitor(ast.NodeVisitor):
+    '''
+        A python AST node visitor for @gfunc decorated methods of a Gramma
+        child class.
+
+        This is used by Gramma.analyze_gfuncs, don't use directly.
+    '''
+    import __builtin__
+    allowed_globals=['struct','True','False','None'] + [x for x in dir(__builtin__) if x.islower()]
+
+    def __init__(self,extra_allowed_ids=None):
+        self.stack=[]
+        # id of the parser (first argument of gfunc)
+        self.parser_id=None
+        # other argument ids
+        self.allowed_ids=set(GFuncAnalyzeVisitor.allowed_globals)
+        if extra_allowed_ids!=None:
+            self.allowed_ids.update(extra_allowed_ids)
+        self.uses_random=False
+        self.calls_sample=False
+        self.statevars=set()
+
+    def is_parser_id(self,n):
+        if isinstance(n,ast.Name) and n.id==self.parser_id:
+            return True
+        return isinstance(n,ast.Attribute) and self.is_parser_id(n.value)
+
+    def visit_parser_id(self,x,attrs=None):
+        if isinstance(x,ast.Name):
+            nm=x.id
+            if attrs!=None:
+                nm+=attrs
+            raise ValueError('Direct parser access (%s) on line %d!!' % (nm, x.lineno))
+
+        elif isinstance(x,ast.Attribute):
+            while isinstance(x.value,ast.Attribute):
+                x=x.value
+            attr=x.attr
+            if attr=='random':
+                self.uses_random=True
+            elif attr=='sample':
+                self.calls_sample=True
+            else:
+                self.statevars.add(attr)
+            #print('%s.%s' % (x.value.id,x.attr))
+        else:
+            raise ValueError('parser_id not Attribute or Name? %s, %s' % (x,self.stack))
+
+    def visit(self,node):
+        self.stack.append(node)
+        ast.NodeVisitor.visit(self,node)
+        self.stack.pop()
+
+    def visit_AugAssign(self, ass):
+        self.visit(ass.value)
+        if self.is_parser_id(ass.target):
+            self.visit_parser_id(ass.target)
+
+    def visit_Assign(self, ass):
+        self.visit(ass.value)
+        for a in ass.targets:
+            if self.is_parser_id(a):
+                self.visit_parser_id(a)
+            else:
+                self.allowed_ids.add(a.id)
+
+    def visit_Attribute(self,a):
+        if self.is_parser_id(a):
+            self.visit_parser_id(a)
+        else:
+            self.generic_visit(a)
+
+    def visit_Name(self,n):
+        if n.id==self.parser_id:
+            self.visit_parser_id(n)
+        elif not n.id in self.allowed_ids:
+            raise ValueError('accessing unknown value %s on line %d' % (n.id, n.lineno))
+
+        # done
+    def visit_FunctionDef(self,f):
+        if len(self.stack)==1:
+            al=f.args.args
+            self.parser_id=al[0].id
+            # XXX prevent args with default values?
+            self.allowed_ids.update(a.id for a in al)
+
+            # recurse into body of f
+            for item in f.body:
+                self.visit(item)
+        # don't descend!
+
+
 
 class Gramma:
     '''
@@ -803,6 +1063,7 @@ class Gramma:
         The methods of Gramma (and subclasses) are invoked recursively by
         sample with parse tree children and expect a string result.
     '''
+
     parser = lark.Lark(gramma_grammar, parser='earley', lexer='standard')
 
     def __init__(self, gramma_text):
@@ -900,6 +1161,27 @@ class Gramma:
         return res
 
 
+    @staticmethod
+    def analyze_gfuncs(GrammaChildClass,extra_allowed_ids=None):
+        '''
+            Enumerate @gfunc decorated methods of GrammaChildClass in order to
+            infer state spaces.
+
+            methods tagged with "auto=False" will be skipped.. you're on your own.
+
+        '''
+        s=inspect.getsource(GrammaChildClass)
+        classdef=ast.parse(s).body[0]
+        def isgfuncdec(y):
+            if isinstance(y,ast.Name) and y.id=='gfunc':
+                return True
+            return isinstance(y,ast.Call) and y.func.id=='gfunc'
+    
+        gfuncs=[x for x in classdef.body if isinstance(x,ast.FunctionDef) and any(isgfuncdec(y) for y in x.decorator_list)]
+        for g in gfuncs:
+            analyzer=GFuncAnalyzeVisitor(extra_allowed_ids)
+            analyzer.visit(g)
+            print('gfunc %s %s%s statvars={%s}' %(g.name, 'uses_random ' if analyzer.uses_random else '', 'calls_sample ' if analyzer.calls_sample else '', ','.join(sorted(analyzer.statevars))))
 
 
 class Example(Gramma):
@@ -950,8 +1232,18 @@ def test_parser():
 
     print(t)
 
+
 if __name__ == '__main__':
     #test_parser()
-    test_example()
+    #test_example()
+    import gen_greatview
+    #Gramma.analyze_gfuncs(Gramma)
+    Gramma.analyze_gfuncs(gen_greatview.Greatview)
+
+    #print(Gramma('start:=("a"|"b"){1,100,geom(8)};').generate().next()[1])
+
+
 
 # vim: ts=4 sw=4
+
+
