@@ -121,10 +121,9 @@ r'''
 
     TODO:
         - GExpr as data
-            - move do_sample methods into a base Sampler
-                - this way, the sampler can manage how it's called recursively..
-            - what about gfuncs?
+            - sampler can modify recursion in house.
             - (bi)simulation is done by the sampler
+            - what about gfuncs?
 
         - fix the multiple random object situation in the sampler.. e.g. is
           there every a need to 'externally' manage entropy?
@@ -202,7 +201,7 @@ def gfunc(*args,**kw):
             4) may accept additional GExpr arguments
             5) mustn't take keyword arguments
             6) may sample from GExpr arguments using the GrammaSampler instance
-            7) may access entropy from the Sampler instance
+            7) may access entropy from the GrammaSampler instance
         
         The fields of the GrammaSampler object used by a gfunc reprsent its
         "state space".  By tracking non-overlapping state spaces, Gramma can
@@ -362,9 +361,6 @@ class GTok(GExpr):
     def as_str(self):
         return eval(self.value)
 
-    def do_sample(self,x):
-        return self.as_str()
-
     def as_num(self):
         if self.type==u'INT':
             return int(self.value)
@@ -434,9 +430,6 @@ class GAlt(GInternal):
         weights=np.array([float(w)/t for w in weights])
         self.weights=weights
  
-    def do_sample(self,x):
-        return x.sample(x.random.choice(self.children,p=self.weights))
-
     def __str__(self,children=None):
         #s='|'.join(str(cge) for cge in children or self.children)
         s='|'.join('%s %s' % (w,c) for w,c in zip(self.weights, self.children))
@@ -498,9 +491,6 @@ class GAlt(GInternal):
 class GCat(GInternal):
     tag='cat'
 
-    def do_sample(self,x):
-        return ''.join(x.sample(cge) for cge in self.children)
-
     def __str__(self,children=None):
         s='.'.join(str(cge) for cge in children or self.children)
         if self.parent!=None and isinstance(self.parent, GRep):
@@ -542,9 +532,6 @@ class GRep(GInternal):
     @property
     def child(self):
         return self.children[0]
-
-    def do_sample(self,x):
-        return ''.join(x.sample(self.child) for _ in xrange(self.rgen(x)))
 
     def is_stateful(self,x,assume_no=None):
         return self.child.is_stateful(x,assume_no)
@@ -622,9 +609,6 @@ class GRange(GExpr):
     def is_stateful(self,x,assume_no=None):
         return False
 
-    def do_sample(self,x):
-        return chr(x.random.randint(self.lo,self.hi+1))
-
     def __str__(self,children=None):
         return "['%s' .. '%s']" % (chr(self.lo), chr(self.hi))
 
@@ -652,9 +636,6 @@ class GFunc(GInternal):
     def fargs(self):
         return self.children
 
-    def do_sample(self,x):
-        return x.funcdefs[self.fname](x,*self.fargs)
-    
     def __str__(self,children=None):
         return '%s(%s)' % (self.fname, ','.join(str(a) for a in children or self.fargs))
 
@@ -695,9 +676,6 @@ class GRule(GExpr):
     def copy(self):
         return GRule(self.rname)
 
-    def do_sample(self,x):
-        return x.sample(x.ruledefs[self.rname])
-
     def isrule(self,rname):
         return self.rname==rname
 
@@ -719,8 +697,10 @@ class GRule(GExpr):
 for cls in GAlt, GCat, GRep, GFunc,   GRange, GRule:
     GExpr.tag2cls[cls.tag]=cls
 
+class GrammaSamplerException(Exception):
+    pass
 
-class Sampler(object):
+class GrammaSampler(object):
     __slots__='base',
     def __init__(self,base):
         object.__setattr__(self,'base',base)
@@ -731,10 +711,23 @@ class Sampler(object):
     def __setattr__(self,a,v):
         setattr(self.base,a,v)
 
-    def sample(self,ge):
-        return ge.do_sample(self)
+    def sample(x,ge):
+        if isinstance(ge,GTok):
+            return ge.as_str()
+        elif isinstance(ge, GAlt):
+            return x.sample(x.random.choice(ge.children,p=ge.weights))
+        elif isinstance(ge, GCat):
+            return ''.join(x.sample(cge) for cge in ge.children)
+        elif isinstance(ge, GRep):
+            return ''.join(x.sample(ge.child) for _ in xrange(ge.rgen(x)))
+        elif isinstance(ge, GRange):
+            return chr(x.random.randint(ge.lo,ge.hi+1))
+        elif isinstance(ge, GFunc):
+            return x.funcdefs[ge.fname](x,*ge.fargs)
+        elif isinstance(ge, GRule):
+            return x.sample(x.ruledefs[ge.rname])
 
-
+        raise GrammaSamplerException('unrecognized expression: %s' % ge)
 
 
 class GFuncAnalyzeVisitor(ast.NodeVisitor):
@@ -938,7 +931,7 @@ class GrammaGrammar(object):
         '''
             yield random_state, string
         '''
-        x=Sampler(self)
+        x=GrammaSampler(self)
         if startrule==None:
             startrule=x.ruledefs['start']
         while True:

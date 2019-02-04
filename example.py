@@ -1,6 +1,7 @@
 #!/usr/bin/env python
 
 from gramma2 import *
+from builtins import super
 
 class Example(GrammaGrammar):
     G=r'''
@@ -48,13 +49,13 @@ def test_parse():
 
 def test_constraining():
 
-    class LeftAlt(Sampler):
+    class LeftAlt(GrammaSampler):
         '''
             a sampler that forces every Alt to take the left option up to
             maximum expression depth
         '''
         def __init__(self,base,maxdepth=5):
-            Sampler.__init__(self,base)
+            GrammaSampler.__init__(self,base)
             _=type('_',(),{})
             object.__setattr__(self,'_',_)
             _.maxdepth=maxdepth
@@ -62,31 +63,33 @@ def test_constraining():
 
         def sample(self,ge):
             _=self._
+            _.d+=1
             try:
-                _.d+=1
                 if isinstance(ge,GAlt):
                     if _.d<=_.maxdepth:
-                        return ge.children[0].do_sample(self)
-                return ge.do_sample(self)
+                        return super().sample(ge.children[0])
+                return super().sample(ge)
             finally:
                 _.d-=1
 
-    class C(Sampler):
+    class C(GrammaSampler):
         __slots__='stack',
         def __init__(self,base):
-            Sampler.__init__(self,base)
+            GrammaSampler.__init__(self,base)
             object.__setattr__(self,'stack',[])
 
         def sample(self,ge):
             self.stack.append(ge)
             print(ge)
-            s=ge.do_sample(self)
+            s=super().sample(ge)
             self.stack.pop()
             return s
 
     g=Example()
+    #sampler=GrammaSampler(g)
+    sampler=LeftAlt(g,50)
     #sampler=C(g)
-    sampler=LeftAlt(g,10)
+
     for i in range(10):
         #print(sampler.sample(g.parse('start')))
         print(sampler.sample(g.ruledefs['start']))
