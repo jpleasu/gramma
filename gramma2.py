@@ -121,9 +121,12 @@ r'''
 
     TODO:
         - GExpr as data
-            - sampler can modify recursion in house.
             - (bi)simulation is done by the sampler
-            - what about gfuncs?
+            - sampler can modify recursion in house.
+            - recursive sample calls from gfunc can't be prescribed.. external
+              entropy and/or state control?
+              - if state spaces can be deep-copied, we can manufacture
+                dependencies w/out re-execution.
 
         - fix the multiple random object situation in the sampler.. e.g. is
           there every a need to 'externally' manage entropy?
@@ -132,18 +135,18 @@ r'''
             - must define stack_reset to initialize top of every stack.
             - to use it, e.g.
                 @gfunc
-                def f(self):
-                    self.stacked.beef=7
+                def f(x):
+                    x.state.stacked.beef=7
             - actually.. it makes more sense to have a gfunc that controls the
               stack, e.g. in glf
                 r := scoped(def() . "blah". (r . "blah" . use()){2,10} );
             with 
                 @gfunc
                 def scoped(x):
-                    x.stack.push
-                    x.stack_reset
+                    x.state.stack.push
+                    x.state.stack_reset
                     x.sample(child)
-                    x.stack.pop
+                    x.state.stack.pop
 
 '''
 from __future__ import absolute_import, division, print_function
@@ -168,6 +171,11 @@ from collections import namedtuple
 
 from functools import wraps
 
+try:
+    import astpretty
+except ImportError:
+    pass
+
 
 class GFuncWrap(object):
     __slots__='f','statevars','fname','uses_random','calls_sample','noauto'
@@ -186,6 +194,14 @@ class GFuncWrap(object):
     def __str__(self):
         return 'gfunc %s statevars=%s' %(self.fname, self.statevars)
 
+class GFuncInterface(namedtuple('GFuncInterface','sample random state')):
+    '''
+        constructed by GrammaSampler and passed to GFunc as first argument.
+    '''
+
+    def __new__(cls,sampler):
+        return super(GFuncInterface,cls).__new__(cls,sampler.sample,sampler.random,sampler.state)
+
 def gfunc(*args,**kw):
     '''
         GrammaGrammar function decorator.
@@ -194,14 +210,24 @@ def gfunc(*args,**kw):
         @gfunc.
 
         A gfunc
-            1) must have prototype
-                f(grammar_obj, sampler_obj, args*)
-            2) mustn't access global variables
-            3) may store state as fields of the GrammaSampler instance
-            4) may accept additional GExpr arguments
-            5) mustn't take keyword arguments
-            6) may sample from GExpr arguments using the GrammaSampler instance
-            7) may access entropy from the GrammaSampler instance
+            *) has prototype
+                    f(x,args*)
+                where
+                    x is the gfunc interface:
+                        x.state - a GrammaState object for managing all state
+                        x.sample - the GrammaSampler sample method
+                        x.random - an alias for x.sampler.random
+
+                    args are the arguments of f as GExpr elements.  In
+                    particular, "constants" are are type GTok and must be
+                    converted, and generate GEXpr objects can be sampled from.
+
+            *) mustn't access global variables
+            *) may store state as fields of the GrammaState instance, state
+            *) mustn't take additional keyword arguments, only "grammar",
+                "sampler", and "state" are allowed.
+            *) may sample from GExpr arguments using the GrammaSampler instance, sampler
+            *) may access entropy from the GrammaSampler instance, sampler
         
         The fields of the GrammaSampler object used by a gfunc reprsent its
         "state space".  By tracking non-overlapping state spaces, Gramma can
@@ -367,7 +393,7 @@ class GTok(GExpr):
         elif self.type==u'FLOAT':
             return float(self.value)
         else:
-            raise ValueError, 'not a num: %s' % self
+            raise GrammaParseError, 'not a num: %s' % self
 
     @staticmethod
     def from_ltok(lt):
@@ -568,7 +594,7 @@ class GRep(GInternal):
             elif fname=='choose':
                 g=lambda x:x.random.choice(fargs)
             else:
-                raise ValueError, 'no dist %s' % (fname)
+                raise GrammaParseError, 'no dist %s' % (fname)
 
             f=lambda lo,hi:lambda x:min(hi,max(lo,g(x)))
             args.pop()
@@ -700,35 +726,52 @@ for cls in GAlt, GCat, GRep, GFunc,   GRange, GRule:
 class GrammaSamplerException(Exception):
     pass
 
+class GrammaState(object):
+    pass
+
 class GrammaSampler(object):
-    __slots__='base',
-    def __init__(self,base):
-        object.__setattr__(self,'base',base)
+    '''
+        samplers execute GExprs, providing state and random.
 
-    def __getattr__(self,a):
-        return getattr(self.base,a)
+        the grammar will provide gfuncs and reset_state function.
+        
+    '''
+    __slots__='grammar','state','random'
+    def __init__(self,grammar):
+        self.grammar=grammar
+        self.random=np.random.RandomState()
+        self.state=GrammaState()
 
-    def __setattr__(self,a,v):
-        setattr(self.base,a,v)
+    def reset(self):
+        self.grammar.reset_state(self.state)
 
-    def sample(x,ge):
+    def sample(self,ge):
         if isinstance(ge,GTok):
             return ge.as_str()
         elif isinstance(ge, GAlt):
-            return x.sample(x.random.choice(ge.children,p=ge.weights))
+            return self.sample(self.random.choice(ge.children,p=ge.weights))
         elif isinstance(ge, GCat):
-            return ''.join(x.sample(cge) for cge in ge.children)
+            return ''.join(self.sample(cge) for cge in ge.children)
         elif isinstance(ge, GRep):
-            return ''.join(x.sample(ge.child) for _ in xrange(ge.rgen(x)))
+            return ''.join(self.sample(ge.child) for _ in xrange(ge.rgen(self)))
         elif isinstance(ge, GRange):
-            return chr(x.random.randint(ge.lo,ge.hi+1))
+            return chr(self.random.randint(ge.lo,ge.hi+1))
         elif isinstance(ge, GFunc):
-            return x.funcdefs[ge.fname](x,*ge.fargs)
+            return self.grammar.funcdefs[ge.fname](GFuncInterface(self),*ge.fargs)
         elif isinstance(ge, GRule):
-            return x.sample(x.ruledefs[ge.rname])
+            return self.sample(self.grammar.ruledefs[ge.rname])
 
         raise GrammaSamplerException('unrecognized expression: %s' % ge)
 
+
+class GrammaGrammarException(Exception):
+    pass
+
+def ast_attr_path(x):
+    p=[x]
+    while isinstance(p[0].value,ast.Attribute):
+        p.insert(0,p[0].value)
+    return p
 
 class GFuncAnalyzeVisitor(ast.NodeVisitor):
     '''
@@ -741,11 +784,9 @@ class GFuncAnalyzeVisitor(ast.NodeVisitor):
     import __builtin__
     allowed_globals=['struct','True','False','None'] + [x for x in dir(__builtin__) if x.islower()]
 
-    def __init__(self,target_class, allowed_ids=None):
+    def __init__(self,target_class,f,allowed_ids=None):
         self.target_class=target_class
-        self.stack=[]
-        # id of the parser (first argument of gfunc)
-        self.parser_id=None
+        # id of the GFuncInterface (first argument of gfunc)
         # other argument ids
         self.allowed_ids=set(GFuncAnalyzeVisitor.allowed_globals)
         if allowed_ids!=None:
@@ -754,80 +795,117 @@ class GFuncAnalyzeVisitor(ast.NodeVisitor):
         self.calls_sample=False
         self.statevars=set()
 
-    def is_parser_id(self,n):
-        if isinstance(n,ast.Name) and n.id==self.parser_id:
-            return True
-        return isinstance(n,ast.Attribute) and self.is_parser_id(n.value)
+        self.f=f
+        al=f.args.args
+        self.iface_id=al[0].id
+        # XXX prevent args with default values?
+        self.allowed_ids.update(a.id for a in al)
 
-    def visit_parser_id(self,x,attrs=None):
+    def run(self):
+        for item in self.f.body:
+            self.visit(item)
+
+    def is_iface_id(self,n):
+        if isinstance(n,ast.Name) and n.id==self.iface_id:
+            return True
+        return isinstance(n,ast.Attribute) and self.is_iface_id(n.value)
+
+    def visit_iface_id(self,x,attrs=None):
         if isinstance(x,ast.Name):
             nm=x.id
             if attrs!=None:
                 nm+=attrs
-            raise ValueError('Direct parser access (%s) on line %d!!' % (nm, x.lineno))
+            raise GrammaGrammarException('Forbidden access (%s) on line %d!!' % (nm, x.lineno))
 
         elif isinstance(x,ast.Attribute):
-            while isinstance(x.value,ast.Attribute):
-                x=x.value
-            attr=x.attr
+            p=ast_attr_path(x)
+            attr=p[0].attr
             if attr=='random':
                 self.uses_random=True
             elif attr=='sample':
                 self.calls_sample=True
+            elif attr=='state':
+                self.statevars.add(p[1].attr)
             else:
-                self.statevars.add(attr)
-        else:
-            raise ValueError('parser_id not Attribute or Name? %s, %s' % (x,self.stack))
+                raise GrammaGrammarException('''forbidden use of %s.%s in gfunc %s of class %s on line %d''' % (self.iface_id,attr, self.f.name, self.target_class, x.lineno))
 
-    def visit(self,node):
-        self.stack.append(node)
-        ast.NodeVisitor.visit(self,node)
-        self.stack.pop()
+        else:
+            raise GrammaGrammarException('iface_id not Attribute or Name? %s' % (x))
 
     def visit_AugAssign(self, ass):
         self.visit(ass.value)
-        if self.is_parser_id(ass.target):
-            self.visit_parser_id(ass.target)
+        if self.is_iface_id(ass.target):
+            self.visit_iface_id(ass.target)
 
     def visit_Assign(self, ass):
         self.visit(ass.value)
         for a in ass.targets:
-            if self.is_parser_id(a):
-                self.visit_parser_id(a)
+            if self.is_iface_id(a):
+                self.visit_iface_id(a)
             else:
                 self.allowed_ids.add(a.id)
 
     def visit_Attribute(self,a):
-        if self.is_parser_id(a):
-            self.visit_parser_id(a)
+        if self.is_iface_id(a):
+            self.visit_iface_id(a)
         else:
             self.generic_visit(a)
 
     def visit_Name(self,n):
-        if n.id==self.parser_id:
-            self.visit_parser_id(n)
+        if n.id==self.iface_id:
+            self.visit_iface_id(n)
         elif not n.id in self.allowed_ids:
-            raise ValueError('''forbidden use of variable '%s' on line %d of
-                    %s! to explicitly allow append to GrammaGrammar class
-                    variable list, ALLOWED_IDS. To prevent analysis of this
-                    function, add @gfunc(noauto=True) ''' % (n.id, n.lineno,
-                    self.target_class))
+            raise GrammaGrammarException('''forbidden use of variable '%s' in %s on line %d
+            of %s! to explicitly allow append to GrammaGrammar class variable
+            list, ALLOWED_IDS. To prevent analysis of this function, add
+            @gfunc(noauto=True) ''' % (n.id, self.f.name, n.lineno, self.target_class))
 
         # done
     def visit_FunctionDef(self,f):
-        if len(self.stack)==1:
-            al=f.args.args
-            self.parser_id=al[0].id
-            # XXX prevent args with default values?
-            self.allowed_ids.update(a.id for a in al)
-
-            # recurse into body of f
-            for item in f.body:
-                self.visit(item)
         # don't descend!
+        pass
 
+class GFuncAnalyzeVisitor2(ast.NodeVisitor):
+    '''
+        A python AST node visitor for the reset_state method of a GrammaGrammar
+        child class.
 
+        This is used by analyze_gfuncs to checkthat all state spaces are
+        initialized in reset_state.
+    '''
+    def __init__(self,target_class,statespace_usedby,f):
+        self.target_class=target_class
+        self.statespace_usedby=statespace_usedby
+        self.f=f
+        al=f.args.args
+        self.state_id=al[1].id
+        self.assigned_statespaces=set()
 
+    def run(self):
+        for item in self.f.body:
+            self.visit(item)
+        for uid,fs in self.statespace_usedby.iteritems():
+            if not uid in self.assigned_statespaces:
+                if len(fs)==1:
+                    fss="gfunc '%s'" % next(iter(fs))
+                else:
+                    fss="gfuncs {%s}" % (','.join("'%s'" % fn for fn in fs))
+                raise GrammaGrammarException('''statespace '%s' is used by %s in class %s but not set in reset_state!''' %(uid,fss,self.target_class))
+
+    def visit_Assign(self, ass):
+        for a in ass.targets:
+            self.visit_state_var(a)
+        self.visit(ass.value)
+
+    def visit_state_var(self,n):
+        'if n is a state variable reference, add it to the visited set'
+        p=ast_attr_path(n)
+        n=p[0]
+        if isinstance(n,ast.Attribute) and n.value.id==self.state_id:
+            self.assigned_statespaces.add(n.attr)
+
+    def visit_FunctionDef(self,f):
+        pass
 
 def analyze_gfuncs(GrammaChildClass,allowed_ids=None):
     '''
@@ -845,25 +923,46 @@ def analyze_gfuncs(GrammaChildClass,allowed_ids=None):
         return isinstance(y,ast.Call) and y.func.id=='gfunc'
 
     gfuncs=[x for x in classdef.body if isinstance(x,ast.FunctionDef) and any(isgfuncdec(y) for y in x.decorator_list)]
+    statespace_usedby={}
     for gast in gfuncs:
         g=getattr(GrammaChildClass,gast.name)
         if g.noauto:
             continue
-        analyzer=GFuncAnalyzeVisitor(GrammaChildClass,allowed_ids)
-        analyzer.visit(gast)
+
+        #astpretty.pprint(gast)
+
+        analyzer=GFuncAnalyzeVisitor(GrammaChildClass,gast,allowed_ids)
+        analyzer.run()
+
         g.statevars.update(analyzer.statevars)
         g.uses_random=analyzer.uses_random
         g.calls_sample=analyzer.calls_sample
+
+        for ss in g.statevars:
+            statespace_usedby.setdefault(ss,set()).add(gast.name)
+
         #print(g)
 
-class GrammaType(type):
+    #print(statespace_usedby)
+    reset_state_ast=([x for x in classdef.body if isinstance(x,ast.FunctionDef) and x.name=='reset_state']+[None])[0]
+    if len(statespace_usedby.keys())>0 and reset_state_ast==None:
+        # XXX enumerate which gfunc uses which statespace
+        raise GrammaGrammarException('%s has no reset_state method, but uses statespaces %s' % (GrammaChildClass, statespace_usedby.keys()))
+    analyzer=GFuncAnalyzeVisitor2(GrammaChildClass,statespace_usedby,reset_state_ast)
+    analyzer.run()
+
+    
+
+class GrammaGrammarType(type):
     '''
-        metaclass that analyzes gfuncs for GrammaGrammar child classes.
+        metaclass that analyzes gfuncs of GrammaGrammar classes
     '''
     #def __new__(metaname, classname, baseclasses, attrs):
     #    return type.__new__(metaname, classname, baseclasses, attrs)
+
     def __init__(classobject, classname, baseclasses, attrs):
         analyze_gfuncs(classobject, getattr(classobject, 'ALLOWED_IDS', []))
+        #print('done with analysis of %s' % classname)
 
 class GrammaGrammar(object):
     '''
@@ -873,7 +972,7 @@ class GrammaGrammar(object):
 
         for s in x.generate(): print(s)
     '''
-    __metaclass__=GrammaType
+    __metaclass__=GrammaGrammarType
 
 
     # a child class variable that opens access to ids from gfuncs
@@ -885,9 +984,6 @@ class GrammaGrammar(object):
         self.ruledefs={}
         self.funcdefs={}
 
-        # replace with a random source that records?
-        self.random=np.random.RandomState()
-
         for n,f in inspect.getmembers(self,predicate=lambda x:isinstance(x,GFuncWrap)):
             self.funcdefs[f.fname]=f
 
@@ -897,11 +993,11 @@ class GrammaGrammar(object):
             rvalue=GExpr.parse_larktree(ruledef.children[1])
             self.ruledefs[rname]=rvalue
 
-    def reset(self):
-        self.d=0
+    def reset_state(self,state):
+        state.d=0
 
     @gfunc
-    def rlim(self,c,n,o):
+    def rlim(x,c,n,o):
         '''
             recursion limit - if recursively invoked to a depth < n times,
                 sample c, else sample o
@@ -913,10 +1009,10 @@ class GrammaGrammar(object):
                 produces "aaa" 
             
         '''
-        self.d+=1
+        x.state.d+=1
         n=n.as_int()
-        res=self.sample(c if self.d<=n else o)
-        self.d-=1
+        res=x.sample(c if x.state.d<=n else o)
+        x.state.d-=1
         return res
 
     def parse(self,gramma_expr_str):
@@ -927,17 +1023,17 @@ class GrammaGrammar(object):
         lt=self.parser.parse('_:=%s;' % gramma_expr_str)
         return GExpr.parse_larktree(lt.children[0].children[1])
 
-    def generate(self,startrule=None):
+    def generate(self,SamplerClass=GrammaSampler,samplerargs=(),startexpr=None):
         '''
             yield random_state, string
         '''
-        x=GrammaSampler(self)
-        if startrule==None:
-            startrule=x.ruledefs['start']
+        sampler=SamplerClass(self,*samplerargs)
+        if startexpr==None:
+            startexpr=self.ruledefs['start']
         while True:
-            st=x.random.get_state()
-            x.reset()
-            yield st, x.sample(startrule) 
+            rst=x.random.get_state()
+            self.reset_state(sampler.state)
+            yield rst, sampler.sample(startexpr) 
 
 
 # vim: ts=4 sw=4

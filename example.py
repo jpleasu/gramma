@@ -11,7 +11,7 @@ class Example(GrammaGrammar):
 
         digit := ['0' .. '9'];
 
-        words := ( .25 "stink" | .75 "stank" )." ".f();
+        words := ( .25 "stink" | .75 "stank" ).(" f=".f()." ff=".ff()){1,4};
     '''
 
     ALLOWED_IDS=['g_allowed']
@@ -19,21 +19,38 @@ class Example(GrammaGrammar):
     def __init__(x):
         GrammaGrammar.__init__(x,type(x).G)
 
+    def reset_state(self,state):
+        state.a=0
+        state.x=type('_',(),{})
+        state.x.y=7
+        state.extrastate={}
+
     @gfunc
-    def f(self):
-        return self.random.choice(['woof','meow'])
+    def f(x):
+        return x.random.choice(['woof','meow'])
+
+    @gfunc
+    def ff(x):
+        x.state.a^=1
+        return ['bleep','bloop'][x.state.a]
+
 
     @gfunc()
-    def g(self):
+    def g(x):
         return 'g_return' + g_allowed
 
     @gfunc(noauto=True)
-    def gg(self):
+    def gg(x):
         return 'gg_return' + g_not_allowed
 
     @gfunc(statevars=['extrastate'])
-    def h(self):
+    def h(x):
         return 'h_return'
+
+    @gfunc
+    def hh(x):
+        x.state.extrastate=7
+        return ''
 
 
 def test_samples():
@@ -54,23 +71,20 @@ def test_constraining():
             a sampler that forces every Alt to take the left option up to
             maximum expression depth
         '''
-        def __init__(self,base,maxdepth=5):
-            GrammaSampler.__init__(self,base)
-            _=type('_',(),{})
-            object.__setattr__(self,'_',_)
-            _.maxdepth=maxdepth
-            _.d=0
+        def __init__(self,grammar,maxdepth=5):
+            GrammaSampler.__init__(self,grammar)
+            self.maxdepth=maxdepth
+            self.d=0
 
         def sample(self,ge):
-            _=self._
-            _.d+=1
+            self.d+=1
             try:
                 if isinstance(ge,GAlt):
-                    if _.d<=_.maxdepth:
+                    if self.d<=self.maxdepth:
                         return super().sample(ge.children[0])
                 return super().sample(ge)
             finally:
-                _.d-=1
+                self.d-=1
 
     class C(GrammaSampler):
         __slots__='stack',
@@ -92,6 +106,7 @@ def test_constraining():
 
     for i in range(10):
         #print(sampler.sample(g.parse('start')))
+        sampler.reset()
         print(sampler.sample(g.ruledefs['start']))
 
 if __name__=='__main__':
