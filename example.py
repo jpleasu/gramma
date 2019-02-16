@@ -31,7 +31,7 @@ class Example(GrammaGrammar):
 
     @gfunc
     def ff(x):
-        x.state.a^=1
+        x.state.a ^= 1
         return ['bleep','bloop'][x.state.a]
 
 
@@ -86,33 +86,66 @@ def test_constraining():
             finally:
                 self.d-=1
 
-    class C(GrammaSampler):
-        __slots__='stack',
-        def __init__(self,base):
-            GrammaSampler.__init__(self,base)
-            object.__setattr__(self,'stack',[])
-
-        def sample(self,ge):
-            self.stack.append(ge)
-            print(ge)
-            s=super().sample(ge)
-            self.stack.pop()
-            return s
-
     g=Example()
     #sampler=GrammaSampler(g)
     sampler=LeftAlt(g,50)
-    #sampler=C(g)
+
+
+
 
     for i in range(10):
         #print(sampler.sample(g.parse('start')))
         sampler.reset()
         print(sampler.sample(g.ruledefs['start']))
 
+def atleast(n,it):
+    c=0
+    for _ in it:
+        c+=1
+        if c>=n:
+            return True
+    return False
+def itlen(it):
+    c=0
+    for _ in it:
+        c+=1
+    return c
+
+def test_constraint_building():
+    from collections import Counter
+    class DepthBiasSampler(StackingSampler):
+        def sample(self,ge):
+            if isinstance(ge,GAlt):
+                c=Counter(a.children.index(self.stack[i+1]) for i,a in enumerate(self.stack[:-1]) if a==ge)
+                if sum(c.values()) > 5:
+                    # ensure every alternative is counted
+                    for i in range(len(ge.children)):
+                        c.setdefault(i,0)
+                    i=min(c.items(),key=lambda t:t[1])[0]
+                    return super().sample(ge.children[i])
+            s=super().sample(ge)
+            return s
+
+
+    g=Example()
+    #sampler=GrammaSampler(g)
+    #sampler=LeftAlt(g,50)
+    sampler=DepthBiasSampler(g)
+
+    sampler.random.seed(1)
+
+    sampler.reset()
+    s0=sampler.sample(g.ruledefs['start'])
+    rs0=sampler.random_state0
+    print(s0)
+
+
+
 if __name__=='__main__':
     #test_samples()
     #test_parse()
-    test_constraining()
+    #test_constraining()
+    test_constraint_building()
 
 
 # vim: ts=4 sw=4

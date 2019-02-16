@@ -150,12 +150,24 @@ r'''
 
 '''
 from __future__ import absolute_import, division, print_function
-#from builtins import (bytes, str, open, super, range,zip, round, input, int, pow, object)
-
-# builtins' object fucks up slots
-from builtins import (bytes, str, open, super, range,zip, round, input, int, pow)
 
 import sys
+
+
+if sys.version_info < (3,0):
+    #from builtins import (bytes, str, open, super, range,zip, round, input, int, pow, object)
+    
+    # builtins' object fucks up slots
+    from builtins import (bytes, str, open, super, range,zip, round, input, int, pow)
+    import __builtin__
+    def func_name(f):
+        return f.func_name
+else:
+    import builtins as __builtin__
+    def func_name(f):
+        return f.__name__
+    xrange=range
+
 #sys.setrecursionlimit(20000)
 sys.setrecursionlimit(200000)
 
@@ -245,7 +257,7 @@ def gfunc(*args,**kw):
             
     '''
     def _decorate(f,**kw):
-        return GFuncWrap(f,fname=f.func_name,**kw)
+        return GFuncWrap(f,fname=func_name(f),**kw)
 
     if len(args)==0 or not callable(args[0]):
         return lambda f:_decorate(f,*args,**kw)
@@ -357,7 +369,7 @@ class GExpr(object):
 
         cls=GExpr.tag2cls.get(lt.data)
         if cls==None:
-            raise GParseError, '''unrecognized Lark node %s during parse of glf''' % lt
+            raise GParseError('''unrecognized Lark node %s during parse of glf''' % lt)
         return cls.parse_larktree(lt)
  
 
@@ -393,7 +405,7 @@ class GTok(GExpr):
         elif self.type==u'FLOAT':
             return float(self.value)
         else:
-            raise GrammaParseError, 'not a num: %s' % self
+            raise GrammaParseError('not a num: %s' % self)
 
     @staticmethod
     def from_ltok(lt):
@@ -594,7 +606,7 @@ class GRep(GInternal):
             elif fname=='choose':
                 g=lambda x:x.random.choice(fargs)
             else:
-                raise GrammaParseError, 'no dist %s' % (fname)
+                raise GrammaParseError('no dist %s' % (fname))
 
             f=lambda lo,hi:lambda x:min(hi,max(lo,g(x)))
             args.pop()
@@ -736,13 +748,18 @@ class GrammaSampler(object):
         the grammar will provide gfuncs and reset_state function.
         
     '''
-    __slots__='grammar','state','random'
+    __slots__='grammar','state','random','random_state0'
     def __init__(self,grammar):
         self.grammar=grammar
         self.random=np.random.RandomState()
         self.state=GrammaState()
+        self.random_state0=None
 
     def reset(self):
+        '''
+            called before sampling from the top of an expression
+        '''
+        self.random_state0=self.random.get_state()
         self.grammar.reset_state(self.state)
 
     def sample(self,ge):
@@ -764,6 +781,20 @@ class GrammaSampler(object):
         raise GrammaSamplerException('unrecognized expression: %s' % ge)
 
 
+class StackingSampler(GrammaSampler):
+    __slots__='stack',
+    def __init__(self,grammar):
+        GrammaSampler.__init__(self,grammar)
+        self.stack=[]
+
+    def sample(self,ge):
+        self.stack.append(ge)
+        s=super().sample(ge)
+        self.stack.pop()
+        return s
+
+
+
 class GrammaGrammarException(Exception):
     pass
 
@@ -781,7 +812,6 @@ class GFuncAnalyzeVisitor(ast.NodeVisitor):
         This is used by analyze_gfuncs to populate GFuncWrap objects with state
         spaces, don't use directly.
     '''
-    import __builtin__
     allowed_globals=['struct','True','False','None'] + [x for x in dir(__builtin__) if x.islower()]
 
     def __init__(self,target_class,f,allowed_ids=None):
@@ -872,6 +902,11 @@ class GFuncAnalyzeVisitor2(ast.NodeVisitor):
 
         This is used by analyze_gfuncs to checkthat all state spaces are
         initialized in reset_state.
+
+
+        XXX: There isn't a way for a user to promise that some state space has
+        been initialized without assinging it in the reset_state function.  More decorators?
+
     '''
     def __init__(self,target_class,statespace_usedby,f):
         self.target_class=target_class
@@ -884,13 +919,17 @@ class GFuncAnalyzeVisitor2(ast.NodeVisitor):
     def run(self):
         for item in self.f.body:
             self.visit(item)
+
+        throwme=[]
         for uid,fs in self.statespace_usedby.iteritems():
             if not uid in self.assigned_statespaces:
                 if len(fs)==1:
                     fss="gfunc '%s'" % next(iter(fs))
                 else:
                     fss="gfuncs {%s}" % (','.join("'%s'" % fn for fn in fs))
-                raise GrammaGrammarException('''statespace '%s' is used by %s in class %s but not set in reset_state!''' %(uid,fss,self.target_class))
+                throwme.append('''statespace '%s' is used by %s''' %(uid,fss))
+        if len(throwme)>0:
+            raise GrammaGrammarException('%s: initialize state fields in reset_state method of %s!' % (', '.join(throwme), self.target_class))
 
     def visit_Assign(self, ass):
         for a in ass.targets:
@@ -1031,9 +1070,8 @@ class GrammaGrammar(object):
         if startexpr==None:
             startexpr=self.ruledefs['start']
         while True:
-            rst=x.random.get_state()
-            self.reset_state(sampler.state)
-            yield rst, sampler.sample(startexpr) 
+            sampler.reset()
+            yield sampler.sample(startexpr) 
 
 
 # vim: ts=4 sw=4

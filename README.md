@@ -1,5 +1,4 @@
 # Description
 
-Gramma is a simple tool to generate fuzzing inputs with a grammar including
-semantic constraints.
+Gramma is a probabilistic programming language for grammar based fuzzing.
 
