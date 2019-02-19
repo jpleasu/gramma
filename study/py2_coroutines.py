@@ -4,101 +4,112 @@ use coroutines to sample
 
 TODO
 ====
-- everything would return a function that builds generators, o/w they're not
-  reusable
+- produce a tracetree
+- do constrained sampling
+  - tree constraint from a tracetree
+  - global parameter setting, where nodes of the expression tree get parameters
+  - a combination, where nodes of the trace tree get parameters
+- composition?
+  - produce a tracetree from a constrained sample result
 
 '''
 import types
-import random
+import numpy as np
+from collections import namedtuple
 
-def t(s):
-  yield s
+class GExpr(object):
+  pass
 
-def c():
-  yield (yield t('c'))
+class Tok(GExpr):
+  def __init__(self,s):
+    self.s=s
 
+class Alt(GExpr):
+  def __init__(self, *l):
+    self.children=l
 
-def alt(*l):
-  g=random.choice(l)
-  yield (yield g)
-
-def cat(*l):
-  # this works in python2, not 3..
-  #yield ''.join([(yield(g)) for g in l])
-  ll=[]
-  for g in l:
-    ll.append((yield(g)))
-  yield ''.join(ll)
-
-def randnum():
-  yield ''.join(random.choice('0123456789') for i in range(random.randrange(1,5)))
-
-def recurs():
-  g=alt(t('>'),cat(t('-'), recurs()))
-  yield (yield g)
+class Cat(GExpr):
+  def __init__(self, *l):
+    self.children=l
 
 
-def toit(fg):
-  if isinstance(fg,str):
-    return fg
-  elif isinstance(fg,types.FunctionType):
-    return fg()
+class Rule(GExpr):
+  def __init__(self, rhs=None):
+    self.rhs=rhs
+  def set(self,rhs):
+    self.rhs=rhs
+
+def mkgen(ge):
+  if isinstance(ge,Tok):
+    def g(x):
+      yield ge.s
+  elif isinstance(ge,Alt):
+    def g(x):
+      s=yield x.random.choice(ge.children)
+      yield s
+  elif isinstance(ge,Cat):
+    def g(x):
+      s=''
+      for cge in ge.children:
+        s+=yield cge
+      yield s
+  elif isinstance(ge,Rule):
+    def g(x):
+      s=yield(ge.rhs)
+      yield s
   else:
-    return iter(fg)
+    raise Exception('unrecognized GExpr type: %s' % type(ge))
+  return g
 
 
-def sample(ge):
+def sample(x,ge):
   'recursive sampler'
-  ge=toit(ge)
-  r=next(ge)
+
+  g=mkgen(ge)(x)
+  r=next(g)
   while not isinstance(r,str):
-    r=ge.send(sample(r))
+    r=g.send(sample(x,r))
   return r
 
-class StackNode:
-  __slots__='g','v'
-  def __init__(self, g):
-    self.g=toit(g)
-    self.v=None
+def itorstr(x,ge):
+  print('||| %s |||' % ge)
+  if isinstance(ge,GExpr):
+    return mkgen(ge)(x)
+  else:
+    return ge
 
-
-def stk_sample(g):
-  'stacked sampler'
-  stack=[toit(g)]
+def stk_sample(x,ge):
+  '''
+    a sampler that doesn't rely on recursion
+  '''
+  stack=[itorstr(x,ge)]
   while True:
-    #print('%3d %s' % (len(stack), stack))
-    n=stack[-1]
-    if isinstance(n,str):
+    if isinstance(stack[-1],str):
       # stack looks like
       #   caller     <- parent generator, awaiting result
       #     callee   <- child generator, now finished
       #       result <- its string result
-      stack.pop()
+      #
+      #  so send the result into caller, and push caller's next
+      s=stack.pop()
       if len(stack)==1:
-        return n
-      stack[-1]=toit(stack[-2].send(n))
+        return s
+      stack[-1]=itorstr(x,stack[-2].send(s))
     else:
-      stack.append(next(n))
+      it=stack[-1]
+      stack.append(itorstr(x,next(it)))
 
+r=Rule()
+r.set(Alt(Tok(">"), Cat(Tok("."),r)))
 
+#ge=Alt(Tok('asdf'),Tok('1234'))
 
-def mkref(d,name):
-  def ref(d=d):
-    yield (yield d[name]()) 
-  return ref
+ge=r
+
+X=namedtuple('X','random state')
+x=X(np.random.RandomState(),type('',(),{}))
 
 for i in range(10):
-  #g=cat(randnum(), alt(t('opt1'),t('opt2')), alt(t('opt3'),t('opt4')))
-  #g=cat(t('<'), recurs)
-  #g=c
-  #g=cat(t('a'),t('b'))
-  
-  d={}
-  d['r']=lambda: alt(t('>'), cat(t('-'),mkref(d,'r')))
-  g=d['r']()
-
-
-  print(sample(g))
-  #print(stk_sample(g))
-  #print(stk_sample(g))
+  #print(sample(x,ge))
+  print(stk_sample(x,ge))
 
