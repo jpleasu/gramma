@@ -53,7 +53,7 @@ r'''
         - by inheriting the GrammaGrammar class and adding decorated functions,
           the syntax can be extended.  See below.
         - functions can be stateful, meaning they rely on information stored in
-          the GrammaSampler object.
+          the GeneratorInterface object.
         - evaluation is left to right.
         - functions aren't allowed to "look up" the execution stack, only back.
 
@@ -109,7 +109,7 @@ r'''
     them with conjuction (and disjunction?) to be efficient.  Tree regular
     predicate language?
 
-    The _defining_ constaint on ("a"|"b"){1,2} that produced "ab" is
+    The _defining_ constraint on ("a"|"b"){1,2} that produced "ab" is
         rep(n=2,child1=alt(c=1,child="a"), child2=alt(c=2,child="b"))
     By omitting the constraint on child1 of the root rep, we get
         rep(n=2,child2=alt(c=2,child="b"))
@@ -120,16 +120,11 @@ r'''
 
 
     TODO:
-        - GExpr as data
-            - (bi)simulation is done by the sampler
-            - sampler can modify recursion in house.
-            - recursive sample calls from gfunc can't be prescribed.. external
-              entropy and/or state control?
-              - if state spaces can be deep-copied, we can manufacture
-                dependencies w/out re-execution.
-
-        - fix the multiple random object situation in the sampler.. e.g. is
-          there every a need to 'externally' manage entropy?
+        - implement deepcopy/serialization of GrammaState
+        - add some documentation
+            - recv observes preorder GExprs and postorder strings during the
+              (lazy) depth first traversal of of the tracetree.
+            - "push exprs pop strings"
 
         - rule-scoped / stacked state spaces?
             - must define stack_reset to initialize top of every stack.
@@ -207,15 +202,6 @@ class GFuncWrap(object):
     def __str__(self):
         return 'gfunc %s statevars=%s' %(self.fname, self.statevars)
 
-class GeneratorInterface(namedtuple('GeneratorInterface','random state')):
-    '''
-        constructed by GrammaSampler and passed to generators for access to
-        random and state.
-    '''
-
-    def __new__(cls,sampler):
-        return super(GeneratorInterface,cls).__new__(cls,sampler.random,sampler.state)
-
 def gfunc(*args,**kw):
     '''
         GrammaGrammar function decorator.
@@ -229,7 +215,6 @@ def gfunc(*args,**kw):
                 where
                     x is the gfunc interface:
                         x.state - a GrammaState object for managing all state
-                        x.sample - the GrammaSampler sample method
                         x.random - an alias for x.sampler.random
 
                     args are the arguments of f as GExpr elements.  In
@@ -240,10 +225,11 @@ def gfunc(*args,**kw):
             *) may store state as fields of the GrammaState instance, state
             *) mustn't take additional keyword arguments, only "grammar",
                 "sampler", and "state" are allowed.
-            *) may sample from GExpr arguments using the GrammaSampler instance, sampler
-            *) may access entropy from the GrammaSampler instance, sampler
+            *) may sample from GExpr arguments by yielding a GExpr.. the result
+                will be a string.
+            *) may access entropy from the GeneratorInterface instance
         
-        The fields of the GrammaSampler object used by a gfunc reprsent its
+        The fields of the GeneratorInterface state used by a gfunc reprsent its
         "state space".  By tracking non-overlapping state spaces, Gramma can
         optimize certain operations.
 
@@ -737,20 +723,26 @@ class GRule(GExpr):
 for cls in GAlt, GCat, GRep, GFunc,   GRange, GRule:
     GExpr.tag2cls[cls.tag]=cls
 
-class GrammaSamplerException(Exception):
+class SamplerException(Exception):
     pass
 
 class GrammaState(object):
     pass
 
 
-class GrammaSampler(object):
+class GeneratorInterface(namedtuple('GeneratorInterface','random state')):
     '''
-        samplers execute GExprs. The sampler contructs and passes a GeneratorInterface
+        constructed by SamplerContext and passed to generators for access to
+        random and state.
+    '''
 
+    def __new__(cls,sampler):
+        return super(GeneratorInterface,cls).__new__(cls,sampler.random,sampler.state)
+
+class SamplerContext(object):
+    '''
         the grammar provides grules (including a "start" rule), gfuncs, and the
         reset_state function.
-        
     '''
     __slots__='grammar','state','random','random_state0','stack','x'
     def __init__(self,grammar):
@@ -760,15 +752,49 @@ class GrammaSampler(object):
         self.random_state0=None
 
     def reset(self):
-        '''
-            called before sampling from the top of an expression
-        '''
         self.random_state0=self.random.get_state()
         self.grammar.reset_state(self.state)
         self.x=GeneratorInterface(self)
         self.stack=[]
 
+    def sample(self,sampler,ge=None):
+        if ge==None:
+            ge=self.grammar.ruledefs['start']
+        self.reset()
+        sampler.reset()
+        self.stack.append(sampler.recv(ge))
+        while True:
+            top=sampler.extract(self.stack[-1])
+            if isinstance(top,string_types):
+                self.stack.pop() # the str
+                self.stack.pop() # the finished generator
+                if len(self.stack)==1:
+                    return sampler.extract(sampler.recv(top))
+                    #return top
+                self.stack.append(sampler.recv(sampler.extract(self.stack[-1]).send(top)))
+            else:
+                self.stack.append(sampler.recv(next(top)))
+
+
+class DefaultSampler(object):
+    '''
+        A Sampler is a tuple of functions used for sampling.
+    '''
+    __slots__='ctx',
+    def __init__(self,ctx):
+        self.ctx=ctx
+
+    def reset(self):
+        '''
+            called before sampling from the top of an expression
+        '''
+        pass
+
     def extract(self,resp):
+        '''
+        if recv returns anything other than a generator or string, extract must
+        "unwrap" it 
+        '''
         return resp
 
     def recv(self,req):
@@ -823,51 +849,24 @@ class GrammaSampler(object):
                 def g(x):
                     yield chr(x.random.randint(ge.lo,ge.hi+1))
             elif isinstance(ge,GRule):
-                rhs=self.grammar.ruledefs[ge.rname]
+                rhs=self.ctx.grammar.ruledefs[ge.rname]
                 def g(x):
                     s=yield(rhs)
                     yield s
             elif isinstance(ge, GFunc):
-                return self.grammar.funcdefs[ge.fname](self.x,*ge.fargs)
+                return self.ctx.grammar.funcdefs[ge.fname](self.ctx.x,*ge.fargs)
             else:
-                raise GrammaSamplerException('unrecognized expression: %s' % ge)
-            return g(self.x)
+                raise SamplerException('unrecognized expression: %s' % ge)
+            return g(self.ctx.x)
 
         elif isinstance(req,string_types):
             return req
 
         else:
-            raise GrammaSamplerException('generator request unexpected:(%s)%s' % (type(req),req))
+            raise SamplerException('generator request unexpected:(%s)%s' % (type(req),req))
 
-    def sample(self,ge=None):
-        if ge==None:
-            ge=self.grammar.ruledefs['start']
-        self.reset()
-        self.stack.append(self.recv(ge))
-        while True:
-            top=self.extract(self.stack[-1])
-            if isinstance(top,string_types):
-                self.stack.pop() # the str
-                self.stack.pop() # the finished generator
-                if len(self.stack)==1:
-                    return self.extract(self.recv(top))
-                    #return top
-                self.stack.append(self.recv(self.extract(self.stack[-1]).send(top)))
-            else:
-                self.stack.append(self.recv(next(top)))
 
-    def rsample(self,ge):
-        '''
-            a recursive sample method for reference.. don't build samplers that
-            use it
-        '''
-        gen=self.extract(self.recv(ge))
-        if isinstance(gen,string_types):
-            return gen
-        gge=next(gen)
-        while not isinstance(gge,string_types):
-            gge=gen.send(self.rsample(gge))
-        return gge
+
 
 class GrammaGrammarException(Exception):
     pass
@@ -1084,7 +1083,7 @@ class GrammaGrammar(object):
 
         e.g. 
          g=GrammaGrammar('start:="a"|"b";')
-         sampler=GrammaSampler(g)
+         sampler=DefaultSampler(g)
 
          while True:
              sampler.reset()
@@ -1142,15 +1141,16 @@ class GrammaGrammar(object):
         lt=self.parser.parse('_:=%s;' % gramma_expr_str)
         return GExpr.parse_larktree(lt.children[0].children[1])
 
-    def generate(self,SamplerClass=GrammaSampler,samplerargs=(),startexpr=None):
+    def generate(self,SamplerClass=DefaultSampler,samplerargs=(),startexpr=None):
         '''
-            yield random_state, string
+            quick and dirty generator
         '''
-        sampler=SamplerClass(self,*samplerargs)
+        ctx=SamplerContext(self)
+        sampler=SamplerClass(ctx,*samplerargs)
         if startexpr==None:
             startexpr=self.ruledefs['start']
         while True:
-            yield sampler.sample(startexpr) 
+            yield ctx.sample(sampler,startexpr) 
 
 
 class TTNode(object):
@@ -1178,16 +1178,19 @@ class TTNode(object):
             c.dump(indent+1,out)
 
 
-class TracingSampler(GrammaSampler):
+class TracingSampler(object):
 
-    __slots__='tracetree',
+    __slots__='tracetree','base'
 
-    def __init__(self,grammar):
-        GrammaSampler.__init__(self,grammar)
+    def __init__(self,base):
+        self.base=base
 
     def reset(self):
-        super().reset()
+        self.base.reset()
         self.tracetree=None
+
+    def extract(self,resp):
+        return self.base.extract(resp)
 
     def recv(self,req):
         if isinstance(req,GExpr):
@@ -1199,7 +1202,7 @@ class TracingSampler(GrammaSampler):
             self.tracetree.s=req
             if self.tracetree.parent!=None:
                 self.tracetree=self.tracetree.parent
-        return super().recv(req)
+        return self.base.recv(req)
 
 # vim: ts=4 sw=4
 

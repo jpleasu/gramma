@@ -54,92 +54,78 @@ class Example(GrammaGrammar):
         yield ''
 
 
+def test_parse():
+    global g
+    g=Example()
+    print(g.parse('''"a"|"b"'''))
+
+
 def test_samples():
     g=Example()
     it=g.generate()
     for i in xrange(10):
         print(it.next())
 
-def test_parse():
-    global g
-    g=Example()
-    print(g.parse('''"a"|"b"'''))
 
-def demo_coroutine_versus_recursive():
-    '''
-        Two ways to create a sampler that forces every Alt to take the left
-        option up to maximum expression depth.  The second method which uses
-        recursion is arguably simpler, but less composable.
-    '''
-    g=Example()
-
-    print('==================')
-    class LeftAlt(GrammaSampler):
-        def __init__(self,grammar,maxdepth=5):
-            GrammaSampler.__init__(self,grammar)
-            self.maxdepth=maxdepth
-            self.d=0
-
-        def reset(self):
-            super().reset()
-            self.d=0
-
-        def extract(self,resp):
-            return super().extract(resp)[0]
-
-        def recv(self,req):
-            if isinstance(req,GExpr):
-                if isinstance(req,GAlt):
-                    self.d+=1
-                    if self.d<=self.maxdepth:
-                        # to handle nested alts, we must push twice
-                        def shimmy(x):
-                            yield (yield req.children[0])
-                        return (shimmy(self.x),True)
-                    else:
-                        return (super().recv(req),True)
-            else: # it's a string from the current top
-                if self.stack[-1][1]:
-                    self.d-=1
-            return (super().recv(req),False)
-
-
-    sampler=LeftAlt(g,50)
-    sampler.random.seed(0)
-
+def test_rlim():
+    g=GrammaGrammar('start :=  rlim("a" . start, 3, "");')
+    ctx=SamplerContext(g)
+    ctx.random.seed(0)
+    sampler=DefaultSampler(ctx)
     for i in range(10):
-        s=sampler.sample()
+        s=ctx.sample(sampler)
+        print('---------------')
         print('%3d %s' % (len(s),s))
 
 
-    print('==================')
-    class LeftAltR(GrammaSampler):
-        def __init__(self,grammar,maxdepth=5):
-            GrammaSampler.__init__(self,grammar)
-            self.maxdepth=maxdepth
-            self.d=0
+class LeftAltSampler(object):
+    def __init__(self,base,ctx,maxdepth=5):
+        self.base=base
+        self.maxdepth=maxdepth
+        self.ctx=ctx
+        self.d=0
 
-        def reset(self):
-            super().reset()
-            self.d=0
+    def reset(self):
+        self.base.reset()
+        self.d=0
 
-        def rsample(self,ge):
-            if isinstance(ge,GAlt):
+    def extract(self,resp):
+        return self.base.extract(resp)[0]
+
+    def recv(self,req):
+        if isinstance(req,GExpr):
+            if isinstance(req,GAlt):
                 self.d+=1
                 if self.d<=self.maxdepth:
-                    res=self.rsample(ge.children[0])
+                    # to handle nested alts, we must push twice
+                    def shimmy(x):
+                        yield (yield req.children[0])
+                    return (shimmy(self.ctx.x),True)
                 else:
-                    res=super().rsample(ge)
+                    return (self.base.recv(req),True)
+        else: # it's a string from the current top
+            if self.ctx.stack[-1][1]:
                 self.d-=1
-                return res
-            return super().rsample(ge)
+        return (self.base.recv(req),False)
 
-    sampler=LeftAltR(g,50)
-    sampler.random.seed(0)
+
+
+
+def test_constraint():
+    '''
+        A sampler that forces every Alt to take the left option up to maximum
+        expression depth.
+    '''
+    g=Example()
+
+    print('==================')
+
+    ctx=SamplerContext(g)
+    sampler=LeftAltSampler(DefaultSampler(ctx),ctx,50)
+    ctx.random.seed(0)
 
     for i in range(10):
-        sampler.reset()
-        s=sampler.rsample(g.parse('start'))
+        s=ctx.sample(sampler)
         print('%3d %s' % (len(s),s))
 
 
@@ -156,41 +142,42 @@ def itlen(it):
         c+=1
     return c
 
-def demo_tracetree():
+def test_tracetree():
     '''
         generate a tracetree for a sample then pick an alt node to re-sample with chosen bias.
     '''
-    from collections import Counter
-
     g=Example()
-    sampler=TracingSampler(g)
-    sampler.random.seed(0)
+    ctx=SamplerContext(g)
+    ctx.random.seed(0)
+    sampler=TracingSampler(DefaultSampler(ctx))
 
     for i in range(10):
-        s=sampler.sample()
+        s=ctx.sample(sampler)
+        print('---------------')
+        print('%3d %s' % (len(s),s))
+        #print(sampler.tt)
+        sampler.tracetree.dump()
+
+def test_composition():
+    g=Example()
+    ctx=SamplerContext(g)
+    ctx.random.seed(0)
+    sampler=TracingSampler(LeftAltSampler(DefaultSampler(ctx),ctx,50))
+    for i in range(10):
+        s=ctx.sample(sampler)
         print('---------------')
         print('%3d %s' % (len(s),s))
         #print(sampler.tt)
         sampler.tracetree.dump()
 
 
-
-def test_rlim():
-    g=GrammaGrammar('start :=  rlim("a" . start, 3, "");')
-    sampler=GrammaSampler(g)
-    sampler.random.seed(0)
-    for i in range(10):
-        s=sampler.sample()
-        print('---------------')
-        print('%3d %s' % (len(s),s))
-
-
 if __name__=='__main__':
     #test_parse()
     #test_samples()
-    #demo_coroutine_versus_recursive()
-    #demo_tracetree()
-    test_rlim()
+    #test_rlim()
+    #test_constraint()
+    #test_tracetree()
+    test_composition()
 
 
 # vim: ts=4 sw=4
