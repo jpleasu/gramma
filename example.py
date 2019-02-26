@@ -171,13 +171,44 @@ def test_composition():
         sampler.tracetree.dump()
 
 
+def test_resample():
+    g=Example()
+    ctx=SamplerContext(g)
+    ctx.random.seed(0)
+    sampler=DefaultSampler(ctx)
+
+    def again():
+        s=ctx.sample(sampler)
+        print('---------------')
+        print('%3d %s' % (len(s),s))
+    again()
+    r0=ctx.state.randstates['__initial_random']
+    again()
+
+    class SamplerContext2(SamplerContext):
+        __slots__='randstates',
+
+        def reset(self):
+            super().reset()
+            self.state.randstates.update(self.randstates)
+
+    ctx2=SamplerContext2(g)
+    sampler2=DefaultSampler(ctx2)
+    ctx2.randstates=dict(r0=r0)
+    s=ctx2.sample(sampler2, 'set_rand(r0).start')
+    print('---------------')
+    print('%3d %s' % (len(s),s))
+
+
+
 if __name__=='__main__':
     #test_parse()
-    test_samples()
+    #test_samples()
     #test_rlim()
     #test_constraint()
     #test_tracetree()
     #test_composition()
+    test_resample()
 
 
 # vim: ts=4 sw=4

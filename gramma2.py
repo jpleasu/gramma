@@ -846,31 +846,36 @@ class SamplerContext(object):
         the grammar provides grules (including a "start" rule), gfuncs, and the
         reset_state function.
     '''
-    __slots__='grammar','state','random','random_state0','stack','x'
+    __slots__='grammar','state','random','stack','x'
     def __init__(self,grammar):
         self.grammar=grammar
         self.random=np.random.RandomState()
         self.state=GrammaState()
-        self.random_state0=None
 
     def reset(self):
-        self.random_state0=self.random.get_state()
         self.grammar.reset_state(self.state)
+        self.state.randstates['__initial_random']=self.random.get_state()
+
         self.x=GeneratorInterface(self)
         self.stack=[]
 
     def sample(self,sampler,ge=None):
         if ge==None:
             ge=self.grammar.ruledefs['start']
+
+        if isinstance(ge,string_types):
+            ge=self.grammar.parse(ge)
+
         self.reset()
         sampler.reset()
+
         self.stack.append(sampler.recv(ge))
         while True:
             top=sampler.extract(self.stack[-1])
             if isinstance(top,string_types):
                 self.stack.pop() # the str
                 self.stack.pop() # the finished generator
-                if len(self.stack)==1:
+                if len(self.stack)==0:
                     return sampler.extract(sampler.recv(top))
                     #return top
                 self.stack.append(sampler.recv(sampler.extract(self.stack[-1]).send(top)))
@@ -1162,7 +1167,7 @@ def analyze_gfuncs(GrammaChildClass,allowed_ids=None):
 
         #print(g)
 
-    print(statespace_usedby)
+    #print(statespace_usedby)
     reset_state_ast=([x for x in classdef.body if isinstance(x,ast.FunctionDef) and x.name=='reset_state']+[None])[0]
     if len(statespace_usedby.keys())>0 and reset_state_ast==None:
         # XXX enumerate which gfunc uses which statespace
@@ -1222,13 +1227,13 @@ class GrammaGrammar(with_metaclass(GrammaGrammarType,object)):
 
     @gfunc
     def get_rand(x,n):
-        x.state.randstates[n.as_str()]=x.random.get_state()
-        return ''
+        x.state.randstates[n.rname]=x.random.get_state()
+        yield ''
 
     @gfunc
     def set_rand(x,n):
-        x.random.set_state(x.state.randstates[n.as_str()])
-        return ''
+        x.random.set_state(x.state.randstates[n.rname])
+        yield ''
 
     @gfunc
     def rlim(x,c,n,o):
@@ -1254,7 +1259,7 @@ class GrammaGrammar(with_metaclass(GrammaGrammarType,object)):
             parse gramma_expr_sr with the current rules and functions and
             return a GExpr object
         '''
-        lt=self.parser.parse('_:=%s;' % gramma_expr_str)
+        lt=self.parser.parse('_:=(%s);' % gramma_expr_str)
         return GExpr.parse_larktree(lt.children[0].children[1])
 
     def generate(self,SamplerClass=DefaultSampler,samplerargs=(),startexpr=None):
