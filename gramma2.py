@@ -120,11 +120,103 @@ r'''
 
 
     TODO:
-        - implement deepcopy/serialization of GrammaState
-        - add some documentation
-            - recv observes preorder GExprs and postorder strings during the
-              (lazy) depth first traversal of of the tracetree.
-            - "push exprs pop strings"
+        - implement TreeConstrainedSampler
+            - constructed with expression
+                - e.g.
+                    alt(alt(0),b) - meaning if the left branch of the first alt
+                    is taken, take the first option.
+                - maybe something horribly xpathy? more astmatcher?
+                - ability to randomly construct a tree contraint that selects
+                  one of the nodes of a given TraceTree
+
+        - compiler
+            - save state "def, use" tags for each statespace and for random.
+            - from functions to generators
+            - generator analysis
+                - comment on nested yields
+
+        - resampling
+
+            - "resampling" starts with a definitized GExpr one of its tracetree
+              nodes.  For example, given the GExpr
+
+                    a(b(),c(),d())
+
+                To resample at "c" we compute:
+
+                    get_rand(r0).a(b(),c().get_rand(r1),d())
+
+                and store r0 and r1.  Next, we generate an r2 and compute:
+
+                    set_rand(r0).a(b(), set_rand(r2).c().set_rand(r1), d())
+
+            - the presentation is slightly complicated by recursion. We must
+              "unroll" rules until the point where the resampled node occurs.
+              e.g. the following generates arrows, "---->"  with length (minus
+              1) distributed geometrically.
+
+                    r:= "-".r | ">";
+
+                To resample the "r" node that's three deep in the trace tree of
+                "----->", we partially unroll the expression "r":
+
+                    "-".("-".("-".r | ">") | ">") | ">";
+                    
+                and instrument:
+
+                    get_rand(r0).("-".("-".("-"
+                        .r.get_rand(r1) | ">") | ">") | ">");
+                    
+                then replay with a new randstate r2:
+
+                    set_rand(r0).("-".("-".("-"
+                        .set_rand(r2).r.set_rand(r1) | ">") | ">") | ">");
+
+
+            - "tree order": child < parent
+
+            - "state order N ": node1 < node2 if both nodes use the same
+              statespace, N, and node1 occurs before node2 in preorder
+              traversal of the tracetree.
+                - the recv GExpr visitation is preorder trace tree traversal,
+                  collect a list of nodes for each statespace and random
+
+            - "randstate order": for replay analysis, x.random is treated as a
+              statespace used by range, alt, rep, and any gfunc that
+              uses_random.
+
+            - the union quasiorder includes tree and state orders, but not
+              randstate.
+
+            - for each ordering, if n1<n2 then the value of n1 affects the
+              value of n2.  To determine unaffected nodes, we take the
+              complement of the upset of the changed node(s) in the union
+              quasiorder. every other node will need to be recomputed.
+
+
+            - where state (including randstate) can be replayed, we can split
+              intervals
+
+                - resume by sequencing:
+
+                    set(N, value).f(x)
+
+            - if all descendents of an interval are fixed, can replay each
+              node of interval as string
+
+            - if a descendent of a gfunc is changed, must replay the entire
+              principal upset to set state e.g. the argument "x" of "g" :
+                  
+                  f()  ...  g(x)
+
+
+
+        - documentation
+            - gfunc authoring
+            - sampler internals
+                - recv observes preorder GExprs and postorder strings during
+                  the (lazy) depth first traversal of of the tracetree.
+                - "push exprs pop strings"
 
         - rule-scoped / stacked state spaces?
             - must define stack_reset to initialize top of every stack.
@@ -154,18 +246,28 @@ if sys.version_info < (3,0):
     # builtins str also fucks up isinstance(x,str).. use six.string_types
 
     import __builtin__
+
     def func_name(f):
         return f.func_name
+
+    def ast_argname(a):
+        return a.id
+
 else:
     import builtins as __builtin__
+
     def func_name(f):
         return f.__name__
+
     xrange=range
+
+    def ast_argname(a):
+        return a.arg
 
 #sys.setrecursionlimit(20000)
 sys.setrecursionlimit(200000)
 
-from six import string_types
+from six import string_types, with_metaclass
 
 import lark
 
@@ -877,6 +979,7 @@ def ast_attr_path(x):
         p.insert(0,p[0].value)
     return p
 
+
 class GFuncAnalyzeVisitor(ast.NodeVisitor):
     '''
         A python AST node visitor for @gfunc decorated methods of a
@@ -900,9 +1003,9 @@ class GFuncAnalyzeVisitor(ast.NodeVisitor):
 
         self.f=f
         al=f.args.args
-        self.iface_id=al[0].id
+        self.iface_id=ast_argname(al[0])
         # XXX prevent args with default values?
-        self.allowed_ids.update(a.id for a in al)
+        self.allowed_ids.update(ast_argname(a) for a in al)
 
     def run(self):
         for item in self.f.body:
@@ -946,6 +1049,10 @@ class GFuncAnalyzeVisitor(ast.NodeVisitor):
             if self.is_iface_id(a):
                 self.visit_iface_id(a)
             else:
+                if isinstance(a,ast.Subscript):
+                    if self.is_iface_id(a.value):
+                        self.visit_iface_id(a.value)
+                        return
                 self.allowed_ids.add(a.id)
 
     def visit_Attribute(self,a):
@@ -986,7 +1093,7 @@ class GFuncAnalyzeVisitor2(ast.NodeVisitor):
         self.statespace_usedby=statespace_usedby
         self.f=f
         al=f.args.args
-        self.state_id=al[1].id
+        self.state_id=ast_argname(al[1])
         self.assigned_statespaces=set()
 
     def run(self):
@@ -994,7 +1101,7 @@ class GFuncAnalyzeVisitor2(ast.NodeVisitor):
             self.visit(item)
 
         throwme=[]
-        for uid,fs in self.statespace_usedby.iteritems():
+        for uid,fs in self.statespace_usedby.items():
             if not uid in self.assigned_statespaces:
                 if len(fs)==1:
                     fss="gfunc '%s'" % next(iter(fs))
@@ -1055,7 +1162,7 @@ def analyze_gfuncs(GrammaChildClass,allowed_ids=None):
 
         #print(g)
 
-    #print(statespace_usedby)
+    print(statespace_usedby)
     reset_state_ast=([x for x in classdef.body if isinstance(x,ast.FunctionDef) and x.name=='reset_state']+[None])[0]
     if len(statespace_usedby.keys())>0 and reset_state_ast==None:
         # XXX enumerate which gfunc uses which statespace
@@ -1076,7 +1183,7 @@ class GrammaGrammarType(type):
         analyze_gfuncs(classobject, getattr(classobject, 'ALLOWED_IDS', []))
         #print('done with analysis of %s' % classname)
 
-class GrammaGrammar(object):
+class GrammaGrammar(with_metaclass(GrammaGrammarType,object)):
     '''
         The class defining functions and state management for a gramma and
         extensions.
@@ -1090,8 +1197,6 @@ class GrammaGrammar(object):
              s=sampler.sample()
              print(s)
     '''
-    __metaclass__=GrammaGrammarType
-
 
     # a child class variable that opens access to ids from gfuncs
     ALLOWED_IDS=[]
@@ -1113,6 +1218,17 @@ class GrammaGrammar(object):
 
     def reset_state(self,state):
         state.d=0
+        state.randstates={}
+
+    @gfunc
+    def get_rand(x,n):
+        x.state.randstates[n.as_str()]=x.random.get_state()
+        return ''
+
+    @gfunc
+    def set_rand(x,n):
+        x.random.set_state(x.state.randstates[n.as_str()])
+        return ''
 
     @gfunc
     def rlim(x,c,n,o):

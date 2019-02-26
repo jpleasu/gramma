@@ -64,7 +64,7 @@ def test_samples():
     g=Example()
     it=g.generate()
     for i in xrange(10):
-        print(it.next())
+        print(next(it))
 
 
 def test_rlim():
@@ -173,11 +173,11 @@ def test_composition():
 
 if __name__=='__main__':
     #test_parse()
-    #test_samples()
+    test_samples()
     #test_rlim()
     #test_constraint()
     #test_tracetree()
-    test_composition()
+    #test_composition()
 
 
 # vim: ts=4 sw=4
