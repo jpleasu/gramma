@@ -71,42 +71,49 @@ def demo_rlim():
     g=GrammaGrammar('start :=  rlim("a" . start, 3, "");')
     ctx=SamplerContext(g)
     ctx.random.seed(0)
-    sampler=DefaultSampler(ctx)
+    sampler=DefaultSampler(g)
     for i in range(10):
         s=ctx.sample(sampler)
         print('---------------')
         print('%3d %s' % (len(s),s))
 
 
-class LeftAltSampler(object):
-    def __init__(self,base,ctx,maxdepth=5):
-        self.base=base
+class LeftAltSampler(ProxySampler):
+    def __init__(self,base,maxdepth=5):
+        ProxySampler.__init__(self,base)
         self.maxdepth=maxdepth
-        self.ctx=ctx
         self.d=0
 
     def reset(self):
         self.base.reset()
         self.d=0
 
-    def extract(self,resp):
-        return self.base.extract(resp)[0]
+    def unwrap(self,top):
+        # all but "id_shim" stack objects are of the form (base wrapped gen, boolean)
+        # "id_shim" is (id_shim(x), True)
+        # so.. don't call base unwrap on shimmys?
+        return self.base.unwrap(top[0])
 
-    def recv(self,req):
-        if isinstance(req,GExpr):
-            if isinstance(req,GAlt):
-                self.d+=1
-                if self.d<=self.maxdepth:
-                    # to handle nested alts, we must push twice
-                    def shimmy(x):
-                        yield (yield req.children[0])
-                    return (shimmy(self.ctx.x),True)
-                else:
-                    return (self.base.recv(req),True)
-        else: # it's a string from the current top
-            if len(self.ctx.stack)>0 and self.ctx.stack[-1][1]:
-                self.d-=1
-        return (self.base.recv(req),False)
+    def complete(self,top,s):
+        self.base.complete(top[0],s)
+        if top[1]:
+            self.d-=1
+
+    def wrap(self,ge,b):
+        ctor=self.base.expr2ctor(ge)
+        return lambda x:(ctor(x),b)
+
+    def expr2ctor(self,ge):
+        if isinstance(ge,GAlt):
+            self.d+=1
+            if self.d<=self.maxdepth:
+                # handle nested alts
+                def id_shim(x):
+                    yield (yield ge.children[0])
+                return lambda x:(id_shim(x),True)
+            else:
+                return self.wrap(ge,True)
+        return self.wrap(ge,False)
 
 def demo_constraint():
     '''
@@ -118,26 +125,13 @@ def demo_constraint():
     print('==================')
 
     ctx=SamplerContext(g)
-    sampler=LeftAltSampler(DefaultSampler(ctx),ctx,50)
+    sampler=LeftAltSampler(DefaultSampler(g),50)
     ctx.random.seed(0)
 
     for i in range(10):
         s=ctx.sample(sampler)
         print('%3d %s' % (len(s),s))
-
-
-def atleast(n,it):
-    c=0
-    for _ in it:
-        c+=1
-        if c>=n:
-            return True
-    return False
-def itlen(it):
-    c=0
-    for _ in it:
-        c+=1
-    return c
+        assert(ctx.state.d==0)
 
 def demo_tracetree():
     '''
@@ -146,38 +140,37 @@ def demo_tracetree():
     g=Example()
     ctx=SamplerContext(g)
     ctx.random.seed(0)
-    sampler=TracingSampler(DefaultSampler(ctx))
+    sampler=TracingSampler(DefaultSampler(g))
 
     for i in range(10):
         s=ctx.sample(sampler)
         print('---------------')
         print('%3d %s' % (len(s),s))
-        #print(sampler.tt)
         sampler.tracetree.dump()
 
 def demo_composition():
     g=Example()
     ctx=SamplerContext(g)
     ctx.random.seed(0)
-    sampler=TracingSampler(LeftAltSampler(DefaultSampler(ctx),ctx,50))
+    sampler=TracingSampler(LeftAltSampler(DefaultSampler(g),5))
     for i in range(10):
         s=ctx.sample(sampler)
         print('---------------')
         print('%3d %s' % (len(s),s))
-        #print(sampler.tt)
         sampler.tracetree.dump()
 
 
-def demo_resample():
+def demo_random_states():
     g=Example()
     ctx=SamplerContext(g)
     ctx.random.seed(0)
-    sampler=DefaultSampler(ctx)
+    sampler=DefaultSampler(g)
 
     def p(n, e):
         s=ctx.sample(sampler,e)
         print('---- %s ----' % n)
         print('%3d %s' % (len(s),s))
+
     # generate a sample and save the random state on entry
     p('A', 'save_rand(r0).start')
     # generate a new sample, demonstrating a different random state
@@ -200,6 +193,16 @@ def demo_resample():
     p('D', 'reseed_rand().start')
 
 
+def demo_resample():
+    g=Example()
+    ctx=SamplerContext(g)
+    ctx.random.seed(0)
+    sampler=DefaultSampler(g)
+    for i in range(10):
+        s=ctx.sample(sampler)
+        print('---------------')
+        print('%3d %s' % (len(s),s))
+
 
 if __name__=='__main__':
     #demo_parser()
@@ -208,6 +211,7 @@ if __name__=='__main__':
     demo_constraint()
     #demo_tracetree()
     #demo_composition()
+    #demo_random_states()
     #demo_resample()
 
 # vim: ts=4 sw=4

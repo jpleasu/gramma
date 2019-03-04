@@ -120,18 +120,11 @@ r'''
 
 
     TODO:
-        - grammar
-            - no sideeffects
-            - defines gfuncs accessible in Gramma code
-        - sampler
-            - no sideeffects
-            - decides what to do with GExpr nodes
-            - composable
-            - extensible
-            - exchangeable
-                - one context should be able to use multiple samplers
-        - samplercontext
-            - should a sampler context contain a sampler?
+        - conditioning
+            - in general, force the random number generator to return a list of
+              values:
+
+                "cond(expr, 1, 2, 3)"
 
         - implement TreeConstrainedSampler
             - constructed with expression
@@ -142,13 +135,15 @@ r'''
                 - ability to randomly construct a tree contraint that selects
                   one of the nodes of a given TraceTree
 
+        - add parms.. readonly data for use by gfuncs
+
         - compiler
             - save state "def, use" tags for each statespace and for random.
             - convert functions into generators
             - analyze generator
                 - comment on nested yields
 
-        - resampling
+        - resampling and compilation
 
             - "resampling" starts with a definitized GExpr one of its tracetree
               nodes.  For example, given the GExpr
@@ -200,7 +195,7 @@ r'''
             - "state order N ": node1 < node2 if both nodes use the same
               statespace, N, and node1 occurs before node2 in preorder
               traversal of the tracetree.
-                - the recv GExpr visitation is preorder trace tree traversal,
+                - the expr2ctor GExpr visitation is preorder trace tree traversal,
                   collect a list of nodes for each statespace and random
 
             - "randstate order": for replay analysis, x.random is treated as a
@@ -236,7 +231,7 @@ r'''
         - documentation
             - gfunc authoring
             - sampler internals
-                - recv observes preorder GExprs and postorder strings during
+                - expr2ctor observes preorder GExprs and postorder strings during
                   the (lazy) depth first traversal of of the tracetree.
                 - "push exprs pop strings"
 
@@ -933,111 +928,130 @@ class SamplerContext(object):
         self.reset()
         sampler.reset()
 
-        self.stack.append(sampler.recv(ge))
+        self.stack.append(sampler.expr2ctor(ge)(self.x))
         while True:
-            top=sampler.extract(self.stack[-1])
-            if isinstance(top,string_types):
-                self.stack.pop() # the str
-                self.stack.pop() # the finished generator
+            x=next(sampler.unwrap(self.stack[-1]))
+            while isinstance(x,string_types):
+                sampler.complete(self.stack[-1],x)
+                self.stack.pop()
                 if len(self.stack)==0:
-                    return sampler.extract(sampler.recv(top))
-                    #return top
-                self.stack.append(sampler.recv(sampler.extract(self.stack[-1]).send(top)))
-            else:
-                self.stack.append(sampler.recv(next(top)))
+                    return x
+                x=sampler.unwrap(self.stack[-1]).send(x)
+            self.stack.append(sampler.expr2ctor(x)(self.x))
 
 
 class DefaultSampler(object):
     '''
         A Sampler is a tuple of functions used for sampling.
     '''
-    __slots__='ctx',
-    def __init__(self,ctx):
-        self.ctx=ctx
+    __slots__='grammar',
+    def __init__(self,grammar):
+        self.grammar=grammar
 
     def reset(self):
         '''
-            called before sampling from the top of an expression
+        called before sampling from the top of an expression
         '''
         pass
 
-    def extract(self,resp):
+    def unwrap(self,top):
         '''
-        if recv returns anything other than a generator or string, extract must
-        "unwrap" it 
+        return a generator/coroutine from a stack object
         '''
-        return resp
+        return top
 
-    def recv(self,req):
+    def complete(self,top,s):
         '''
-            process the message sent by a generator (the argument to yield).
+        called when the top coroutin completes, i.e. returns a string.
+
+        top is the stack object, and s is the string it generated.
+        '''
+        pass
+
+    def expr2ctor(self,ge):
+        '''
+            Given a GExpr, return a constructor taking a single
+            GeneratorInterface argument.
             
-            The result is pushed to the sampler stack.
+            The context stack will be composed of objects constructed with
+            these ctors.
             
-            - a string message indicates the parent generator is finished and
-              the message is its result. The parent will be popped and the
-              string is sent to the requesting generator (the grandparent).
-            - a GExpr message is a request to sample.  This method computes the
-              generator that will be pushed onto the stack.
+            Stack objects must behave like coroutines, responding to "next" and
+            "send", as in
+                g=expr2ctor(gexpr)
+                next(g) # returns str or GExpr
+                g.send(str) # returns str or GExpr
 
-            A child class sampler that introduces additional information for
-            later stack analysis must provide the complementary elimination in
-            "extract":
+            "unwrap" can be used for simple wrappers:
 
-                def recv(self,req):
-                    resp=super().recv(req)
-                    return (resp,req)
+                def expr2ctor(self,ge):
+                    top=super().expr2ctor(ge)
+                    return (top,ge)
 
-                def extract(self,resp):
-                    resp,req=resp
-                    return super().extract(resp)
+                def unwrap(self,top):
+                    top,ge=top
+                    return super().unwrap(top)
 
         '''
-        if isinstance(req,GExpr):
-            ge=req
-            if isinstance(ge,GTok):
-                def g(x):
-                    yield ge.as_str()
-            elif isinstance(ge,GAlt):
-                def g(x):
-                    s=yield x.random.choice(ge.children,p=ge.weights)
-                    yield s
-            elif isinstance(ge,GCat):
-                def g(x):
-                    s=''
-                    for cge in ge.children:
-                        s+=yield cge
-                    yield s
-            elif isinstance(ge,GRep):
-                def g(x):
-                    s=''
-                    n=ge.rgen(x)
-                    while n>0:
-                        s+=yield(ge.child)
-                        n-=1
-                    yield s
-            elif isinstance(ge, GRange):
-                def g(x):
-                    yield chr(x.random.randint(ge.lo,ge.hi+1))
-            elif isinstance(ge,GRule):
-                rhs=self.ctx.grammar.ruledefs[ge.rname]
-                def g(x):
-                    s=yield(rhs)
-                    yield s
-            elif isinstance(ge, GFunc):
-                return self.ctx.grammar.funcdefs[ge.fname](self.ctx.x,*ge.fargs)
-            else:
-                raise SamplerException('unrecognized expression: %s' % ge)
-            return g(self.ctx.x)
-
-        elif isinstance(req,string_types):
-            return req
-
+        if isinstance(ge,GTok):
+            def g(x):
+                yield ge.as_str()
+        elif isinstance(ge,GAlt):
+            def g(x):
+                s=yield x.random.choice(ge.children,p=ge.weights)
+                yield s
+        elif isinstance(ge,GCat):
+            def g(x):
+                s=''
+                for cge in ge.children:
+                    s+=yield cge
+                yield s
+        elif isinstance(ge,GRep):
+            def g(x):
+                s=''
+                n=ge.rgen(x)
+                while n>0:
+                    s+=yield(ge.child)
+                    n-=1
+                yield s
+        elif isinstance(ge, GRange):
+            def g(x):
+                yield chr(x.random.randint(ge.lo,ge.hi+1))
+        elif isinstance(ge,GRule):
+            rhs=self.grammar.ruledefs[ge.rname]
+            def g(x):
+                s=yield(rhs)
+                yield s
+        elif isinstance(ge, GFunc):
+            gf=self.grammar.funcdefs[ge.fname]
+            gargs=ge.fargs
+            def g(x):
+                return gf(x,*gargs)
         else:
-            raise SamplerException('generator request unexpected:(%s)%s' % (type(req),req))
+            raise SamplerException('unrecognized expression: (%s) %s' % (type(ge), ge))
+        return g
 
 
+class ProxySampler(object):
+    '''
+        derive from this to avoid duplicating common requirements on a sampler
+    '''
+    __slots__='base',
 
+    def __init__(self,base):
+        self.base=base
+
+    def reset(self):
+        self.base.reset()
+
+    def unwrap(self,top):
+        return self.base.unwrap(top)
+
+    def complete(self,top,s):
+        self.base.complete(top,s)
+
+    def expr2ctor(self,ge):
+        return self.base.expr2ctor(ge)
 
 class GrammaGrammarException(Exception):
     pass
@@ -1335,7 +1349,7 @@ class GrammaGrammar(with_metaclass(GrammaGrammarType,object)):
             quick and dirty generator
         '''
         ctx=SamplerContext(self)
-        sampler=SamplerClass(ctx,*samplerargs)
+        sampler=SamplerClass(self,*samplerargs)
         if startexpr==None:
             startexpr=self.ruledefs['start']
         while True:
@@ -1378,20 +1392,20 @@ class TracingSampler(object):
         self.base.reset()
         self.tracetree=None
 
-    def extract(self,resp):
-        return self.base.extract(resp)
+    def unwrap(self,top):
+        return self.base.unwrap(top)
 
-    def recv(self,req):
-        if isinstance(req,GExpr):
-            if self.tracetree==None:
-                self.tracetree=TTNode(req)
-            else:
-                self.tracetree=self.tracetree.add_child(req)
+    def expr2ctor(self,ge):
+        if self.tracetree==None:
+            self.tracetree=TTNode(ge)
         else:
-            self.tracetree.s=req
-            if self.tracetree.parent!=None:
-                self.tracetree=self.tracetree.parent
-        return self.base.recv(req)
+            self.tracetree=self.tracetree.add_child(ge)
+        return self.base.expr2ctor(ge)
+
+    def complete(self,top,s):
+        self.tracetree.s=s
+        if self.tracetree.parent!=None:
+            self.tracetree=self.tracetree.parent
 
 # vim: ts=4 sw=4
 
