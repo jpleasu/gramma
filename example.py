@@ -54,20 +54,20 @@ class Example(GrammaGrammar):
         yield ''
 
 
-def test_parse():
+def demo_parser():
     global g
     g=Example()
     print(g.parse('''"a"|"b"'''))
 
 
-def test_samples():
+def demo_sampling():
     g=Example()
     it=g.generate()
     for i in xrange(10):
         print(next(it))
 
 
-def test_rlim():
+def demo_rlim():
     g=GrammaGrammar('start :=  rlim("a" . start, 3, "");')
     ctx=SamplerContext(g)
     ctx.random.seed(0)
@@ -104,14 +104,11 @@ class LeftAltSampler(object):
                 else:
                     return (self.base.recv(req),True)
         else: # it's a string from the current top
-            if self.ctx.stack[-1][1]:
+            if len(self.ctx.stack)>0 and self.ctx.stack[-1][1]:
                 self.d-=1
         return (self.base.recv(req),False)
 
-
-
-
-def test_constraint():
+def demo_constraint():
     '''
         A sampler that forces every Alt to take the left option up to maximum
         expression depth.
@@ -142,7 +139,7 @@ def itlen(it):
         c+=1
     return c
 
-def test_tracetree():
+def demo_tracetree():
     '''
         generate a tracetree for a sample then pick an alt node to re-sample with chosen bias.
     '''
@@ -158,7 +155,7 @@ def test_tracetree():
         #print(sampler.tt)
         sampler.tracetree.dump()
 
-def test_composition():
+def demo_composition():
     g=Example()
     ctx=SamplerContext(g)
     ctx.random.seed(0)
@@ -171,7 +168,7 @@ def test_composition():
         sampler.tracetree.dump()
 
 
-def test_resample():
+def demo_resample():
     g=Example()
     ctx=SamplerContext(g)
     ctx.random.seed(0)
@@ -197,18 +194,20 @@ def test_resample():
     ctx.random.seed(None) # none draws a new seed from urandom
     p('C', 'start')
 
-    # and we can still resume from r0 later...
+    # and we can still resume from r0 later.
     p('A', 'load_rand(r0).start')
+    # we can also reseed the random number generator from within the grammar
+    p('D', 'reseed_rand().start')
 
 
 
 if __name__=='__main__':
-    #test_parse()
-    #test_samples()
-    #test_rlim()
-    #test_constraint()
-    #test_tracetree()
-    #test_composition()
-    test_resample()
+    #demo_parser()
+    #demo_sampling()
+    #demo_rlim()
+    demo_constraint()
+    #demo_tracetree()
+    #demo_composition()
+    #demo_resample()
 
 # vim: ts=4 sw=4

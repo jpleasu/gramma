@@ -159,7 +159,14 @@ r'''
 
                     save_rand(r0).a(b(),c().save_rand(r1),d())
 
-                and store r0 and r1.  Next, we generate an r2 and compute:
+                and store r0 and r1.  The random number generator on entering
+                "c" is then reseeded on entry, and resumed with at r1 after
+                exiting "c".
+
+                    load_rand(r0).a(b(), reseed_rand().c().load_rand(r1), d())
+
+                we could also choose the reseed explicitly via a load, e.g. if
+                we'd saved a random state "r2" we could use:
 
                     load_rand(r0).a(b(), load_rand(r2).c().load_rand(r1), d())
 
@@ -180,14 +187,13 @@ r'''
                     save_rand(r0).("-".("-".("-"
                         .r.save_rand(r1) | ">") | ">") | ">");
                     
-                then replay with a new randstate r2:
+                then replay with a reseed
 
                     load_rand(r0).("-".("-".("-"
-                        .load_rand(r2).r.load_rand(r1) | ">") | ">") | ">");
+                        .reseed_rand().r.load_rand(r1) | ">") | ">") | ">");
 
             - programattically interacting with a tracetree is simpler;
-              "load_rand" and "save_rand" are for exposition.
-
+              "load_rand" and "save_rand" are primarily for exposition.
 
             - "tree order": child < parent
 
@@ -1290,6 +1296,11 @@ class GrammaGrammar(with_metaclass(GrammaGrammarType,object)):
     @gfunc
     def load_rand(x,n):
         x.random.load_state(str(n))
+        yield ''
+
+    @gfunc
+    def reseed_rand(x):
+        x.random.seed(None)
         yield ''
 
     @gfunc
