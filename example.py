@@ -11,7 +11,7 @@ class Example(GrammaGrammar):
 
         digit := ['0' .. '9'];
 
-        words := ( .25 "stink" | .75 "stank" ).(" f=".f()." ff=".ff()){1,4};
+        words := ( .25 "dog" | .75 "cat" ).(" f=".f()." ff=".ff()){1,4};
     '''
 
     ALLOWED_IDS=['g_allowed']
@@ -177,27 +177,28 @@ def test_resample():
     ctx.random.seed(0)
     sampler=DefaultSampler(ctx)
 
-    def again():
-        s=ctx.sample(sampler)
-        print('---------------')
+    def p(n, e):
+        s=ctx.sample(sampler,e)
+        print('---- %s ----' % n)
         print('%3d %s' % (len(s),s))
-    again()
-    r0=ctx.state.randstates['__initial_random']
-    again()
+    # generate a sample and save the random state on entry
+    p('A', 'save_rand(r0).start')
+    # generate a new sample, demonstrating a different random state
+    p('B', 'start')
 
-    class SamplerContext2(SamplerContext):
-        __slots__='randstates',
+    # resume at r0 again:
+    p('A', 'load_rand(r0).start')
+    # if we generate a new sample here, the state resumes from r0 again, so it will be A
+    p('B', 'start')
 
-        def reset(self):
-            super().reset()
-            self.state.randstates.update(self.randstates)
+    # so if we want to resume at r0..
+    p('A', 'load_rand(r0).start')
+    # .. and continue w/ a new random, we need to reseed:
+    ctx.random.seed(None) # none draws a new seed from urandom
+    p('C', 'start')
 
-    ctx2=SamplerContext2(g)
-    sampler2=DefaultSampler(ctx2)
-    ctx2.randstates=dict(r0=r0)
-    s=ctx2.sample(sampler2, 'set_rand(r0).start')
-    print('---------------')
-    print('%3d %s' % (len(s),s))
+    # and we can still resume from r0 later...
+    p('A', 'load_rand(r0).start')
 
 
 
@@ -209,6 +210,5 @@ if __name__=='__main__':
     #test_tracetree()
     #test_composition()
     test_resample()
-
 
 # vim: ts=4 sw=4

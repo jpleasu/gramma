@@ -120,6 +120,19 @@ r'''
 
 
     TODO:
+        - grammar
+            - no sideeffects
+            - defines gfuncs accessible in Gramma code
+        - sampler
+            - no sideeffects
+            - decides what to do with GExpr nodes
+            - composable
+            - extensible
+            - exchangeable
+                - one context should be able to use multiple samplers
+        - samplercontext
+            - should a sampler context contain a sampler?
+
         - implement TreeConstrainedSampler
             - constructed with expression
                 - e.g.
@@ -131,8 +144,8 @@ r'''
 
         - compiler
             - save state "def, use" tags for each statespace and for random.
-            - from functions to generators
-            - generator analysis
+            - convert functions into generators
+            - analyze generator
                 - comment on nested yields
 
         - resampling
@@ -144,11 +157,11 @@ r'''
 
                 To resample at "c" we compute:
 
-                    get_rand(r0).a(b(),c().get_rand(r1),d())
+                    save_rand(r0).a(b(),c().save_rand(r1),d())
 
                 and store r0 and r1.  Next, we generate an r2 and compute:
 
-                    set_rand(r0).a(b(), set_rand(r2).c().set_rand(r1), d())
+                    load_rand(r0).a(b(), load_rand(r2).c().load_rand(r1), d())
 
             - the presentation is slightly complicated by recursion. We must
               "unroll" rules until the point where the resampled node occurs.
@@ -164,13 +177,16 @@ r'''
                     
                 and instrument:
 
-                    get_rand(r0).("-".("-".("-"
-                        .r.get_rand(r1) | ">") | ">") | ">");
+                    save_rand(r0).("-".("-".("-"
+                        .r.save_rand(r1) | ">") | ">") | ">");
                     
                 then replay with a new randstate r2:
 
-                    set_rand(r0).("-".("-".("-"
-                        .set_rand(r2).r.set_rand(r1) | ">") | ">") | ">");
+                    load_rand(r0).("-".("-".("-"
+                        .load_rand(r2).r.load_rand(r1) | ">") | ">") | ">");
+
+            - programattically interacting with a tracetree is simpler;
+              "load_rand" and "save_rand" are for exposition.
 
 
             - "tree order": child < parent
@@ -832,29 +848,71 @@ class GrammaState(object):
     pass
 
 
-class GeneratorInterface(namedtuple('GeneratorInterface','random state')):
+class GrammaRandom(object):
+
+    __slots__='r','cache'
+    def __init__(self,seed=None):
+        self.r=np.random.RandomState(seed)
+        self.cache={}
+
+    def seed(self,v):
+        self.r.seed(v)
+
+    def load_state(self,n):
+        '''
+            set this random number generator state to the cached value 'n'
+        '''
+        st=self.cache.get(n)
+        self.r.set_state(st)
+
+    def save_state(self,n):
+        '''
+            store the current random number generator state to 'n'
+        '''
+        self.cache[n]=self.r.get_state()
+
+
+
+    def choice(self,l,p=None):
+        return self.r.choice(l,p=p)
+
+    def randint(self,low,high):
+        return self.r.randint(low,high)
+
+    def geometric(self,p):
+        return self.r.geometric(p)
+
+    def f(self,*l,**kw):
+        print(l,kw)
+
+
+class GeneratorInterface(namedtuple('GeneratorInterface','random state parms')):
     '''
         constructed by SamplerContext and passed to generators for access to
         random and state.
     '''
 
     def __new__(cls,sampler):
-        return super(GeneratorInterface,cls).__new__(cls,sampler.random,sampler.state)
+        return super(GeneratorInterface,cls).__new__(cls,sampler.random,sampler.state,sampler.parms)
 
 class SamplerContext(object):
     '''
         the grammar provides grules (including a "start" rule), gfuncs, and the
         reset_state function.
     '''
-    __slots__='grammar','state','random','stack','x'
-    def __init__(self,grammar):
+    __slots__='grammar','state','random','stack','x','parms'
+    def __init__(self,grammar,**parms):
         self.grammar=grammar
-        self.random=np.random.RandomState()
+        self.random=GrammaRandom()
         self.state=GrammaState()
+        self.parms=dict(parms)
+
+    def update_parms(self, **kw):
+        self.parms.update(kw)
 
     def reset(self):
         self.grammar.reset_state(self.state)
-        self.state.randstates['__initial_random']=self.random.get_state()
+        self.random.save_state('__initial_random')
 
         self.x=GeneratorInterface(self)
         self.stack=[]
@@ -1223,16 +1281,15 @@ class GrammaGrammar(with_metaclass(GrammaGrammarType,object)):
 
     def reset_state(self,state):
         state.d=0
-        state.randstates={}
 
     @gfunc
-    def get_rand(x,n):
-        x.state.randstates[n.rname]=x.random.get_state()
+    def save_rand(x,n):
+        x.random.save_state(str(n))
         yield ''
 
     @gfunc
-    def set_rand(x,n):
-        x.random.set_state(x.state.randstates[n.rname])
+    def load_rand(x,n):
+        x.random.load_state(str(n))
         yield ''
 
     @gfunc
