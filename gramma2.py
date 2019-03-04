@@ -37,7 +37,7 @@ r'''
             x | y
     - concatenation (.) - definite concatenation
         x . y
-    - repetition ({}) - randome repeats
+    - repetition ({}) - random repeats
         x{3}
             - generate x exactly 3 times
         x{1,3}
@@ -120,6 +120,16 @@ r'''
 
 
     TODO:
+        - programatic resample.. generate a tracetree, pick a node, generate a gexpr and resample it
+            - fix gfunc calls so that we can recurse with t2ge. don't allow
+              barewords, insist on GExpr, string, or numeric?
+
+            - compile such an expression -- in preorder traversal, find then
+              follow "set_rand" with "definitizing" until next "reseed_rand".
+              - we can't necessarily do this in a sampler, because we can't
+                definitize a stateful node until we know there are no future
+                gfuncs accessing a disjoint random stream.
+
         - conditioning
             - in general, force the random number generator to return a list of
               values:
@@ -519,15 +529,19 @@ class GTok(GExpr):
         return GTok(lt.type,lt.value)
 
     @staticmethod
+    def from_str(s):
+        return GTok('string',repr(s))
+
+    @staticmethod
     def join(tok_iter):
-        return GTok('string',repr(''.join(t.as_str() for t in tok_iter)))
+        return GTok.from_str(''.join(t.as_str() for t in tok_iter))
 
     def is_stateful(self,x,assume_no=None):
         return False
 
     @staticmethod
     def new_empty():
-        return GTok('string',repr(''))
+        return GTok.as_str('')
 
 class GInternal(GExpr):
     '''
@@ -590,7 +604,7 @@ class GAlt(GInternal):
         weights=[]
         children=[]
 
-        for w,c in self.zip(self.weights, self.children):
+        for w,c in zip(self.weights, self.children):
             c=c.simplify()
             if isinstance(c,GAlt):
                 t=sum(c.weights)
@@ -748,7 +762,7 @@ class GRange(GExpr):
 
     def simplify(self):
         if self.hi-self.lo==1:
-            return GTok('string', repr(chr(self.lo)))
+            return GTok.from_str(chr(self.lo))
         return self.copy()
 
     def is_stateful(self,x,assume_no=None):
@@ -859,6 +873,12 @@ class GrammaRandom(object):
     def seed(self,v):
         self.r.seed(v)
 
+    def set_cached_state(self,n,val):
+        self.cache[n]=val
+
+    def get_cached_state(self,n):
+        return self.cache[n]
+
     def load_state(self,n):
         '''
             set this random number generator state to the cached value 'n'
@@ -871,7 +891,6 @@ class GrammaRandom(object):
             store the current random number generator state to 'n'
         '''
         self.cache[n]=self.r.get_state()
-
 
 
     def choice(self,l,p=None):
@@ -930,14 +949,14 @@ class SamplerContext(object):
 
         self.stack.append(sampler.expr2ctor(ge)(self.x))
         while True:
-            x=next(sampler.unwrap(self.stack[-1]))
-            while isinstance(x,string_types):
-                sampler.complete(self.stack[-1],x)
+            a=next(sampler.unwrap(self.stack[-1]))
+            while isinstance(a,string_types):
+                sampler.complete(self.stack[-1],a)
                 self.stack.pop()
                 if len(self.stack)==0:
-                    return x
-                x=sampler.unwrap(self.stack[-1]).send(x)
-            self.stack.append(sampler.expr2ctor(x)(self.x))
+                    return a
+                a=sampler.unwrap(self.stack[-1]).send(a)
+            self.stack.append(sampler.expr2ctor(a)(self.x))
 
 
 class DefaultSampler(object):
@@ -1362,12 +1381,14 @@ class TTNode(object):
         - find the deepest child responsible for a given position
             - function that reverses string would screw up children?? treat all functions as opaque?
     '''
-    __slots__='ge','parent','children','s'
+    __slots__='ge','parent','children','s','inrand','outrand'
     def __init__(self,ge):
         self.ge=ge
         self.parent=None
         self.children=[]
         self.s=None
+        self.inrand=None
+        self.outrand=None
 
     def add_child(self,ge):
         c=TTNode(ge)
@@ -1382,11 +1403,15 @@ class TTNode(object):
 
 
 class TracingSampler(object):
+    '''
+        we could wrap the stack object, but we'd need to know what we're
+        pushing onto.
+    '''
+    __slots__='tracetree','base','random'
 
-    __slots__='tracetree','base'
-
-    def __init__(self,base):
+    def __init__(self,base,random):
         self.base=base
+        self.random=random
 
     def reset(self):
         self.base.reset()
@@ -1400,10 +1425,12 @@ class TracingSampler(object):
             self.tracetree=TTNode(ge)
         else:
             self.tracetree=self.tracetree.add_child(ge)
+        self.tracetree.inrand=self.random.r.get_state()
         return self.base.expr2ctor(ge)
 
     def complete(self,top,s):
         self.tracetree.s=s
+        self.tracetree.outrand=self.random.r.get_state()
         if self.tracetree.parent!=None:
             self.tracetree=self.tracetree.parent
 

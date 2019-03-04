@@ -55,7 +55,6 @@ class Example(GrammaGrammar):
 
 
 def demo_parser():
-    global g
     g=Example()
     print(g.parse('''"a"|"b"'''))
 
@@ -140,7 +139,7 @@ def demo_tracetree():
     g=Example()
     ctx=SamplerContext(g)
     ctx.random.seed(0)
-    sampler=TracingSampler(DefaultSampler(g))
+    sampler=TracingSampler(DefaultSampler(g),ctx.random)
 
     for i in range(10):
         s=ctx.sample(sampler)
@@ -152,7 +151,7 @@ def demo_composition():
     g=Example()
     ctx=SamplerContext(g)
     ctx.random.seed(0)
-    sampler=TracingSampler(LeftAltSampler(DefaultSampler(g),5))
+    sampler=TracingSampler(LeftAltSampler(DefaultSampler(g),5),ctx.random)
     for i in range(10):
         s=ctx.sample(sampler)
         print('---------------')
@@ -194,24 +193,85 @@ def demo_random_states():
 
 
 def demo_resample():
+    import random
+
     g=Example()
     ctx=SamplerContext(g)
-    ctx.random.seed(0)
-    sampler=DefaultSampler(g)
-    for i in range(10):
-        s=ctx.sample(sampler)
-        print('---------------')
-        print('%3d %s' % (len(s),s))
+    #ctx.random.seed(4)
+    ctx.random.seed(2)
+    sampler0=DefaultSampler(g)
+    sampler=TracingSampler(sampler0,ctx.random)
+    print(ctx.sample(sampler))
 
+    tt=sampler.tracetree
+
+    # resample the same thing with a cached randstate:
+    ctx.random.set_cached_state('r',tt.inrand)
+    print(ctx.sample(sampler0,'load_rand(r).start'))
+
+
+    # same thing, but unwind to a node, reseed on enter, and reset to outrand
+    # on exit.
+    def gennodes(t):
+        yield t
+        for c in t.children:
+            for tc in gennodes(c):
+                yield tc
+
+    def depth(t,d=0):
+        if t.parent==None:
+            return d
+        return depth(t.parent,d+1)
+
+    allnodes=list(gennodes(tt))
+    #random.seed(5)
+    #n=random.choice([n for n in allnodes if isinstance(n.ge,GRule)])
+    #n=random.choice([n for n in allnodes if isinstance(n.ge,GAlt)])
+    n=random.choice([n for n in allnodes if isinstance(n.ge,GRange)])
+    print(depth(n))
+    #n.dump()
+
+    def resample(ge):
+        return GCat([g.parse('reseed_rand()'),ge,g.parse('load_rand(r1)')])
+        #return ge
+    ctx.random.set_cached_state('r1',n.outrand)
+
+    def t2ge(t):
+        ge=t.ge
+        if t==n:
+            return resample(ge)
+        elif isinstance(ge,GAlt):
+            # XXX set rand according to first child, o/w stream is off?
+            return t2ge(t.children[0])
+        elif isinstance(ge,GRule):
+            return t2ge(t.children[0])
+        elif isinstance(ge,GCat):
+            return GCat([t2ge(c) for c in t.children])
+        elif isinstance(ge,GRep):
+            # XXX set rand according to first child, o/w stream is off?
+            return GCat([t2ge(c) for c in t.children])
+        elif isinstance(ge,GRange):
+            return GTok.from_str(t.s)
+        elif isinstance(ge,GTok):
+            return ge.copy()
+        elif isinstance(ge,GFunc):
+            return ge.copy() # don't recurse into children, since bare might be string arguments.. how can we tell? maybe all bare names whould be interpreted as grammatical
+        else:
+            raise ValueError('unknown GExpr node type: %s' % type(ge))
+    rge=t2ge(tt)
+    #print(rge)
+    rge=rge.simplify()
+    print(rge)
+    print(ctx.sample(sampler0,rge))
 
 if __name__=='__main__':
     #demo_parser()
     #demo_sampling()
     #demo_rlim()
-    demo_constraint()
+    #demo_constraint()
     #demo_tracetree()
     #demo_composition()
     #demo_random_states()
-    #demo_resample()
+    demo_resample()
 
 # vim: ts=4 sw=4
