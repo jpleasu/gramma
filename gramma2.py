@@ -1281,8 +1281,10 @@ def analyze_gfuncs(GrammaChildClass,allowed_ids=None):
     if len(statespace_usedby.keys())>0 and reset_state_ast==None:
         # XXX enumerate which gfunc uses which statespace
         raise GrammaGrammarException('%s has no reset_state method, but uses statespaces %s' % (GrammaChildClass, statespace_usedby.keys()))
-    analyzer=GFuncAnalyzeVisitor2(GrammaChildClass,statespace_usedby,reset_state_ast)
-    analyzer.run()
+
+    if reset_state_ast != None:
+        analyzer=GFuncAnalyzeVisitor2(GrammaChildClass,statespace_usedby,reset_state_ast)
+        analyzer.run()
 
     
 
