@@ -3,7 +3,7 @@
 from gramma2 import *
 from builtins import super
 
-class Example(GrammaGrammar):
+class BasicGrammar(GrammaGrammar):
     G=r'''
         start := recurs;
 
@@ -44,7 +44,7 @@ class Example(GrammaGrammar):
     def gg(x):
         yield 'gg_return' + g_not_allowed
 
-    @gfunc(statevars=['extrastate'])
+    @gfunc(statevar_defs=['extrastate'])
     def h(x):
         yield 'h_return'
 
@@ -54,13 +54,39 @@ class Example(GrammaGrammar):
         yield ''
 
 
+class ArithmeticGrammar(GrammaGrammar):
+
+    G=r'''
+        start := expr;
+
+        expr := add;
+
+        # recursing too much leads to huge trees, bias towards non-recursion
+        add :=  expr . '+' . expr | 2.5 mul ;
+        mul :=  expr . '*' . expr | 2.5 atom ;
+
+        atom :=  var | 3 int;
+
+        var := ['a'..'z']{1,5,geom(3)} ;
+        int := ['1'..'9'] . digit{1,8,geom(3)};
+
+        digit := ['0' .. '9'];
+    '''
+
+    def __init__(x):
+        GrammaGrammar.__init__(x,type(x).G)
+
+
+
+
+
 def demo_parser():
-    g=Example()
+    g=BasicGrammar()
     print(g.parse('''"a"|"b"'''))
 
 
 def demo_sampling():
-    g=Example()
+    g=BasicGrammar()
     it=g.generate()
     for i in xrange(10):
         print(next(it))
@@ -119,7 +145,7 @@ def demo_constraint():
         A sampler that forces every Alt to take the left option up to maximum
         expression depth.
     '''
-    g=Example()
+    g=BasicGrammar()
 
     print('==================')
 
@@ -136,7 +162,7 @@ def demo_tracetree():
     '''
         generate a tracetree for a sample then pick an alt node to re-sample with chosen bias.
     '''
-    g=Example()
+    g=BasicGrammar()
     ctx=SamplerContext(g)
     ctx.random.seed(0)
     sampler=TracingSampler(DefaultSampler(g),ctx.random)
@@ -148,7 +174,7 @@ def demo_tracetree():
         sampler.tracetree.dump()
 
 def demo_composition():
-    g=Example()
+    g=BasicGrammar()
     ctx=SamplerContext(g)
     ctx.random.seed(0)
     sampler=TracingSampler(LeftAltSampler(DefaultSampler(g),5),ctx.random)
@@ -160,7 +186,7 @@ def demo_composition():
 
 
 def demo_random_states():
-    g=Example()
+    g=BasicGrammar()
     ctx=SamplerContext(g)
     ctx.random.seed(0)
     sampler=DefaultSampler(g)
@@ -195,20 +221,22 @@ def demo_random_states():
 def demo_resample():
     import random
 
-    g=Example()
+    g=ArithmeticGrammar()
     ctx=SamplerContext(g)
     #ctx.random.seed(4)
     ctx.random.seed(2)
     sampler0=DefaultSampler(g)
     sampler=TracingSampler(sampler0,ctx.random)
-    print(ctx.sample(sampler))
+    origs=ctx.sample(sampler)
+    print('-- the original sample --')
+    print(origs)
 
     tt=sampler.tracetree
 
     # resample the same thing with a cached randstate:
     ctx.random.set_cached_state('r',tt.inrand)
-    print(ctx.sample(sampler0,'load_rand("r").start'))
-
+    s=ctx.sample(sampler0,'load_rand("r").start')
+    assert(s==origs)
 
     # same thing, but unwind to a node, reseed on enter, and reset to outrand
     # on exit.
@@ -221,14 +249,16 @@ def demo_resample():
     def depth(t,d=0):
         if t.parent==None:
             return d
-        return depth(t.parent,d+1)
+        if t.ge.is_rule('expr'):
+            return depth(t.parent,d+1)
+        return depth(t.parent,d)
 
     allnodes=list(gennodes(tt))
     #random.seed(5)
-    #n=random.choice([n for n in allnodes if isinstance(n.ge,GRule)])
+    n=random.choice([n for n in allnodes if isinstance(n.ge,GRule)])
     #n=random.choice([n for n in allnodes if isinstance(n.ge,GAlt)])
-    n=random.choice([n for n in allnodes if isinstance(n.ge,GRange)])
-    print(depth(n))
+    #n=random.choice([n for n in allnodes if isinstance(n.ge,GRange)])
+    print('depth(n) = %d' % depth(n))
     #n.dump()
 
     def resample(ge):
@@ -241,14 +271,14 @@ def demo_resample():
         if t==n:
             return resample(ge)
         elif isinstance(ge,GAlt):
-            # XXX set rand according to first child, o/w stream is off?
+            # XXX lost sample, rand stream out of sync w/ original
             return t2ge(t.children[0])
         elif isinstance(ge,GRule):
             return t2ge(t.children[0])
         elif isinstance(ge,GCat):
             return GCat([t2ge(c) for c in t.children])
         elif isinstance(ge,GRep):
-            # XXX set rand according to first child, o/w stream is off?
+            # XXX lost sample, rand stream out of sync w/ original
             return GCat([t2ge(c) for c in t.children])
         elif isinstance(ge,GRange):
             return GTok.from_str(t.s)
@@ -261,8 +291,161 @@ def demo_resample():
     rge=t2ge(tt)
     #print(rge)
     rge=rge.simplify()
+    print('-- the resample expression --')
     print(rge)
-    print(ctx.sample(sampler0,rge))
+    for i in range(10):
+        print('---')
+        print(ctx.sample(sampler0,rge))
+
+
+def demo_grammar_analysis():
+
+    # if a state variable is used by a gfunc, it must be reset
+    s=None
+    try:
+        class AnalyzeMeGrammar1(GrammaGrammar):
+            @gfunc
+            def f(x):
+                yield str(x.state.m)
+
+    except Exception as e:
+        s=str(e)
+    assert('has no reset_state method, but uses statespace(s) m' in s)
+
+    s=None
+    try:
+        class AnalyzeMeGrammar1fix(GrammaGrammar):
+
+            def reset_state(self,state):
+                state.m=5
+
+            @gfunc
+            def f(x):
+                yield str(x.state.m)
+
+    except Exception as e:
+        s=str(e)
+    assert(s==None)
+
+
+    # global are forbidden..
+    s=None
+    try:
+        class AnalyzeMeGrammar2(GrammaGrammar):
+
+            @gfunc
+            def f(x):
+                yield str(g_global)
+
+    except Exception as e:
+        s=str(e)
+    assert("forbidden use of variable 'g_global' in f" in s)
+
+    # unless explicitly allowed
+    s=None
+    try:
+        class AnalyzeMeGrammar2fix(GrammaGrammar):
+
+            ALLOWED_IDS=['g_global']
+
+            @gfunc
+            def f(x):
+                yield str(g_global)
+
+    except Exception as e:
+        s=str(e)
+    assert(s==None)
+
+
+
+
+    # gfuncs don't return their value, they yield it.
+    s=None
+    try:
+        class AnalyzeMeGrammar3(GrammaGrammar):
+
+            @gfunc
+            def f(x):
+                return 'my value'
+
+    except Exception as e:
+        s=str(e)
+    assert("gfunc f of class AnalyzeMeGrammar3 doesn't yield a value" in s)
+
+    s=None
+    try:
+        class AnalyzeMeGrammar3fix(GrammaGrammar):
+
+            @gfunc
+            def f(x):
+                yield 'my value'
+
+    except Exception as e:
+        s=str(e)
+    assert(s==None)
+
+
+
+
+
+
+    s=None
+    try:
+        class AnalyzeMeGrammarN(GrammaGrammar):
+            def reset_state(self,state):
+                state.assigned=1
+                state.used=1
+                state.mod=1
+                state.subscript_use={}
+                state.subscript_def={}
+                state.subscript_mod={}
+                state.subscript_mod2={}
+                state.obj1={}
+                state.obj2={}
+                state.obj3={}
+
+            @gfunc
+            def f(x):
+                # use
+                if x.state.used:
+                    yield ''
+                # def
+                x.state.assigned=True
+
+                # both
+                x.state.mod+=1
+
+                # use
+                if x.state.subscript_use[15]:
+                    yield ''
+                # def
+                x.state.subscript_def[15]=True
+
+                # both
+                x.state.subscript_mod[15]+=1
+
+                # w/out knowing object types, we can't say, so all of the
+                # following are both
+                x.state.obj1.method()
+                x.state.obj2.field=1
+                x.state.obj3.field.method()
+
+                # both.. can't tell with objects
+                x.state.subscript_mod2[15].method()
+
+
+                s=yield "donkey"
+                yield s
+
+    except Exception as e:
+        s=str(e)
+
+    #print(','.join(sorted(AnalyzeMeGrammarN.f.statevar_uses)))
+    #print(','.join(sorted(AnalyzeMeGrammarN.f.statevar_defs)))
+
+    assert('mod,obj1,obj2,obj3,subscript_mod,subscript_mod2,subscript_use,used'==','.join(sorted(AnalyzeMeGrammarN.f.statevar_uses)))
+    assert('assigned,mod,obj1,obj2,obj3,subscript_def,subscript_mod,subscript_mod2'==','.join(sorted(AnalyzeMeGrammarN.f.statevar_defs)))
+
 
 if __name__=='__main__':
     #demo_parser()
@@ -272,6 +455,7 @@ if __name__=='__main__':
     #demo_tracetree()
     #demo_composition()
     #demo_random_states()
-    demo_resample()
+    #demo_resample()
+    demo_grammar_analysis()
 
 # vim: ts=4 sw=4
