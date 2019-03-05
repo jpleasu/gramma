@@ -171,23 +171,23 @@ def demo_random_states():
         print('%3d %s' % (len(s),s))
 
     # generate a sample and save the random state on entry
-    p('A', 'save_rand(r0).start')
+    p('A', 'save_rand("r0").start')
     # generate a new sample, demonstrating a different random state
     p('B', 'start')
 
     # resume at r0 again:
-    p('A', 'load_rand(r0).start')
+    p('A', 'load_rand("r0").start')
     # if we generate a new sample here, the state resumes from r0 again, so it will be A
     p('B', 'start')
 
     # so if we want to resume at r0..
-    p('A', 'load_rand(r0).start')
+    p('A', 'load_rand("r0").start')
     # .. and continue w/ a new random, we need to reseed:
     ctx.random.seed(None) # none draws a new seed from urandom
     p('C', 'start')
 
     # and we can still resume from r0 later.
-    p('A', 'load_rand(r0).start')
+    p('A', 'load_rand("r0").start')
     # we can also reseed the random number generator from within the grammar
     p('D', 'reseed_rand().start')
 
@@ -207,7 +207,7 @@ def demo_resample():
 
     # resample the same thing with a cached randstate:
     ctx.random.set_cached_state('r',tt.inrand)
-    print(ctx.sample(sampler0,'load_rand(r).start'))
+    print(ctx.sample(sampler0,'load_rand("r").start'))
 
 
     # same thing, but unwind to a node, reseed on enter, and reset to outrand
@@ -232,7 +232,7 @@ def demo_resample():
     #n.dump()
 
     def resample(ge):
-        return GCat([g.parse('reseed_rand()'),ge,g.parse('load_rand(r1)')])
+        return GCat([g.parse('reseed_rand()'),ge,g.parse('load_rand("r1")')])
         #return ge
     ctx.random.set_cached_state('r1',n.outrand)
 

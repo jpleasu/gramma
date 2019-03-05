@@ -120,12 +120,14 @@ r'''
 
 
     TODO:
-        - programatic resample.. generate a tracetree, pick a node, generate a gexpr and resample it
-            - fix gfunc calls so that we can recurse with t2ge. don't allow
-              barewords, insist on GExpr, string, or numeric?
+        - TTNode
+            - find the deepest child responsible for a given position
+                - function that reverses string would screw up children?? treat
+                  all functions as opaque?
 
+        - programatic resample.. generate a tracetree, pick a node, generate a gexpr and resample it
             - compile such an expression -- in preorder traversal, find then
-              follow "set_rand" with "definitizing" until next "reseed_rand".
+              follow "load_rand" with "definitizing" until next "reseed_rand".
               - we can't necessarily do this in a sampler, because we can't
                 definitize a stateful node until we know there are no future
                 gfuncs accessing a disjoint random stream.
@@ -162,18 +164,18 @@ r'''
 
                 To resample at "c" we compute:
 
-                    save_rand(r0).a(b(),c().save_rand(r1),d())
+                    save_rand('r0').a(b(),c().save_rand('r1'),d())
 
                 and store r0 and r1.  The random number generator on entering
                 "c" is then reseeded on entry, and resumed with at r1 after
                 exiting "c".
 
-                    load_rand(r0).a(b(), reseed_rand().c().load_rand(r1), d())
+                    load_rand('r0').a(b(), reseed_rand().c().load_rand('r1'), d())
 
                 we could also choose the reseed explicitly via a load, e.g. if
                 we'd saved a random state "r2" we could use:
 
-                    load_rand(r0).a(b(), load_rand(r2).c().load_rand(r1), d())
+                    load_rand('r0').a(b(), load_rand(r2).c().load_rand('r1'), d())
 
             - the presentation is slightly complicated by recursion. We must
               "unroll" rules until the point where the resampled node occurs.
@@ -189,13 +191,13 @@ r'''
                     
                 and instrument:
 
-                    save_rand(r0).("-".("-".("-"
-                        .r.save_rand(r1) | ">") | ">") | ">");
+                    save_rand('r0').("-".("-".("-"
+                        .r.save_rand('r1') | ">") | ">") | ">");
                     
                 then replay with a reseed
 
-                    load_rand(r0).("-".("-".("-"
-                        .reseed_rand().r.load_rand(r1) | ">") | ">") | ">");
+                    load_rand('r0').("-".("-".("-"
+                        .reseed_rand().r.load_rand('r1') | ">") | ">") | ">");
 
             - programattically interacting with a tracetree is simpler;
               "load_rand" and "save_rand" are primarily for exposition.
@@ -496,6 +498,16 @@ class GExpr(object):
     def simplify(self):
         'copy self.. caller must ultimately set parent attribute'
         return self.copy()
+
+
+    def as_num(self):
+        raise GrammaParseError('''only tokens (literal numbers) have an as_num method''')
+
+    def as_int(self):
+        raise GrammaParseError('''only tokens (literal ints) have an as_int method''')
+
+    def as_str(self):
+        raise GrammaParseError('''only tokens (literal strings) have an as_str method''')
 
 class GTok(GExpr):
     __slots__='type','value'
@@ -1323,12 +1335,12 @@ class GrammaGrammar(with_metaclass(GrammaGrammarType,object)):
 
     @gfunc
     def save_rand(x,n):
-        x.random.save_state(str(n))
+        x.random.save_state(n.as_str())
         yield ''
 
     @gfunc
     def load_rand(x,n):
-        x.random.load_state(str(n))
+        x.random.load_state(n.as_str())
         yield ''
 
     @gfunc
@@ -1377,9 +1389,7 @@ class GrammaGrammar(with_metaclass(GrammaGrammarType,object)):
 
 class TTNode(object):
     '''
-        TODO
-        - find the deepest child responsible for a given position
-            - function that reverses string would screw up children?? treat all functions as opaque?
+        a node of the tracetree
     '''
     __slots__='ge','parent','children','s','inrand','outrand'
     def __init__(self,ge):
