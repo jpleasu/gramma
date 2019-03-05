@@ -391,7 +391,7 @@ def demo_grammar_analysis():
 
     s=None
     try:
-        class AnalyzeMeGrammarN(GrammaGrammar):
+        class AnalyzeMeGrammar4(GrammaGrammar):
             def reset_state(self,state):
                 state.assigned=1
                 state.used=1
@@ -440,11 +440,27 @@ def demo_grammar_analysis():
     except Exception as e:
         s=str(e)
 
-    #print(','.join(sorted(AnalyzeMeGrammarN.f.statevar_uses)))
-    #print(','.join(sorted(AnalyzeMeGrammarN.f.statevar_defs)))
+    #print(','.join(sorted(AnalyzeMeGrammar4.f.statevar_uses)))
+    #print(','.join(sorted(AnalyzeMeGrammar4.f.statevar_defs)))
 
-    assert('mod,obj1,obj2,obj3,subscript_mod,subscript_mod2,subscript_use,used'==','.join(sorted(AnalyzeMeGrammarN.f.statevar_uses)))
-    assert('assigned,mod,obj1,obj2,obj3,subscript_def,subscript_mod,subscript_mod2'==','.join(sorted(AnalyzeMeGrammarN.f.statevar_defs)))
+    assert('mod,obj1,obj2,obj3,subscript_mod,subscript_mod2,subscript_use,used'==','.join(sorted(AnalyzeMeGrammar4.f.statevar_uses)))
+    assert('assigned,mod,obj1,obj2,obj3,subscript_def,subscript_mod,subscript_mod2'==','.join(sorted(AnalyzeMeGrammar4.f.statevar_defs)))
+
+
+
+    s=None
+    try:
+        class AnalyzeMeGrammar5(GrammaGrammar):
+
+            @gfunc
+            def f(x):
+                yield ''.join([(yield 'e%d') for e in range(3)])
+
+    except Exception as e:
+        s=str(e)
+    assert('yield in a generator expression or list comprehension, in gfunc f of class AnalyzeMeGrammar5 on line 5' in s)
+
+
 
 
 if __name__=='__main__':

@@ -169,9 +169,10 @@ r'''
 
         - add parms.. readonly data usable by gfuncs, requiring no initialization
 
-        - compiler
-            - save state "def, use" tags for each statespace and for random.
-            - convert functions into generators
+        - analyze
+            - convert functions into generators?
+                - should gfunc really be gcoro?
+
             - analyze generator
                 - comment on yield within list/generator comprehensions
 
@@ -1226,9 +1227,12 @@ class GFuncAnalyzeVisitor(ast.NodeVisitor):
     def visit_Yield(self, y):
         self.visit(y.value)
 
+        if any(n for n in self.stack[:-1] if isinstance(n,(ast.GeneratorExp,ast.ListComp))):
+            raise GrammaGrammarException("yield in a generator expression or list comprehension, in gfunc %s of class %s on line %d" % (self.f.name, self.target_class.__name__, y.lineno))
+
         p=self.stack[-2]
         if p.value!=y:
-            raise GrammaGrammarException('failed to analyze yield expression in gfunc %s of class %s on line %d' % (self.f.name, self.target_class.__name__, x.lineno))
+            raise GrammaGrammarException('failed to analyze yield expression in gfunc %s of class %s on line %d' % (self.f.name, self.target_class.__name__, y.lineno))
 
         if isinstance(p,ast.Expr):
             self.has_terminal_yield=True
