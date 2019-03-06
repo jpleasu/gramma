@@ -14,7 +14,7 @@ class BasicGrammar(GrammaGrammar):
         words := (`1000*(depth>20)` "*" | " ").( .25 "dog" | .75 "cat" ).(" f=".f()." ff=".ff()){1,4};
     '''
 
-    ALLOWED_IDS=['g_allowed']
+    ALLOWED_GLOBAL_IDS=['g_allowed']
 
     def __init__(x):
         GrammaGrammar.__init__(x,type(x).G)
@@ -234,10 +234,11 @@ def demo_resample():
     tt=sampler.tracetree
     # resample with the cached randstate.
     # Note that the dynamic alternations used in ArithmeticGrammar use depth
-    # and using "cat(load_rand,start)" increases the depth. Use reset_depth at
-    # to recover depth in the same way that load_rand recovers random.
+    # and using "cat(load_rand,start)" increases the depth. Reset the depth
+    # with the 'def'. (depth is set to 1 because on _exit_ from the gfunc
+    # call, depth is decremented)
     ctx.random.set_cached_state('r',tt.inrand)
-    s=ctx.sample(sampler0,'load_rand("r").reset_depth().start')
+    s=ctx.sample(sampler0,'load_rand("r").def("depth",1).start')
     assert(s==origs)
 
     # same thing, but unwind to a node, reseed on enter, and reset to outrand
@@ -374,7 +375,7 @@ def demo_grammar_analysis():
     try:
         class AnalyzeMeGrammar2fix(GrammaGrammar):
 
-            ALLOWED_IDS=['g_global']
+            ALLOWED_GLOBAL_IDS=['g_global']
 
             @gfunc
             def f(x):
