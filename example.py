@@ -223,6 +223,7 @@ def demo_resample():
     import random
 
     g=ArithmeticGrammar()
+    #g=BasicGrammar()
     ctx=SamplerContext(g)
     #ctx.random.seed(15)
     sampler0=DefaultSampler(g)
@@ -241,64 +242,24 @@ def demo_resample():
     s=ctx.sample(sampler0,'load_rand("r").def("depth",1).start')
     assert(s==origs)
 
-    # same thing, but unwind to a node, reseed on enter, and reset to outrand
-    # on exit.
-    def gennodes(t):
-        yield t
-        for c in t.children:
-            for tc in gennodes(c):
-                yield tc
 
-    def depth(t,d=0):
-        if t.parent==None:
-            return d
-        if t.ge.is_rule('expr'):
-            return depth(t.parent,d+1)
-        return depth(t.parent,d)
-
-    allnodes=list(gennodes(tt))
+    ## choose the node to resample, n
+    allnodes=list(tt.gennodes())
     #random.seed(5)
     n=random.choice([n for n in allnodes if isinstance(n.ge,GRule)])
     #n=random.choice([n for n in allnodes if isinstance(n.ge,GAlt)])
     #n=random.choice([n for n in allnodes if isinstance(n.ge,GRange)])
-    print('depth(n) = %d' % depth(n))
+
+    print('depth(n) = %d' % n.depth())
     #n.dump()
 
-    def resample(ge):
-        return GCat([g.parse('reseed_rand()'),ge,g.parse('load_rand("r1")')])
-        #return ge
-    ctx.random.set_cached_state('r1',n.outrand)
-
-    def t2ge(t):
-        ge=t.ge
-        if t==n:
-            return resample(ge)
-        elif isinstance(ge,GAlt):
-            # XXX lost sample, rand stream out of sync w/ original
-            return t2ge(t.children[0])
-        elif isinstance(ge,GRule):
-            return t2ge(t.children[0])
-        elif isinstance(ge,GCat):
-            return GCat([t2ge(c) for c in t.children])
-        elif isinstance(ge,GRep):
-            # XXX lost sample, rand stream out of sync w/ original
-            return GCat([t2ge(c) for c in t.children])
-        elif isinstance(ge,GRange):
-            return GTok.from_str(t.s)
-        elif isinstance(ge,GTok):
-            return ge.copy()
-        elif isinstance(ge,GFunc):
-            # XXX: don't recurse into children, since bare might be string
-            # arguments.. how can we tell? maybe all bare names whould be
-            # interpreted as grammatical
-            return ge.copy()
-        else:
-            raise ValueError('unknown GExpr node type: %s' % type(ge))
-    rge=t2ge(tt)
-    #print(rge)
-    rge=rge.simplify()
+    ## construct a GExpr to resamples n with
+    rge,cfg=tt.resample(g,lambda t:t==n)
     print('-- the resample expression --')
     print(rge)
+
+    ctx.update_cache(cfg)
+
     for i in range(10):
         print('---')
         print(ctx.sample(sampler0,rge))

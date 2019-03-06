@@ -109,7 +109,15 @@ r'''
             - child_containing treats gfuncs as atomic
             - dynamic alternations use state.depth
 
-        - implement recursion depth
+        - implement recursion depth for dynamic alt testing
+
+        - "samplers" should be "brokers" or "mediators".. they sit between the
+          pushes and pops of the stack machine.
+
+        - resample should insert the correct load(state,slot) and
+          load_rand(slot) in sequence to produce correct output.
+          - during tracetree construction, store instate and outstate maps
+          - simplify (or "compile") can then remove unnecessary loads.
 
         - compile an expression -- in preorder traversal, find then
           follow "load_rand" with "definitizing" until next "reseed_rand".
@@ -261,6 +269,8 @@ else:
 
     def ast_argname(a):
         return a.arg
+
+import copy
 
 #sys.setrecursionlimit(20000)
 sys.setrecursionlimit(200000)
@@ -448,7 +458,7 @@ class GExpr(object):
         for a in self.__slots__:
             setattr(d,a,getattr(self,a))
 
-    def is_rule(self, rname):
+    def is_rule(self, rname=None):
         return False
     
     # tag2cls[lark_tree_node.data]=GExpr_with_parse_larktree_method
@@ -866,7 +876,9 @@ class GRule(GExpr):
     def copy(self):
         return GRule(self.rname)
 
-    def is_rule(self,rname):
+    def is_rule(self, rname=None):
+        if rname==None:
+            return True
         return self.rname==rname
 
     def __str__(self,children=None):
@@ -887,10 +899,10 @@ class GrammaState(object):
         self._cache={}
 
     def save(self,n,slot):
-        self._cache[slot]=getattr(self,n)
+        self._cache[slot]=copy.deepcopy(getattr(self,n))
 
     def load(self,n,slot):
-        setattr(self,n,self._cache[slot])
+        setattr(self,n,copy.deepcopy(self._cache[slot]))
 
 class GrammaRandom(object):
 
@@ -959,6 +971,10 @@ class SamplerContext(object):
         self.random=GrammaRandom()
         self.state=GrammaState()
         self.parms=dict(parms)
+
+    def update_cache(self, cachecfg):
+        self.state._cache.update(cachecfg.statecache)
+        self.random._cache.update(cachecfg.randcache)
 
     def update_parms(self, **kw):
         self.parms.update(kw)
@@ -1519,6 +1535,24 @@ class GrammaGrammar(with_metaclass(GrammaGrammarType,object)):
             raise GrammaGrammarException('unrecognized expression: (%s) %s' % (type(ge), ge))
         return g
 
+class CacheConfig(object):
+    __slots__='randcache','statecache'
+
+
+    def __init__(self):
+        self.randcache={}
+        self.statecache={}
+
+    def new_state(self, val):
+        n='_s%d' % len(self.statecache)
+        self.statecache[n]=val
+        return n
+
+    def new_randstate(self, val):
+        n='_r%d' % len(self.randcache)
+        self.randcache[n]=val
+        return n
+
 class TTNode(object):
     '''
         a node of the tracetree
@@ -1577,19 +1611,69 @@ class TTNode(object):
         raise GrammaParseError('unknown expression (%s)%s' % (type(self.ge), self.ge))
 
     def first_rule(self,rname):
-        if self.ge.is_rule(rname):
-            return self
-        for c in self.children:
-            res=c.first_rule(rname)
-            if res!=None:
-                return res
+        for n in self.gennodes():
+            if n.ge.is_rule(rname):
+                return n
         return None
 
+    def gennodes(self):
+        yield self
+        for c in self.children:
+            for cc in c.gennodes():
+                yield cc
+
+    def depth(self,pred=lambda x:True):
+        '''
+            # of ancestors that satisfy pred
+        '''
+        n=self.parent
+        d=0
+        while n!=None:
+            if pred(n):
+                d+=1
+            n=n.parent
+        return d
+
+    def resample(self,grammar,pred):
+        '''
+            computes ge, a GExpr that resamples only the nodes satisfying pred.
+
+            also computes cfg, a CacheConfig populated with any extra random and state
+            values needed by ge.
+
+            return ge,cfg
+        '''
+
+        cachecfg=CacheConfig()
+
+        def recurse(t):
+            if pred(t):
+                slot=cachecfg.new_randstate(t.outrand)
+                return GCat([grammar.parse('reseed_rand()'),t.ge.copy(),grammar.parse("load_rand('"+slot+"')")])
+
+            ge=t.ge
+            if isinstance(ge,GAlt):
+                # XXX lost sample, rand stream out of sync w/ original
+                return recurse(t.children[0])
+            elif isinstance(ge,GRule):
+                return recurse(t.children[0])
+            elif isinstance(ge,GCat):
+                return GCat([recurse(c) for c in t.children])
+            elif isinstance(ge,GRep):
+                # XXX lost sample, rand stream out of sync w/ original
+                return GCat([recurse(c) for c in t.children])
+            elif isinstance(ge,GRange):
+                return GTok.from_str(t.s)
+            elif isinstance(ge,GTok):
+                return ge.copy()
+            elif isinstance(ge,GFunc):
+                return ge.copy()
+            else:
+                raise ValueError('unknown GExpr node type: %s' % type(ge))
+
+        return recurse(self).simplify(), cachecfg
+
 class TracingSampler(object):
-    '''
-        we could wrap the stack object, but we'd need to know what we're
-        pushing onto.
-    '''
     __slots__='tracetree','base','random'
 
     def __init__(self,base,random):
