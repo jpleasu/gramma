@@ -11,7 +11,7 @@ class BasicGrammar(GrammaGrammar):
 
         digit := ['0' .. '9'];
 
-        words := ( .25 "dog" | .75 "cat" ).(" f=".f()." ff=".ff()){1,4};
+        words := (`1000*(depth>20)` "*" | " ").( .25 "dog" | .75 "cat" ).(" f=".f()." ff=".ff()){1,4};
     '''
 
     ALLOWED_IDS=['g_allowed']
@@ -61,11 +61,10 @@ class ArithmeticGrammar(GrammaGrammar):
 
         expr := add;
 
-        # recursing too much leads to huge trees, bias towards non-recursion
-        add :=  expr . '+' . expr | 2.5 mul ;
-        mul :=  expr . '*' . expr | 2.5 atom ;
+        add :=  mul . '+' . mul | `depth/30.0` mul ;
+        mul :=  atom . '*' . atom | `depth/30.0` atom ;
 
-        atom :=  var | 3 int;
+        atom :=  var | 3 int | "(" . expr . ")";
 
         var := ['a'..'z']{1,5,geom(3)} ;
         int := ['1'..'9'] . digit{1,8,geom(3)};
@@ -82,7 +81,9 @@ class ArithmeticGrammar(GrammaGrammar):
 
 def demo_parser():
     g=BasicGrammar()
-    print(g.parse('''"a"|"b"'''))
+    print(g.parse('''
+        "a"| `cats` "b"
+    '''))
 
 
 def demo_sampling():
@@ -156,7 +157,7 @@ def demo_constraint():
     for i in range(10):
         s=ctx.sample(sampler)
         print('%3d %s' % (len(s),s))
-        assert(ctx.state.d==0)
+        assert(sampler.d==0)
 
 def demo_tracetree():
     '''
@@ -223,8 +224,7 @@ def demo_resample():
 
     g=ArithmeticGrammar()
     ctx=SamplerContext(g)
-    #ctx.random.seed(4)
-    ctx.random.seed(2)
+    #ctx.random.seed(15)
     sampler0=DefaultSampler(g)
     sampler=TracingSampler(sampler0,ctx.random)
     origs=ctx.sample(sampler)
@@ -232,10 +232,12 @@ def demo_resample():
     print(origs)
 
     tt=sampler.tracetree
-
-    # resample the same thing with a cached randstate:
+    # resample with the cached randstate.
+    # Note that the dynamic alternations used in ArithmeticGrammar use depth
+    # and using "cat(load_rand,start)" increases the depth. Use reset_depth at
+    # to recover depth in the same way that load_rand recovers random.
     ctx.random.set_cached_state('r',tt.inrand)
-    s=ctx.sample(sampler0,'load_rand("r").start')
+    s=ctx.sample(sampler0,'load_rand("r").reset_depth().start')
     assert(s==origs)
 
     # same thing, but unwind to a node, reseed on enter, and reset to outrand
@@ -285,7 +287,10 @@ def demo_resample():
         elif isinstance(ge,GTok):
             return ge.copy()
         elif isinstance(ge,GFunc):
-            return ge.copy() # don't recurse into children, since bare might be string arguments.. how can we tell? maybe all bare names whould be interpreted as grammatical
+            # XXX: don't recurse into children, since bare might be string
+            # arguments.. how can we tell? maybe all bare names whould be
+            # interpreted as grammatical
+            return ge.copy()
         else:
             raise ValueError('unknown GExpr node type: %s' % type(ge))
     rge=t2ge(tt)
@@ -298,6 +303,29 @@ def demo_resample():
         print(ctx.sample(sampler0,rge))
 
 
+def demo_resample2():
+    import random
+    g=ArithmeticGrammar()
+    ctx=SamplerContext(g)
+    sampler0=DefaultSampler(g)
+    sampler=TracingSampler(sampler0,ctx.random)
+
+    s=ctx.sample(sampler)
+    print(s)
+    i=random.randrange(0,len(s))
+    print(' '*i + '''^- looking for this char's origin''')
+    tt=sampler.tracetree
+    n=tt.child_containing(i)
+    d=0
+    while n!=None:
+        print('   %s%s' % (' '*d, n.ge))
+        n=n.parent
+        d+=1
+    #n.dump()
+    #print(n.ge)
+
+
+ 
 def demo_grammar_analysis():
 
     # if a state variable is used by a gfunc, it must be reset
@@ -461,8 +489,6 @@ def demo_grammar_analysis():
     assert('yield in a generator expression or list comprehension, in gfunc f of class AnalyzeMeGrammar5 on line 5' in s)
 
 
-
-
 if __name__=='__main__':
     #demo_parser()
     #demo_sampling()
@@ -471,7 +497,8 @@ if __name__=='__main__':
     #demo_tracetree()
     #demo_composition()
     #demo_random_states()
-    #demo_resample()
-    demo_grammar_analysis()
+    demo_resample()
+    #demo_resample2()
+    #demo_grammar_analysis()
 
 # vim: ts=4 sw=4

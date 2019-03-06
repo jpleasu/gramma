@@ -35,6 +35,12 @@ r'''
         - omitted weights are implicitly 1, so omitting all weights corresponds
           to flat random choice
             x | y
+
+        - weights can also be expressions in backticks. For example<
+            recurs := `depth<5` recurs | "token";
+            - here we are only allowed the recurse branch when depth <5, with
+              weight of 1 (int(True)).
+
     - concatenation (.) - definite concatenation
         x . y
     - repetition ({}) - random repeats
@@ -120,25 +126,8 @@ r'''
 
 
     TODO:
-        - depth based bias on alternations to control recursion depth
-
-            e.g.
-
-                r:= r | `depth` a;
-
-                would compute as
-
-                    r | 3 a;
-
-                at depth 3
-
-            - expression nodes `expr`, embedded python expressions for use as
-              parameters to alt..  variable references, e.g. 'v' in `v+5` uses
-              x.state.v.
-
-            - corresponding alt node is treated as a gfunc that uses each of the
-            references state spaces.
-
+        - dynamically weighted alternations
+            - track state?
 
         - TTNode
             - find the deepest child responsible for a given position
@@ -169,12 +158,8 @@ r'''
 
         - add parms.. readonly data usable by gfuncs, requiring no initialization
 
-        - analyze
-            - convert functions into generators?
-                - should gfunc really be gcoro?
-
-            - analyze generator
-                - comment on yield within list/generator comprehensions
+        - decorator to convert function into generator?
+            - gcoro or ggen decorator instead of gfunc?
 
         - resampling and compilation
 
@@ -233,7 +218,8 @@ r'''
 
             - "randstate order": for replay analysis, x.random is treated as a
               statespace used by range, alt, rep, and any gfunc that
-              uses_random.
+              uses_random.  Every use is really a use/def, since the random
+              stream changes.
 
             - the union quasiorder includes tree and state orders, but not
               randstate.
@@ -333,6 +319,8 @@ from functools import wraps
 
 import textwrap
 
+import numbers
+
 try:
     import astpretty
 except ImportError:
@@ -421,7 +409,7 @@ gramma_grammar = r"""
 
     ruledef : NAME ":=" alt ";"
 
-    ?alt : number? cat ("|" number? cat)*
+    ?alt : weight? cat ("|" weight? cat)*
 
     ?cat : rep ("." rep)*
 
@@ -445,6 +433,8 @@ gramma_grammar = r"""
 
     ?func_arg : alt|INT|FLOAT
 
+    ?weight: number| weight_expr
+
     number: INT|FLOAT
 
     range : "[" ESCAPED_CHAR  ".." ESCAPED_CHAR "]"
@@ -454,6 +444,7 @@ gramma_grammar = r"""
     string : ESCAPED_CHAR|STRING|LONG_STRING
 
 
+    weight_expr : /`[^`]*`/
     STRING : /[ubf]?r?("(?!"").*?(?<!\\)(\\\\)*?"|'(?!'').*?(?<!\\)(\\\\)*?')/i
     ESCAPED_CHAR.2 : /'([^\']|\\([\nrt']|x[0-9a-fA-F][0-9a-fA-F]))'/
     LONG_STRING.2: /[ubf]?r?("(?:"").*?(?<!\\)(\\\\)*?"(?:"")|'''.*?(?<!\\)(\\\\)*?''')/is
@@ -601,10 +592,6 @@ class GInternal(GExpr):
     @classmethod
     def parse_larktree(cls,lt):
         return cls([GExpr.parse_larktree(clt) for clt in lt.children])
-    
-    def copy(self):
-        cls=self.__class__
-        return cls([c.copy() for c in self.children])
 
     def flat_simple_children(self):
         cls=self.__class__
@@ -617,19 +604,51 @@ class GInternal(GExpr):
                 children.append(c)
         return children
 
+class DynamicWeight(object):
+    '''
+        altnernation weight that depends on state
+    '''
+    def __init__(self, expr):
+        self.expr=expr
+
+    def __call__(self, state):
+        return eval(self.expr, globals(), {k: getattr(state, k) for k in dir(state)})
+
+    def __str__(self):
+        return '`%s`' % self.expr
+
+    def __add__(self,other):
+        if isinstance(other,numbers.Number):
+            return DynamicWeight('(%s)+%f' % (self.expr, other))
+        return DynamicWeight('(%s)+(%s)' % (self.expr, other.expr))
+
 class GAlt(GInternal):
     tag='alt'
 
-    __slots__='weights',
+    __slots__='weights','dynamic'
     def __init__(self, weights, children):
         GInternal.__init__(self,children)
-        t=sum(weights)
-        weights=np.array([float(w)/t for w in weights])
-        self.weights=weights
+        self.dynamic=any(w for w in weights if callable(w))
+
+        if self.dynamic:
+            self.weights=weights
+        else:
+            w=np.array(weights)
+            self.weights=w/w.sum()
+
+    def compute_weights(self,state):
+        '''
+            dynamic weights are computed using the state variable every time an
+            alternation is invoked.
+        '''
+        if self.dynamic:
+            w=np.array([w(state) if callable(w) else w for w in self.weights])
+            return w/w.sum()
+        return self.weights
  
     def __str__(self,children=None):
         #s='|'.join(str(cge) for cge in children or self.children)
-        s='|'.join('%s %s' % (w,c) for w,c in zip(self.weights, self.children))
+        s='|'.join('%s %s' % ('`%s`' % w.expr if callable(w) else w,c) for w,c in zip(self.weights, self.children))
 
         if self.parent!=None and isinstance(self.parent, (GCat, GRep)):
             return '(%s)' % s
@@ -639,12 +658,28 @@ class GAlt(GInternal):
         return any(c.is_stateful(x,assume_no) for c in self.children)
 
     def simplify(self):
+        if self.dynamic():
+            return self.simplify_dynamic()
+        return self.simplify_nondynamic()
+
+    def simplify_dynamic(self):
+        '''
+        complicated normalizing factors could make the result less simple..
+
+            `f1` (`g1` a | `g2` b) | `f2` (`g3` c | `g4` d)
+
+            `f1*g1/(g1+g2)` a | `f1*g2/(g1+g2)` b | `f2*g3/(g3+g4)` c | `f2*g4/(g3+g4)` d
+
+        '''
+        return self.copy()
+
+    def simplify_nondynamic(self):
         weights=[]
         children=[]
 
         for w,c in zip(self.weights, self.children):
             c=c.simplify()
-            if isinstance(c,GAlt):
+            if isinstance(c,GAlt) and not c.dynamic:
                 t=sum(c.weights)
                 weights.extend([float(w*cw)/t for cw in c.weights])
                 children.extend(c.children)
@@ -678,12 +713,16 @@ class GAlt(GInternal):
             if clt.data=='number':
                 weights.append(GTok.from_ltok(clt.children[0]).as_num())
                 continue
+            if clt.data=='weight_expr':
+                weights.append(DynamicWeight(clt.children[0][1:-1]))
+                continue
             if len(weights)<=len(children):
                 weights.append(1)
             children.append(GExpr.parse_larktree(clt))
         return cls(weights,children)
 
-
+    def copy(self):
+        return GAlt(self.weights, [c.copy() for c in self.children])
  
 class GCat(GInternal):
     tag='cat'
@@ -693,6 +732,9 @@ class GCat(GInternal):
         if self.parent!=None and isinstance(self.parent, GRep):
             return '(%s)' % s
         return s
+
+    def copy(self):
+        return GCat([c.copy() for c in self.children])
 
     def is_stateful(self,x,assume_no=None):
         return any(c.is_stateful(x,assume_no) for c in self.children)
@@ -970,14 +1012,15 @@ class SamplerContext(object):
 
     def reset(self):
         self.grammar.reset_state(self.state)
-        self.random.save_state('__initial_random')
+        #x.state.depth is reset in GrammaGrammar.reset_state
 
         self.x=GeneratorInterface(self)
         self.stack=[]
 
     def sample(self,sampler,ge=None):
         if ge==None:
-            ge=self.grammar.ruledefs['start']
+            #ge=self.grammar.ruledefs['start']
+            ge='start'
 
         if isinstance(ge,string_types):
             ge=self.grammar.parse(ge)
@@ -986,15 +1029,18 @@ class SamplerContext(object):
         sampler.reset()
 
         self.stack.append(sampler.expr2ctor(ge)(self.x))
+        self.state.depth+=1
         while True:
             a=next(sampler.unwrap(self.stack[-1]))
             while isinstance(a,string_types):
                 sampler.complete(self.stack[-1],a)
                 self.stack.pop()
+                self.state.depth-=1
                 if len(self.stack)==0:
                     return a
                 a=sampler.unwrap(self.stack[-1]).send(a)
             self.stack.append(sampler.expr2ctor(a)(self.x))
+            self.state.depth+=1
 
 
 class DefaultSampler(object):
@@ -1054,9 +1100,14 @@ class DefaultSampler(object):
             def g(x):
                 yield ge.as_str()
         elif isinstance(ge,GAlt):
-            def g(x):
-                s=yield x.random.choice(ge.children,p=ge.weights)
-                yield s
+            if ge.dynamic:
+                def g(x):
+                    s=yield x.random.choice(ge.children,p=ge.compute_weights(x.state))
+                    yield s
+            else:
+                def g(x):
+                    s=yield x.random.choice(ge.children,p=ge.weights)
+                    yield s
         elif isinstance(ge,GCat):
             def g(x):
                 s=''
@@ -1147,7 +1198,7 @@ class GFuncAnalyzeVisitor(ast.NodeVisitor):
         self.f=f
         al=f.args.args
         self.iface_id=ast_argname(al[0])
-        # XXX prevent args with default values?
+        # XXX forbid args with default values?
         self.allowed_ids.update(ast_argname(a) for a in al)
 
         self.stack=[]
@@ -1376,7 +1427,6 @@ def analyze_gfuncs(GrammaChildClass,allowed_ids=None):
     #print(statespace_usedby)
     reset_state_ast=([x for x in classdef.body if isinstance(x,ast.FunctionDef) and x.name=='reset_state']+[None])[0]
     if len(statespace_usedby.keys())>0 and reset_state_ast==None:
-        # XXX enumerate which gfunc uses which statespace
         raise GrammaGrammarException('%s has no reset_state method, but uses statespace(s) %s' % (GrammaChildClass.__name__, ','.join(sorted(statespace_usedby.keys()))))
 
     if reset_state_ast != None:
@@ -1430,7 +1480,8 @@ class GrammaGrammar(with_metaclass(GrammaGrammarType,object)):
             self.ruledefs[rname]=rvalue
 
     def reset_state(self,state):
-        state.d=0
+        state.rlim_depth=0
+        state.depth=0
 
     @gfunc
     def save_rand(x,n):
@@ -1448,6 +1499,13 @@ class GrammaGrammar(with_metaclass(GrammaGrammarType,object)):
         yield ''
 
     @gfunc
+    def reset_depth(x):
+        # we want to pretend this function is the only thing on the stack.. so
+        # when we come out of this, the stack will be reset.
+        x.state.depth=1 
+        yield ''
+
+    @gfunc
     def rlim(x,c,n,o):
         '''
             recursion limit - if recursively invoked to a depth < n times,
@@ -1460,10 +1518,10 @@ class GrammaGrammar(with_metaclass(GrammaGrammarType,object)):
                 produces "aaa" 
             
         '''
-        x.state.d+=1
+        x.state.rlim_depth+=1
         n=n.as_int()
-        res=yield (c if x.state.d<=n else o)
-        x.state.d-=1
+        res=yield (c if x.state.rlim_depth<=n else o)
+        x.state.rlim_depth-=1
         yield res
 
     def parse(self,gramma_expr_str):
@@ -1510,6 +1568,47 @@ class TTNode(object):
         for c in self.children:
             c.dump(indent+1,out)
 
+    def inbounds(self,i,j):
+        '[i,j) contained in [0,len(self.s))?'
+        return 0<=i and j<=len(self.s)
+
+    def child_containing(self, i,j=None, d=0):
+        if j==None or j < i+1:
+            j=i+1
+
+        #print('%s[%d,%d) %s' % (' '*d, i,j,self.ge))
+
+        if isinstance(self.ge, (GRule,GAlt)):
+            return self.children[0].child_containing(i,j,d+1)
+
+        # don't descend into GFuncs
+        if isinstance(self.ge, (GCat, GRep)):
+            # i         v
+            #   aaaa  bbbb   cccc
+            #    
+            o=0
+            for c in self.children:
+                x=c.child_containing(i-o,j-o,d+1)
+                if x!=None:
+                    return x
+                o+=len(c.s)
+            if self.inbounds(i,j):
+                return self
+            return None
+
+        if isinstance(self.ge,(GTok, GFunc, GRange)):
+            return self if self.inbounds(i,j) else None
+
+        raise GrammaParseError('unknown expression (%s)%s' % (type(self.ge), self.ge))
+
+    def first_rule(self,rname):
+        if self.ge.is_rule(rname):
+            return self
+        for c in self.children:
+            res=c.first_rule(rname)
+            if res!=None:
+                return res
+        return None
 
 class TracingSampler(object):
     '''
