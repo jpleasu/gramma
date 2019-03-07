@@ -109,10 +109,14 @@ r'''
             - child_containing treats gfuncs as atomic
             - dynamic alternations use state.depth
 
-        - implement recursion depth for dynamic alt testing
+        - design
+            - GrammaGrammar children are GExpr interpreters
+            - GrammaSampler are stack machines
+            - NullExecutionObserver/ChainedExecutionObserver are "translators", given access to
+              GExprs before they're compiled and to their results, before
+              they're used.
 
-        - "samplers" should be "brokers" or "mediators".. they sit between the
-          pushes and pops of the stack machine.
+        - implement recursion depth for dynamic alt testing
 
         - resample should insert the correct load(state,slot) and
           load_rand(slot) in sequence to produce correct output.
@@ -121,11 +125,11 @@ r'''
 
         - compile an expression -- in preorder traversal, find then
           follow "load_rand" with "definitizing" until next "reseed_rand".
-          - we can't necessarily do this in a sampler, because we can't
+          - we can't necessarily do this in an observer, because we can't
             definitize a stateful node until we know there are no future
             gfuncs accessing a disjoint random stream.
 
-        - implement TreeConstrainedSampler
+        - implement TreeConstrainedExecutionObserver
             - constructed with expression
                 - declarative syntax for finding a node in a tracetree
                 - e.g.
@@ -191,7 +195,7 @@ r'''
             - "statespace N order": node1 < node2 if both nodes use the same
               statespace, N, and node1 occurs before node2 in preorder
               traversal of the tracetree.
-                - the expr2ctor GExpr visitation is preorder trace tree traversal,
+                - the compile GExpr visitation is preorder trace tree traversal,
                   collect a list of nodes for each statespace and random
 
             - "randstate order": for replay analysis, x.random is treated as a
@@ -332,7 +336,7 @@ def gfunc(*args,**kw):
                 where
                     x is the gfunc interface:
                         x.state - a GrammaState object for managing all state
-                        x.random - an alias for x.sampler.random
+                        x.random - a GrammaRandom object for all entropy
 
                     args are the arguments of f as GExpr elements.  In
                     particular, "constants" are are type GTok and must be
@@ -341,7 +345,7 @@ def gfunc(*args,**kw):
             *) mustn't access global variables
             *) may store state as fields of the GrammaState instance, state
             *) mustn't take additional keyword arguments, only "grammar",
-                "sampler", and "state" are allowed.
+                and "state" are allowed.
             *) may sample from GExpr arguments by yielding a GExpr.. the result
                 will be a string.
             *) may access entropy from the GeneratorInterface instance
@@ -434,9 +438,6 @@ gramma_grammar = r"""
 """
 
 
-class GParseError(Exception):
-    pass
-
 class GExpr(object):
     '''
         the expression tree for a GLF expression.
@@ -475,7 +476,7 @@ class GExpr(object):
 
         cls=GExpr.tag2cls.get(lt.data)
         if cls==None:
-            raise GParseError('''unrecognized Lark node %s during parse of glf''' % lt)
+            raise GrammaParseError('''unrecognized Lark node %s during parse of glf''' % lt)
         return cls.parse_larktree(lt)
  
 
@@ -891,9 +892,6 @@ class GRule(GExpr):
 for cls in GAlt, GCat, GRep, GFunc,   GRange, GRule:
     GExpr.tag2cls[cls.tag]=cls
 
-class SamplerException(Exception):
-    pass
-
 class GrammaState(object):
     def __init__(self):
         self._cache={}
@@ -946,16 +944,15 @@ class GrammaRandom(object):
 
 class GeneratorInterface(namedtuple('GeneratorInterface','random state parms')):
     '''
-        constructed by SamplerContext and passed to generators for access to
+        constructed by GrammaSampler and passed to generators for access to
         random and state.
     '''
 
     def __new__(cls,sampler):
         return super(GeneratorInterface,cls).__new__(cls,sampler.random,sampler.state,sampler.parms)
 
-class SamplerContext(object):
+class GrammaSampler(object):
     '''
-
 
         grammars provide grules, gfuncs, and the reset_state for its gfuncs.
 
@@ -965,9 +962,10 @@ class SamplerContext(object):
         samples.
 
     '''
-    __slots__='grammar','state','random','stack','x','parms'
-    def __init__(self,grammar,**parms):
+    __slots__='grammar','observer', 'state','random','stack','x','parms'
+    def __init__(self,grammar=None, observer=None, **parms):
         self.grammar=grammar
+        self.observer=NullExecutionObserver() if observer==None else observer
         self.random=GrammaRandom()
         self.state=GrammaState()
         self.parms=dict(parms)
@@ -987,7 +985,7 @@ class SamplerContext(object):
         self.x=GeneratorInterface(self)
         self.stack=[]
 
-    def sample(self,sampler,ge=None):
+    def sample(self,ge=None):
         if ge==None:
             #ge=self.grammar.ruledefs['start']
             ge='start'
@@ -996,82 +994,85 @@ class SamplerContext(object):
             ge=self.grammar.parse(ge)
 
         self.reset()
-        sampler.reset()
+        self.observer.reset()
 
-        self.stack.append(sampler.expr2ctor(ge)(self.x))
-        self.state.depth+=1
+        a=ge
         while True:
-            a=next(sampler.unwrap(self.stack[-1]))
+            #assert(isinstance(a,GExpr))
+            a=self.observer.precompile(a)
+            top=self.grammar.compile(a)(self.x)
+            #push
+            wtop=self.observer.wrap(top)
+            self.stack.append(wtop)
+            self.state.depth+=1
+            a=next(top)
             while isinstance(a,string_types):
-                sampler.complete(self.stack[-1],a)
+                self.observer.complete(wtop,a)
+                #pop
                 self.stack.pop()
                 self.state.depth-=1
                 if len(self.stack)==0:
                     return a
-                a=sampler.unwrap(self.stack[-1]).send(a)
-            self.stack.append(sampler.expr2ctor(a)(self.x))
-            self.state.depth+=1
+                #peek
+                wtop=self.stack[-1]
+                top=self.observer.unwrap(wtop)
+                a=top.send(a)
 
 
-class DefaultSampler(object):
+class NullExecutionObserver(object):
     '''
-        A Sampler is a tuple of functions used for sampling.
+        An execution observer observes key points during sampler execution.
     '''
-    __slots__='grammar',
-    def __init__(self,grammar):
-        self.grammar=grammar
-
+    __slots__=()
     def reset(self):
         '''
-        called before sampling from the top of an expression
+        called right after sample, before the stack machine starts
         '''
         pass
 
-    def unwrap(self,top):
+    def precompile(self,ge):
         '''
-        return a generator/coroutine from a stack object
+        called before a gexpr is compiled by the grammar into a generator
+            next
+                the compiled result is wrapped by each sampler
         '''
-        return top
+        return ge
 
-    def complete(self,top,s):
+    def wrap(self,e):
         '''
-        called when the top coroutin completes, i.e. returns a string.
+        after compilation (and other samplers) of previous precompile chain.
+            next
+                the corresponding coroutine is 
+                    pushed
+                    queried
+                        gexpr results go to precompile
+                        string results go to complete
+        '''
+        return e
 
-        top is the stack object, and s is the string it generated.
+    def complete(self,we,s):
+        '''
+        called when e completes, returning the string s.
+            next
+                e is popped from the stack
+                s is sent to the next unwrapped top
         '''
         pass
 
-    def expr2ctor(self,ge):
+    def unwrap(self,w):
         '''
-            Given a GExpr, return a constructor taking a single
-            GeneratorInterface argument.
-            
-            The context stack will be composed of objects constructed with
-            these ctors.
-            
-            Stack objects must behave like coroutines, responding to "next" and
-            "send", as in
-                g=expr2ctor(gexpr)
-                next(g) # returns str or GExpr
-                g.send(str) # returns str or GExpr
-
-            "unwrap" can be used for simple wrappers:
-
-                def expr2ctor(self,ge):
-                    top=super().expr2ctor(ge)
-                    return (top,ge)
-
-                def unwrap(self,top):
-                    top,ge=top
-                    return super().unwrap(top)
-
+        after a stack entry completes, it is sent to the unwrapped top of the
+        stack - so the previous call was to complete.
+            next
+                the send happens, yielding a result
+                    gexpr results go to precompile
+                    string results go to complete
         '''
-        return self.grammar.expr2ctor(ge)
+        return w
 
-
-class ProxySampler(object):
+class ChainedExecutionObserver(object):
     '''
-        derive from this to avoid duplicating common requirements on a sampler
+        inherit from this to chain on top of another observer
     '''
     __slots__='base',
 
@@ -1079,16 +1080,20 @@ class ProxySampler(object):
         self.base=base
 
     def reset(self):
-        self.base.reset()
+        return self.base.reset()
 
-    def unwrap(self,top):
-        return self.base.unwrap(top)
+    def precompile(self,ge):
+        return self.base.precompile(ge)
 
-    def complete(self,top,s):
-        self.base.complete(top,s)
+    def wrap(self,e):
+        return self.base.wrap(e)
 
-    def expr2ctor(self,ge):
-        return self.base.expr2ctor(ge)
+    def complete(self,we,s):
+        return self.base.complete(we,s)
+
+    def unwrap(self,w):
+        return self.base.unwrap(w)
+
 
 class GrammaGrammarException(Exception):
     pass
@@ -1385,7 +1390,7 @@ class GrammaGrammar(with_metaclass(GrammaGrammarType,object)):
 
         e.g. 
          g=GrammaGrammar('start:="a"|"b";')
-         sampler=DefaultSampler(g)
+         sampler=GrammaSampler(g)
 
          while True:
              sampler.reset()
@@ -1477,19 +1482,19 @@ class GrammaGrammar(with_metaclass(GrammaGrammarType,object)):
         lt=self.parser.parse('_:=(%s);' % gramma_expr_str)
         return GExpr.parse_larktree(lt.children[0].children[1])
 
-    def generate(self,SamplerClass=DefaultSampler,samplerargs=(),startexpr=None):
+    def generate(self,ExecutionObserver=NullExecutionObserver,samplerargs=(),startexpr=None):
         '''
             quick and dirty generator
         '''
-        ctx=SamplerContext(self)
-        sampler=SamplerClass(self,*samplerargs)
+        sampler=GrammaSampler(self)
+        sampler.observer=ExecutionObserver(*samplerargs)
         if startexpr==None:
             startexpr=self.ruledefs['start']
         while True:
-            yield ctx.sample(sampler,startexpr) 
+            yield sampler.sample(startexpr) 
 
 
-    def expr2ctor(self, ge):
+    def compile(self, ge):
         if isinstance(ge,GTok):
             def g(x):
                 yield ge.as_str()
@@ -1673,29 +1678,26 @@ class TTNode(object):
 
         return recurse(self).simplify(), cachecfg
 
-class TracingSampler(object):
-    __slots__='tracetree','base','random'
+class TracingExecutionObserver(ChainedExecutionObserver):
+    __slots__='tracetree','random'
 
     def __init__(self,base,random):
-        self.base=base
+        ChainedExecutionObserver.__init__(self,base)
         self.random=random
 
     def reset(self):
-        self.base.reset()
+        super().reset()
         self.tracetree=None
 
-    def unwrap(self,top):
-        return self.base.unwrap(top)
-
-    def expr2ctor(self,ge):
+    def precompile(self,ge):
         if self.tracetree==None:
             self.tracetree=TTNode(ge)
         else:
             self.tracetree=self.tracetree.add_child(ge)
         self.tracetree.inrand=self.random.r.get_state()
-        return self.base.expr2ctor(ge)
+        return super().precompile(ge)
 
-    def complete(self,top,s):
+    def complete(self,we,s):
         self.tracetree.s=s
         self.tracetree.outrand=self.random.r.get_state()
         if self.tracetree.parent!=None:

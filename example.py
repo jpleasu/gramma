@@ -61,8 +61,8 @@ class ArithmeticGrammar(GrammaGrammar):
 
         expr := add;
 
-        add :=  mul . '+' . mul | `depth/30.0` mul ;
-        mul :=  atom . '*' . atom | `depth/30.0` atom ;
+        add :=  mul . '+' . mul | `min(.01,depth/30.0)` mul ;
+        mul :=  atom . '*' . atom | `min(.01,depth/30.0)` atom ;
 
         atom :=  var | 3 int | "(" . expr . ")";
 
@@ -95,51 +95,47 @@ def demo_sampling():
 
 def demo_rlim():
     g=GrammaGrammar('start :=  rlim("a" . start, 3, "");')
-    ctx=SamplerContext(g)
+    ctx=GrammaSampler(g)
     ctx.random.seed(0)
-    sampler=DefaultSampler(g)
     for i in range(10):
-        s=ctx.sample(sampler)
+        s=ctx.sample()
         print('---------------')
         print('%3d %s' % (len(s),s))
 
 
-class LeftAltSampler(ProxySampler):
-    def __init__(self,base,maxdepth=5):
-        ProxySampler.__init__(self,base)
+class LeftAltObserver(ChainedExecutionObserver):
+    def __init__(self,base=NullExecutionObserver(),maxdepth=5):
+        ChainedExecutionObserver.__init__(self,base)
         self.maxdepth=maxdepth
         self.d=0
 
     def reset(self):
-        self.base.reset()
+        super().reset()
         self.d=0
 
     def unwrap(self,top):
-        # all but "id_shim" stack objects are of the form (base wrapped gen, boolean)
-        # "id_shim" is (id_shim(x), True)
-        # so.. don't call base unwrap on shimmys?
-        return self.base.unwrap(top[0])
+        return super().unwrap(top[0])
 
-    def complete(self,top,s):
-        self.base.complete(top[0],s)
-        if top[1]:
+    def complete(self,we,s):
+        super().complete(we[0],s)
+        if we[1]:
             self.d-=1
 
-    def wrap(self,ge,b):
-        ctor=self.base.expr2ctor(ge)
-        return lambda x:(ctor(x),b)
+    def wrap(self,e):
+        return (super().wrap(e),self.lastb)
 
-    def expr2ctor(self,ge):
+    def precompile(self,ge):
         if isinstance(ge,GAlt):
             self.d+=1
+            self.lastb=True
             if self.d<=self.maxdepth:
                 # handle nested alts
-                def id_shim(x):
-                    yield (yield ge.children[0])
-                return lambda x:(id_shim(x),True)
-            else:
-                return self.wrap(ge,True)
-        return self.wrap(ge,False)
+                nge=GAlt([1],[ge.children[0].copy()])
+                nge.parent=ge
+                return nge
+        else:
+            self.lastb=False
+        return ge
 
 def demo_constraint():
     '''
@@ -150,73 +146,77 @@ def demo_constraint():
 
     print('==================')
 
-    ctx=SamplerContext(g)
-    sampler=LeftAltSampler(DefaultSampler(g),50)
+    ctx=GrammaSampler(g)
+    ctx.observer=LeftAltObserver(maxdepth=50)
     ctx.random.seed(0)
 
     for i in range(10):
-        s=ctx.sample(sampler)
+        s=ctx.sample()
         print('%3d %s' % (len(s),s))
-        assert(sampler.d==0)
+        assert(ctx.observer.d==0)
 
 def demo_tracetree():
     '''
         generate a tracetree for a sample then pick an alt node to re-sample with chosen bias.
     '''
     g=BasicGrammar()
-    ctx=SamplerContext(g)
+    ctx=GrammaSampler(g)
     ctx.random.seed(0)
-    sampler=TracingSampler(DefaultSampler(g),ctx.random)
+    ctx.observer=TracingExecutionObserver(NullExecutionObserver(),ctx.random)
 
     for i in range(10):
-        s=ctx.sample(sampler)
+        s=ctx.sample()
         print('---------------')
         print('%3d %s' % (len(s),s))
-        sampler.tracetree.dump()
+        ctx.observer.tracetree.dump()
 
 def demo_composition():
     g=BasicGrammar()
-    ctx=SamplerContext(g)
+    ctx=GrammaSampler(g)
     ctx.random.seed(0)
-    sampler=TracingSampler(LeftAltSampler(DefaultSampler(g),5),ctx.random)
+    ctx.observer=TracingExecutionObserver(LeftAltObserver(maxdepth=5),ctx.random)
     for i in range(10):
-        s=ctx.sample(sampler)
+        s=ctx.sample()
         print('---------------')
         print('%3d %s' % (len(s),s))
-        sampler.tracetree.dump()
+        ctx.observer.tracetree.dump()
 
 
 def demo_random_states():
     g=BasicGrammar()
-    ctx=SamplerContext(g)
-    ctx.random.seed(0)
-    sampler=DefaultSampler(g)
+    ctx=GrammaSampler(g)
+    #ctx.random.seed(0)
 
     def p(n, e):
-        s=ctx.sample(sampler,e)
+        s=ctx.sample(e)
         print('---- %s ----' % n)
         print('%3d %s' % (len(s),s))
+        return s
 
     # generate a sample and save the random state on entry
-    p('A', 'save_rand("r0").start')
+    a=p('A', 'save_rand("r0").start')
     # generate a new sample, demonstrating a different random state
-    p('B', 'start')
+    b=p('B', 'start')
 
     # resume at r0 again:
-    p('A', 'load_rand("r0").start')
+    a1=p('A', 'load_rand("r0").start')
+    assert(a1==a)
     # if we generate a new sample here, the state resumes from r0 again, so it will be A
-    p('B', 'start')
+    b1=p('B', 'start')
+    assert(b1==b)
 
     # so if we want to resume at r0..
-    p('A', 'load_rand("r0").start')
+    a1=p('A', 'load_rand("r0").start')
+    assert(a1==a)
     # .. and continue w/ a new random, we need to reseed:
     ctx.random.seed(None) # none draws a new seed from urandom
-    p('C', 'start')
+    c=p('C', 'start')
 
     # and we can still resume from r0 later.
-    p('A', 'load_rand("r0").start')
+    a1=p('A', 'load_rand("r0").start')
+    assert(a1==a)
     # we can also reseed the random number generator from within the grammar
-    p('D', 'reseed_rand().start')
+    d=p('D', 'reseed_rand().start')
 
 
 def demo_resample():
@@ -224,22 +224,23 @@ def demo_resample():
 
     g=ArithmeticGrammar()
     #g=BasicGrammar()
-    ctx=SamplerContext(g)
+    ctx=GrammaSampler(g)
     #ctx.random.seed(15)
-    sampler0=DefaultSampler(g)
-    sampler=TracingSampler(sampler0,ctx.random)
-    origs=ctx.sample(sampler)
+    sampler0=NullExecutionObserver()
+    ctx.observer=TracingExecutionObserver(sampler0,ctx.random)
+    origs=ctx.sample()
     print('-- the original sample --')
     print(origs)
 
-    tt=sampler.tracetree
+    tt=ctx.observer.tracetree
     # resample with the cached randstate.
     # Note that the dynamic alternations used in ArithmeticGrammar use depth
     # and using "cat(load_rand,start)" increases the depth. Reset the depth
     # with the 'def'. (depth is set to 1 because on _exit_ from the gfunc
     # call, depth is decremented)
+    ctx.observer=sampler0
     ctx.random.set_cached_state('r',tt.inrand)
-    s=ctx.sample(sampler0,'load_rand("r").def("depth",1).start')
+    s=ctx.sample('load_rand("r").def("depth",1).start')
     assert(s==origs)
 
 
@@ -262,21 +263,21 @@ def demo_resample():
 
     for i in range(10):
         print('---')
-        print(ctx.sample(sampler0,rge))
+        print(ctx.sample(rge))
 
 
 def demo_resample2():
     import random
     g=ArithmeticGrammar()
-    ctx=SamplerContext(g)
-    sampler0=DefaultSampler(g)
-    sampler=TracingSampler(sampler0,ctx.random)
+    ctx=GrammaSampler(g)
+    sampler0=NullExecutionObserver()
+    ctx.observer=TracingExecutionObserver(sampler0,ctx.random)
 
-    s=ctx.sample(sampler)
+    s=ctx.sample()
     print(s)
     i=random.randrange(0,len(s))
     print(' '*i + '''^- looking for this char's origin''')
-    tt=sampler.tracetree
+    tt=ctx.observer.tracetree
     n=tt.child_containing(i)
     d=0
     while n!=None:
