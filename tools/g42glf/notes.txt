@@ -1,0 +1,39 @@
+setup
+======
+  - download the antlr4 complete jar
+
+    wget https://www.antlr.org/download/antlr-4.7.2-complete.jar
+
+  - get python runtimes
+
+    pip install antlr4-python2-runtime
+
+    (pip3 install antlr4-python3-runtime)
+
+
+
+  - get grammars
+
+    git clone https://github.com/antlr/grammars-v4
+
+  - build the parser and nest it in a working python module
+
+    java -jar antlr-4.7.2-complete.jar -Dlanguage=Python2 -Xexact-output-dir  -o antlr4parser -package antlr4parser ./grammars-v4/antlr4/ANTLRv4Lexer.g4 
+    java -jar antlr-4.7.2-complete.jar -Dlanguage=Python2 -Xexact-output-dir  -o antlr4parser -package antlr4parser ./grammars-v4/antlr4/ANTLRv4LexerPythonTarget.g4 
+    java -jar antlr-4.7.2-complete.jar -Dlanguage=Python2 -Xexact-output-dir  -o antlr4parser -package antlr4parser -visitor ./grammars-v4/antlr4/ANTLRv4Parser.g4 
+
+    touch antlr4parser/__init__.py
+    cp grammars-v4/antlr4/LexerAdaptor.py antlr4parser/
+
+  - use the parser
+
+      import antlr4
+      from antlr4parser.ANTLRv4LexerPythonTarget import ANTLRv4LexerPythonTarget as ANTLRv4Lexer
+      from antlr4parser.ANTLRv4Parser import ANTLRv4Parser 
+
+      lexer = ANTLRv4Lexer(antlr4.FileStream('grammars-v4/antlr4/examples/Hello.g4'))
+      stream = antlr4.CommonTokenStream(lexer)
+      parser = ANTLRv4Parser(stream)
+      tree = parser.grammarSpec()
+
+
