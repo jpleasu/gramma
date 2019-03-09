@@ -10,17 +10,18 @@ r'''
     GLF is extended with custom functions implemented in extensions of the base
     GrammaGrammar class.
 
-    The typical usage of Gramma for fuzzing is as follows:
-        A grammar is constructed based on the input grammar for the application
-        under test.
+    A typical application of Gramma in fuzzing would be as follows:
 
-        The instrumented application is fed samples, and a measure of interest
-        is calculated for each.
+        Create a grammar based on the input grammar for the application under
+        test.
 
-        Parameters of the grammar are reestimated to favor the interesting
-        samples.
+        Feed the instrumented application samples and compute a measure of
+        interest for each.
 
-        The process continues with updated grammar.
+        Tweak numerical parameters of the grammar and/or use previous samples
+        as templates to update the grammar.
+
+        Repeat.
 
 
     GLF Syntax
@@ -63,60 +64,32 @@ r'''
         - evaluation is left to right.
         - functions aren't allowed to "look up" the execution stack, only back.
 
-    Constraints
-    ===========
+    Numerical parameters
+    ====================
 
-    For parameter estimation and resampling conditional distribtuions, Gramma
-    provides a mechanism to construct and apply _tree constraints_.
-
-    "Tree constraints" provide a restricted, but useful, filter for the
-    evaluation of a Gramma expression. For example, sampling from
-        ("a" | "b"){1,2}
-    results in "a", "b", "aa", "ab", "ba", "bb", with the diagraphs half as
-    likely as the single character strings.
-
-    The execution resulting in "ab" can be depicted with a tree as follows:
-
-        rep
-        / \
-      alt alt
-       |   |
-       a   b
-
-    Where the rep and each alt have made random choices.  We might be
-    intersested in the other results where some, but not all, of those random
-    decisions are made same way.
-
-    For example, we might want the root, rep, to always choose 2 and the second
-    alt to choose "b" -- the resulting constrained sampler would produce "ab"
-    and "bb" with equal probability.
-
-    Whatever the representation for constraints, we should be able to combine
-    them with conjuction (and disjunction?) to be efficient.  Tree regular
-    predicate language?
-
-    The _defining_ constraint on ("a"|"b"){1,2} that produced "ab" is
-        rep(n=2,child1=alt(c=1,child="a"), child2=alt(c=2,child="b"))
-    By omitting the constraint on child1 of the root rep, we get
-        rep(n=2,child2=alt(c=2,child="b"))
-    In this case, we can compile this constrained expression to
-        ("a"|"b")."b"
-
+    Templates from previous samples
+    ===============================
 
 
     TODO:
         - quirks
             - child_containing treats gfuncs as atomic
             - dynamic alternations use state.depth
+                - we could move state.depth into an sideeffect
 
-        - design
-            - GrammaGrammar children are GExpr interpreters
-            - GrammaSampler are stack machines
-            - NullExecutionObserver/ChainedExecutionObserver are "translators", given access to
-              GExprs before they're compiled and to their results, before
-              they're used.
+        - add Transformer class to modify gexprs before they're compiled.
+            - a "dynamic" transform can apply to GExprs just before they're
+              compiled.. a "static" transformer would transform an entire
+              grammar into another grammar, more like inheritance.
+            - transformers compose, unlike sideffects. mixing the two is
+              too complicated.. sideeffects can both respond to and influence
+              the behavior of a transformed grammar.
 
-        - implement recursion depth for dynamic alt testing
+            - implement LeftAltSideEffect as a transormer and sideffect, e.g.
+              replace each alt (in every rule) with a dynamic alt that uses an
+              "altdepth" state.
+
+        - compute rdepth, rule depth / recursion depth, for dynamic alt
 
         - resample should insert the correct load(state,slot) and
           load_rand(slot) in sequence to produce correct output.
@@ -125,11 +98,11 @@ r'''
 
         - compile an expression -- in preorder traversal, find then
           follow "load_rand" with "definitizing" until next "reseed_rand".
-          - we can't necessarily do this in an observer, because we can't
+          - we can't necessarily do this in a sideeffect, because we can't
             definitize a stateful node until we know there are no future
             gfuncs accessing a disjoint random stream.
 
-        - implement TreeConstrainedExecutionObserver
+        - implement TreeConstrainedTransformer
             - constructed with expression
                 - declarative syntax for finding a node in a tracetree
                 - e.g.
@@ -962,13 +935,18 @@ class GrammaSampler(object):
         samples.
 
     '''
-    __slots__='grammar','observer', 'state','random','stack','x','parms'
-    def __init__(self,grammar=None, observer=None, **parms):
+    __slots__='grammar','sideeffects', 'state','random','stack','x','parms'
+    def __init__(self,grammar=None, **parms):
         self.grammar=grammar
-        self.observer=NullExecutionObserver() if observer==None else observer
+        self.sideeffects=[]
         self.random=GrammaRandom()
         self.state=GrammaState()
         self.parms=dict(parms)
+
+    def add_sideeffect(self,sideeffect):
+        if inspect.isclass(sideeffect):
+            sideeffect=sideeffect()
+        self.sideeffects.append(sideeffect)
 
     def update_cache(self, cachecfg):
         self.state._cache.update(cachecfg.statecache)
@@ -982,6 +960,9 @@ class GrammaSampler(object):
 
         self.grammar.reset_state(self.state)
 
+        for sideeffect in self.sideeffects:
+            sideeffect.reset(self.state)
+
         self.x=GeneratorInterface(self)
         self.stack=[]
 
@@ -994,106 +975,60 @@ class GrammaSampler(object):
             ge=self.grammar.parse(ge)
 
         self.reset()
-        self.observer.reset()
 
         a=ge
+        wtops=[None]*len(self.sideeffects)
         while True:
             #assert(isinstance(a,GExpr))
-            a=self.observer.precompile(a)
-            top=self.grammar.compile(a)(self.x)
+
             #push
-            wtop=self.observer.wrap(top)
-            self.stack.append(wtop)
+            setop=tuple(sideeffect.push(self.x,a) for sideeffect in self.sideeffects)
+            top=self.grammar.compile(a)(self.x)
+            wtop=(setop,top) 
+
             self.state.depth+=1
+            self.stack.append(wtop)
+
             a=next(top)
             while isinstance(a,string_types):
-                self.observer.complete(wtop,a)
                 #pop
+                for sideeffect,w in zip(self.sideeffects,wtop[0]):
+                    sideeffect.pop(self.x,w,a)
+
                 self.stack.pop()
                 self.state.depth-=1
+
                 if len(self.stack)==0:
                     return a
-                #peek
+
                 wtop=self.stack[-1]
-                top=self.observer.unwrap(wtop)
-                a=top.send(a)
+                a=wtop[1].send(a)
 
 
-class NullExecutionObserver(object):
+class NullSideEffect(object):
     '''
-        An execution observer observes key points during sampler execution.
+        An execution sideeffect observes key points during sampler execution.
     '''
     __slots__=()
-    def reset(self):
+    def reset(self,state):
         '''
         called right after sample, before the stack machine starts
         '''
         pass
 
-    def precompile(self,ge):
+    def push(self,x,ge):
         '''
-        called before a gexpr is compiled by the grammar into a generator
-            next
-                the compiled result is wrapped by each sampler
+        when an expression is compiled to a coroutine, the stack machine
+        pushes.
         '''
-        return ge
+        return None
 
-    def wrap(self,e):
+    def pop(self,x,w,s):
         '''
-        after compilation (and other samplers) of previous precompile chain.
-            next
-                the corresponding coroutine is 
-                    pushed
-                    queried
-                        gexpr results go to precompile
-                        string results go to complete
-        '''
-        return e
-
-    def complete(self,we,s):
-        '''
-        called when e completes, returning the string s.
-            next
-                e is popped from the stack
-                s is sent to the next unwrapped top
+        when a coroutine complete, returning a string, s, it is popped.
+        w is the value returned by the corresponding pop.
         '''
         pass
-
-    def unwrap(self,w):
-        '''
-        after a stack entry completes, it is sent to the unwrapped top of the
-        stack - so the previous call was to complete.
-            next
-                the send happens, yielding a result
-                    gexpr results go to precompile
-                    string results go to complete
-        '''
-        return w
-
-class ChainedExecutionObserver(object):
-    '''
-        inherit from this to chain on top of another observer
-    '''
-    __slots__='base',
-
-    def __init__(self,base):
-        self.base=base
-
-    def reset(self):
-        return self.base.reset()
-
-    def precompile(self,ge):
-        return self.base.precompile(ge)
-
-    def wrap(self,e):
-        return self.base.wrap(e)
-
-    def complete(self,we,s):
-        return self.base.complete(we,s)
-
-    def unwrap(self,w):
-        return self.base.unwrap(w)
-
 
 class GrammaGrammarException(Exception):
     pass
@@ -1482,12 +1417,11 @@ class GrammaGrammar(with_metaclass(GrammaGrammarType,object)):
         lt=self.parser.parse('_:=(%s);' % gramma_expr_str)
         return GExpr.parse_larktree(lt.children[0].children[1])
 
-    def generate(self,ExecutionObserver=NullExecutionObserver,samplerargs=(),startexpr=None):
+    def generate(self,startexpr=None):
         '''
             quick and dirty generator
         '''
         sampler=GrammaSampler(self)
-        sampler.observer=ExecutionObserver(*samplerargs)
         if startexpr==None:
             startexpr=self.ruledefs['start']
         while True:
@@ -1678,30 +1612,23 @@ class TTNode(object):
 
         return recurse(self).simplify(), cachecfg
 
-class TracingExecutionObserver(ChainedExecutionObserver):
-    __slots__='tracetree','random'
+class TracingSideEffect(object):
+    __slots__='tt','tracetree'
 
-    def __init__(self,base,random):
-        ChainedExecutionObserver.__init__(self,base)
-        self.random=random
-
-    def reset(self):
-        super().reset()
+    def reset(self,state):
         self.tracetree=None
 
-    def precompile(self,ge):
+    def push(self,x,ge):
         if self.tracetree==None:
-            self.tracetree=TTNode(ge)
+            self.tt=self.tracetree=TTNode(ge)
         else:
-            self.tracetree=self.tracetree.add_child(ge)
-        self.tracetree.inrand=self.random.r.get_state()
-        return super().precompile(ge)
+            self.tt=self.tt.add_child(ge)
+        self.tt.inrand=x.random.r.get_state()
+        return None
 
-    def complete(self,we,s):
-        self.tracetree.s=s
-        self.tracetree.outrand=self.random.r.get_state()
-        if self.tracetree.parent!=None:
-            self.tracetree=self.tracetree.parent
+    def pop(self,x,w,s):
+        self.tt.s=s
+        self.tt.outrand=x.random.r.get_state()
+        self.tt=self.tt.parent
 
 # vim: ts=4 sw=4
-

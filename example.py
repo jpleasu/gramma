@@ -95,100 +95,48 @@ def demo_sampling():
 
 def demo_rlim():
     g=GrammaGrammar('start :=  rlim("a" . start, 3, "");')
-    ctx=GrammaSampler(g)
-    ctx.random.seed(0)
+    sampler=GrammaSampler(g)
+    sampler.random.seed(0)
     for i in range(10):
-        s=ctx.sample()
+        s=sampler.sample()
         print('---------------')
         print('%3d %s' % (len(s),s))
 
-
-class LeftAltObserver(ChainedExecutionObserver):
-    def __init__(self,base=NullExecutionObserver(),maxdepth=5):
-        ChainedExecutionObserver.__init__(self,base)
-        self.maxdepth=maxdepth
-        self.d=0
-
-    def reset(self):
-        super().reset()
-        self.d=0
-
-    def unwrap(self,top):
-        return super().unwrap(top[0])
-
-    def complete(self,we,s):
-        super().complete(we[0],s)
-        if we[1]:
-            self.d-=1
-
-    def wrap(self,e):
-        return (super().wrap(e),self.lastb)
-
-    def precompile(self,ge):
-        if isinstance(ge,GAlt):
-            self.d+=1
-            self.lastb=True
-            if self.d<=self.maxdepth:
-                # handle nested alts
-                nge=GAlt([1],[ge.children[0].copy()])
-                nge.parent=ge
-                return nge
-        else:
-            self.lastb=False
-        return ge
-
-def demo_constraint():
-    '''
-        A sampler that forces every Alt to take the left option up to maximum
-        expression depth.
-    '''
-    g=BasicGrammar()
-
-    print('==================')
-
-    ctx=GrammaSampler(g)
-    ctx.observer=LeftAltObserver(maxdepth=50)
-    ctx.random.seed(0)
-
-    for i in range(10):
-        s=ctx.sample()
-        print('%3d %s' % (len(s),s))
-        assert(ctx.observer.d==0)
 
 def demo_tracetree():
     '''
         generate a tracetree for a sample then pick an alt node to re-sample with chosen bias.
     '''
     g=BasicGrammar()
-    ctx=GrammaSampler(g)
-    ctx.random.seed(0)
-    ctx.observer=TracingExecutionObserver(NullExecutionObserver(),ctx.random)
+    sampler=GrammaSampler(g)
+    sampler.random.seed(0)
+    sampler.add_sideeffect(TracingSideEffect())
 
     for i in range(10):
-        s=ctx.sample()
+        s=sampler.sample()
         print('---------------')
         print('%3d %s' % (len(s),s))
-        ctx.observer.tracetree.dump()
+        sampler.sideeffects[0].tracetree.dump()
 
 def demo_composition():
     g=BasicGrammar()
-    ctx=GrammaSampler(g)
-    ctx.random.seed(0)
-    ctx.observer=TracingExecutionObserver(LeftAltObserver(maxdepth=5),ctx.random)
+    sampler=GrammaSampler(g)
+    sampler.random.seed(0)
+    sampler.sideeffect=TracingSideEffect(LeftAltSideEffect(maxdepth=5))
     for i in range(10):
-        s=ctx.sample()
+        s=sampler.sample()
         print('---------------')
         print('%3d %s' % (len(s),s))
-        ctx.observer.tracetree.dump()
+        sampler.sideeffect.tracetree.dump()
 
 
 def demo_random_states():
     g=BasicGrammar()
-    ctx=GrammaSampler(g)
-    #ctx.random.seed(0)
+    sampler=GrammaSampler(g)
+    #sampler.random.seed(0)
 
     def p(n, e):
-        s=ctx.sample(e)
+        s=sampler.sample(e)
         print('---- %s ----' % n)
         print('%3d %s' % (len(s),s))
         return s
@@ -209,7 +157,7 @@ def demo_random_states():
     a1=p('A', 'load_rand("r0").start')
     assert(a1==a)
     # .. and continue w/ a new random, we need to reseed:
-    ctx.random.seed(None) # none draws a new seed from urandom
+    sampler.random.seed(None) # none draws a new seed from urandom
     c=p('C', 'start')
 
     # and we can still resume from r0 later.
@@ -224,23 +172,23 @@ def demo_resample():
 
     g=ArithmeticGrammar()
     #g=BasicGrammar()
-    ctx=GrammaSampler(g)
-    #ctx.random.seed(15)
-    sampler0=NullExecutionObserver()
-    ctx.observer=TracingExecutionObserver(sampler0,ctx.random)
-    origs=ctx.sample()
+    sampler=GrammaSampler(g)
+    #sampler.random.seed(15)
+    o0=NullSideEffect()
+    sampler.sideeffect=TracingSideEffect(o0)
+    origs=sampler.sample()
     print('-- the original sample --')
     print(origs)
 
-    tt=ctx.observer.tracetree
+    tt=sampler.sideeffect.tracetree
     # resample with the cached randstate.
     # Note that the dynamic alternations used in ArithmeticGrammar use depth
     # and using "cat(load_rand,start)" increases the depth. Reset the depth
     # with the 'def'. (depth is set to 1 because on _exit_ from the gfunc
     # call, depth is decremented)
-    ctx.observer=sampler0
-    ctx.random.set_cached_state('r',tt.inrand)
-    s=ctx.sample('load_rand("r").def("depth",1).start')
+    sampler.sideeffect=o0
+    sampler.random.set_cached_state('r',tt.inrand)
+    s=sampler.sample('load_rand("r").def("depth",1).start')
     assert(s==origs)
 
 
@@ -259,25 +207,25 @@ def demo_resample():
     print('-- the resample expression --')
     print(rge)
 
-    ctx.update_cache(cfg)
+    sampler.update_cache(cfg)
 
     for i in range(10):
         print('---')
-        print(ctx.sample(rge))
+        print(sampler.sample(rge))
 
 
 def demo_resample2():
     import random
     g=ArithmeticGrammar()
-    ctx=GrammaSampler(g)
-    sampler0=NullExecutionObserver()
-    ctx.observer=TracingExecutionObserver(sampler0,ctx.random)
+    sampler=GrammaSampler(g)
+    o0=NullSideEffect()
+    sampler.sideeffect=TracingSideEffect(o0)
 
-    s=ctx.sample()
+    s=sampler.sample()
     print(s)
     i=random.randrange(0,len(s))
     print(' '*i + '''^- looking for this char's origin''')
-    tt=ctx.observer.tracetree
+    tt=sampler.sideeffect.tracetree
     n=tt.child_containing(i)
     d=0
     while n!=None:
@@ -456,11 +404,10 @@ if __name__=='__main__':
     #demo_parser()
     #demo_sampling()
     #demo_rlim()
-    #demo_constraint()
-    #demo_tracetree()
+    demo_tracetree()
     #demo_composition()
     #demo_random_states()
-    demo_resample()
+    #demo_resample()
     #demo_resample2()
     #demo_grammar_analysis()
 
