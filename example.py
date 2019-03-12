@@ -87,15 +87,21 @@ def demo_parser():
 
 
 def demo_sampling():
-    g=BasicGrammar()
-    it=g.generate()
-    for i in xrange(10):
-        print(next(it))
-
-
-def demo_rlim():
-    g=GrammaGrammar('start :=  rlim("a" . start, 3, "");')
+    #g=BasicGrammar()
+    g=ArithmeticGrammar()
     sampler=GrammaSampler(g)
+    sampler.add_sideeffects(DepthTracker)
+    for i in xrange(10):
+        print(sampler.sample())
+
+
+def demo_recursion_limits():
+    ruleDepthTracker=DepthTracker(lambda ge:isinstance(ge,GRule))
+
+    #g=GrammaGrammar('start :=  `depth<=3` "a" . start | `depth>3` "";')
+    g=GrammaGrammar('start :=  `depth<=3` ? "a" . start : "" ;')
+    sampler=GrammaSampler(g)
+    sampler.add_sideeffects(ruleDepthTracker)
     sampler.random.seed(0)
     for i in range(10):
         s=sampler.sample()
@@ -107,32 +113,55 @@ def demo_tracetree():
     '''
         generate a tracetree for a sample then pick an alt node to re-sample with chosen bias.
     '''
-    g=BasicGrammar()
+    #g=BasicGrammar()
+    g=ArithmeticGrammar()
     sampler=GrammaSampler(g)
     sampler.random.seed(0)
-    sampler.add_sideeffect(TracingSideEffect())
+    tracer=Tracer()
+    sampler.add_sideeffects(DepthTracker, tracer)
 
     for i in range(10):
         s=sampler.sample()
         print('---------------')
         print('%3d %s' % (len(s),s))
-        sampler.sideeffects[0].tracetree.dump()
+        tracer.tracetree.dump()
 
-def demo_composition():
+class LeftAltTransformer(Transformer):
+    '''
+        force sampler down left choice to an altdepth of maxdepth
+    '''
+    __slots__='maxdepth',
+
+    def __init__(self,maxdepth=10):
+        self.maxdepth=maxdepth
+
+    def transform(self, x, ge):
+        if x.state.altdepth<=self.maxdepth:
+            if isinstance(ge,GAlt):
+                nge=GAlt([1],[ge.children[0].copy()])
+                nge.parent=ge
+                return nge
+        return ge
+
+    altDepthTracker=DepthTracker(varname='altdepth', pred=lambda ge:isinstance(ge,GAlt))
+
+def demo_transform():
     g=BasicGrammar()
     sampler=GrammaSampler(g)
     sampler.random.seed(0)
-    sampler.sideeffect=TracingSideEffect(LeftAltSideEffect(maxdepth=5))
+
+    sampler.add_sideeffects(DepthTracker, LeftAltTransformer.altDepthTracker)
+    sampler.add_transformers(LeftAltTransformer(maxdepth=30))
+
     for i in range(10):
         s=sampler.sample()
-        print('---------------')
         print('%3d %s' % (len(s),s))
-        sampler.sideeffect.tracetree.dump()
 
 
 def demo_random_states():
     g=BasicGrammar()
     sampler=GrammaSampler(g)
+    sampler.add_sideeffects(DepthTracker)
     #sampler.random.seed(0)
 
     def p(n, e):
@@ -174,19 +203,18 @@ def demo_resample():
     #g=BasicGrammar()
     sampler=GrammaSampler(g)
     #sampler.random.seed(15)
-    o0=NullSideEffect()
-    sampler.sideeffect=TracingSideEffect(o0)
+    tracer=Tracer()
+    sampler.add_sideeffects(DepthTracker, tracer)
     origs=sampler.sample()
     print('-- the original sample --')
     print(origs)
 
-    tt=sampler.sideeffect.tracetree
+    tt=tracer.tracetree
     # resample with the cached randstate.
     # Note that the dynamic alternations used in ArithmeticGrammar use depth
     # and using "cat(load_rand,start)" increases the depth. Reset the depth
     # with the 'def'. (depth is set to 1 because on _exit_ from the gfunc
     # call, depth is decremented)
-    sampler.sideeffect=o0
     sampler.random.set_cached_state('r',tt.inrand)
     s=sampler.sample('load_rand("r").def("depth",1).start')
     assert(s==origs)
@@ -218,14 +246,14 @@ def demo_resample2():
     import random
     g=ArithmeticGrammar()
     sampler=GrammaSampler(g)
-    o0=NullSideEffect()
-    sampler.sideeffect=TracingSideEffect(o0)
+    tracer=Tracer()
+    sampler.add_sideeffects(DepthTracker, tracer)
 
     s=sampler.sample()
     print(s)
     i=random.randrange(0,len(s))
     print(' '*i + '''^- looking for this char's origin''')
-    tt=sampler.sideeffect.tracetree
+    tt=tracer.tracetree
     n=tt.child_containing(i)
     d=0
     while n!=None:
@@ -403,12 +431,12 @@ def demo_grammar_analysis():
 if __name__=='__main__':
     #demo_parser()
     #demo_sampling()
-    #demo_rlim()
-    demo_tracetree()
-    #demo_composition()
+    #demo_recursion_limits()
+    #demo_tracetree()
+    #demo_transform()
     #demo_random_states()
     #demo_resample()
-    #demo_resample2()
+    demo_resample2()
     #demo_grammar_analysis()
 
 # vim: ts=4 sw=4

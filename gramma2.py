@@ -27,24 +27,33 @@ r'''
     GLF Syntax
     ==========
 
-    - literals - same syntax as Pytnon strings
+    literals - same syntax as Python strings
         'this is a string'
         """this is a (possibly 
             multiline) string"""
-    - weighted alternation (|) - weighted random choice from alternatives
-        2 x | 3.2 y
-        - omitted weights are implicitly 1, so omitting all weights corresponds
-          to flat random choice
-            x | y
 
+    ternary operator (?:) - choice based on computed boolean
+        `depth<5` ? x : y
+        - the code term, `depth<5`, is a python expression testing the state
+          variables 'depth'.  If the computed result is True, the result is
+          x, else y.
+
+    weighted alternation (|) - weighted random choice from alternatives
+        2 x | 3.2 y | z
+        - selects on of x, y, or z with probability 2/5.3, 2.3/5.3, and 1/5.3
+          respectively.  The weight on z is implicitly 1.
+        - omitting all weights corresponds to flat random choice, e.g.
+            x | y | z
+          selects one of x,y, or z with equal likelihood.
         - weights can also be code in backticks. For example:
             recurs := `depth<5` recurs | "token";
             - this sets the recurse branch weight to 1 (int(True)) if depth <5,
               and 0 otherwise.
 
-    - concatenation (.) - definite concatenation
+    concatenation (.) - definite concatenation
         x . y
-    - repetition ({}) - random repeats
+
+    repetition ({}) - random repeats
         x{3}
             - generate x exactly 3 times
         x{1,3}
@@ -54,115 +63,142 @@ r'''
               generate x n times
         x{1,5,geom(3)}
             - same as above, but reject n outside of the interval [1,5]
-    - function call (gfuncs) - as defined in a GrammaGrammar extension
+
+     function call (gfuncs) - as defined in a GrammaGrammar subclass
         f(x)
 
         - by inheriting the GrammaGrammar class and adding decorated functions,
-          the syntax can be extended.  See below.
+          GLF syntax can be extended.  See below.
         - functions can be stateful, meaning they rely on information stored in
-          the GeneratorInterface object.
+          the SamplerInterface object.
         - evaluation is left to right.
         - functions aren't allowed to "look up" the execution stack, only back.
 
-    Numerical parameters
-    ====================
+    Resampling
+    ==========
+    To produce strings similar to a previously sampled string, we can hold
+    fixed (or definitize) part of the corresponding tracetree.  We effectively
+    create a template from a sample which we can then re-sample.
 
-    Templates from previous samples
-    ===============================
+    The TraceNode API provides a high level interface, while what follows
+    describes the underlying operation.
+
+    - "resampling" starts with a tracetree and a node. For example, given the
+      GExpr
+
+            a(b(),c(),d())
+
+        To resample at "c" we compute:
+
+            save_rand('r0').a(b(),c().save_rand('r1'),d())
+
+        and store r0 and r1.  The random number generator on entering
+        "c" is then reseeded on entry, and resumed with at r1 after
+        exiting "c".
+
+            load_rand('r0').a(b(), reseed_rand().c().load_rand('r1'), d())
+
+        we could also choose the reseed explicitly via a load, e.g. if
+        we'd saved a random state "r2" we could use:
+
+            load_rand('r0').a(b(), load_rand(r2).c().load_rand('r1'), d())
+
+    - to handle recursion, we must "unroll" rules until the point where the
+      resampled node occurs.  e.g. the following generates arrows, "---->"
+      with length (minus 1) distributed geometrically.
+
+            r:= "-".r | ">";
+
+        To resample the "r" node that's three deep in the trace tree of
+        "----->", we partially unroll the expression "r":
+
+            "-".("-".("-".r | ">") | ">") | ">";
+            
+        and instrument:
+
+            save_rand('r0').("-".("-".("-"
+                .r.save_rand('r1') | ">") | ">") | ">");
+            
+        then replay with a reseed
+
+            load_rand('r0').("-".("-".("-"
+                .reseed_rand().r.load_rand('r1') | ">") | ">") | ">");
+
 
 
     TODO:
         - quirks
             - child_containing treats gfuncs as atomic
-            - dynamic alternations use state.depth
-                - we could move state.depth into an sideeffect
 
-        - add Transformer class to modify gexprs before they're compiled.
-            - a "dynamic" transform can apply to GExprs just before they're
-              compiled.. a "static" transformer would transform an entire
-              grammar into another grammar, more like inheritance.
-            - transformers compose, unlike sideffects. mixing the two is
-              too complicated.. sideeffects can both respond to and influence
-              the behavior of a transformed grammar.
+        - state analysis
+            - every GExpr node should provide "uses", "defs" and "uses_random".
+            - GCode nodes must be analyzed
+            - a grammar should define sideeffects it depends on, and the
+              analysis should incorporate sideeffect 
+            - add analysis metaclass to SideEffect so that an effect can't use
+              a state variable it doesn't initialize.
 
-            - implement LeftAltSideEffect as a transormer and sideffect, e.g.
-              replace each alt (in every rule) with a dynamic alt that uses an
-              "altdepth" state.
+        - resample
+            - during tracetree construction, store instate and outstate maps
+              for stateful nodes.
+            - insert load(state,slot) and load_rand(slot) in sequence to
+              produce correct output.
 
-        - compute rdepth, rule depth / recursion depth, for dynamic alt
+        - stacked state
+            - to create scoped state, so that a statespace exists only at the
+              depth it's scoped for, e.g.
 
-        - resample should insert the correct load(state,slot) and
-          load_rand(slot) in sequence to produce correct output.
-          - during tracetree construction, store instate and outstate maps
-          - simplify (or "compile") can then remove unnecessary loads.
+                r := scoped(definevar(id) . "blah". (r . "blah" . usevar()){2,10} );
 
-        - compile an expression -- in preorder traversal, find then
-          follow "load_rand" with "definitizing" until next "reseed_rand".
-          - we can't necessarily do this in a sideeffect, because we can't
-            definitize a stateful node until we know there are no future
-            gfuncs accessing a disjoint random stream.
+             where the GrammaGramma child contains:
 
-        - implement TreeConstrainedTransformer
-            - constructed with expression
-                - declarative syntax for finding a node in a tracetree
-                - e.g.
-                    alt(alt(0),b) - meaning if the left branch of the first alt
-                    is taken, take the first option.
-                - more astmatcher?
+                def reset_state(state):
+                    state.stk=[]
+                    state.stktop=None
 
-            - add parms.. readonly data usable by gfuncs, no checked initialization
+                @gfunc
+                def scoped(x):
+                    stk=x.state.stk
+                    if len(stk)>0:
+                        # inherit parent scopes values
+                        stk.append(set(stk[-1]))
+                    else:
+                        stk.append(set())
+                    x.state.stktop=stk[-1]
+                    res = yield(child)
+                    stk.pop()
+                    yield res
 
-        - decorator to convert function into generator
-            - gfunc should be gcoroutine, with a new gfunc decorator that makes
-              coroutines of functions.
+                @gfunc
+                def definevar(x,id):
+                    id=yield id
+                    x.state.stktop.add(id)
+                    yield id
 
-        - resampling and compilation
+                @gfunc
+                def usevar(x):
+                    yield random.choice(x.state.stktop)
 
-            - "resampling" starts with a definitized GExpr one of its tracetree
-              nodes.  For example, given the GExpr
+            - we could also use a sideeffect to manage the stack, then just
+              depend on the stack sideeffect and use it in gfuncs.
+                def push(self,x,ge):
+                    if is_our_node_type(ge):
+                        x.state.stk.push..
+                        return True
+                    return False
 
-                    a(b(),c(),d())
+                def pop(self,x,w,s):
+                    if w:
+                        x.state.stk.pop...
 
-                To resample at "c" we compute:
+            - with either implementation, state dependence needs to work
+              harder.. each push effectively introduces a new statespace.
+                - register Analyzer classes to types in order to extend
+                  analyze_gfuncs
 
-                    save_rand('r0').a(b(),c().save_rand('r1'),d())
+        - add parms.. readonly state, no checked initialization
 
-                and store r0 and r1.  The random number generator on entering
-                "c" is then reseeded on entry, and resumed with at r1 after
-                exiting "c".
-
-                    load_rand('r0').a(b(), reseed_rand().c().load_rand('r1'), d())
-
-                we could also choose the reseed explicitly via a load, e.g. if
-                we'd saved a random state "r2" we could use:
-
-                    load_rand('r0').a(b(), load_rand(r2).c().load_rand('r1'), d())
-
-            - the presentation is slightly complicated by recursion. We must
-              "unroll" rules until the point where the resampled node occurs.
-              e.g. the following generates arrows, "---->"  with length (minus
-              1) distributed geometrically.
-
-                    r:= "-".r | ">";
-
-                To resample the "r" node that's three deep in the trace tree of
-                "----->", we partially unroll the expression "r":
-
-                    "-".("-".("-".r | ">") | ">") | ">";
-                    
-                and instrument:
-
-                    save_rand('r0').("-".("-".("-"
-                        .r.save_rand('r1') | ">") | ">") | ">");
-                    
-                then replay with a reseed
-
-                    load_rand('r0').("-".("-".("-"
-                        .reseed_rand().r.load_rand('r1') | ">") | ">") | ">");
-
-            - programattically interacting with a tracetree is simpler;
-              "load_rand" and "save_rand" are primarily for exposition.
-
+        - compilation
             - "tree order": child < parent
 
             - "statespace N order": node1 < node2 if both nodes use the same
@@ -199,24 +235,6 @@ r'''
               principal upset to set state e.g. the argument "x" of "g" :
                   
                   f()  ...  g(x)
-
-        - rule-scoped / stacked state spaces?
-            - must define stack_reset to initialize top of every stack.
-            - to use it, e.g.
-                @gfunc
-                def f(x):
-                    x.state.stacked.beef=7
-            - actually.. it makes more sense to have a gfunc that controls the
-              stack, e.g. in glf
-                r := scoped(def() . "blah". (r . "blah" . use()){2,10} );
-            with 
-                @gfunc
-                def scoped(x):
-                    x.state.stack.push
-                    x.state.stack_reset
-                    res = yield(child)
-                    x.state.stack.pop
-                    yield res
 
 '''
 from __future__ import absolute_import, division, print_function
@@ -321,9 +339,9 @@ def gfunc(*args,**kw):
                 and "state" are allowed.
             *) may sample from GExpr arguments by yielding a GExpr.. the result
                 will be a string.
-            *) may access entropy from the GeneratorInterface instance
+            *) may access entropy from the SamplerInterface instance
         
-        The fields of the GeneratorInterface state used by a gfunc reprsent its
+        The fields of the SamplerInterface state used by a gfunc represent its
         "state space".  By tracking non-overlapping state spaces, Gramma can
         optimize certain operations.
 
@@ -358,7 +376,9 @@ gramma_grammar = r"""
 
     ruledefs : (ruledef|COMMENT)+
 
-    ruledef : NAME ":=" alt ";"
+    ruledef : NAME ":=" tern ";"
+
+    ?tern :  code "?" alt ":" alt | alt 
 
     ?alt : weight? cat ("|" weight? cat)*
 
@@ -561,7 +581,7 @@ class GInternal(GExpr):
                 children.append(c)
         return children
 
-class GCode(object):
+class GCode(GExpr):
     '''
        code expression, e.g. for dynamic alternations
     '''
@@ -578,6 +598,32 @@ class GCode(object):
         if isinstance(other,numbers.Number):
             return GCode('(%s)+%f' % (self.expr, other))
         return GCode('(%s)+(%s)' % (self.expr, other.expr))
+
+class GTern(GInternal):
+    tag='tern'
+
+    __slots__='code',
+    def __init__(self, code, children):
+        GInternal.__init__(self,children)
+        self.code=code
+
+    def compute_case(self,state):
+        return self.code(state)
+ 
+    def __str__(self,children=None):
+        return '%s ? %s : %s' % (self.code.expr, children[0], children[1])
+
+    def simplify(self):
+        return GTern(self.code, [c.simplify() for c in self.children])
+
+    @classmethod
+    def parse_larktree(cls,lt):
+        code=GCode(lt.children[0].children[0][1:-1])
+        return cls(code,[GExpr.parse_larktree(clt) for clt in lt.children[1:]])
+
+    def copy(self):
+        return GTern(self.code, [c.copy() for c in self.children])
+
 
 class GAlt(GInternal):
     tag='alt'
@@ -862,7 +908,7 @@ class GRule(GExpr):
     def parse_larktree(cls,lt):
         return GRule(lt.children[0].value)
 
-for cls in GAlt, GCat, GRep, GFunc,   GRange, GRule:
+for cls in GTern, GAlt, GCat, GRep, GFunc,   GRange, GRule:
     GExpr.tag2cls[cls.tag]=cls
 
 class GrammaState(object):
@@ -901,7 +947,6 @@ class GrammaRandom(object):
         '''
         self._cache[n]=self.r.get_state()
 
-
     def choice(self,l,p=None):
         return self.r.choice(l,p=p)
 
@@ -915,14 +960,14 @@ class GrammaRandom(object):
         print(l,kw)
 
 
-class GeneratorInterface(namedtuple('GeneratorInterface','random state parms')):
+class SamplerInterface(namedtuple('SamplerInterface','random state parms')):
     '''
         constructed by GrammaSampler and passed to generators for access to
         random and state.
     '''
 
     def __new__(cls,sampler):
-        return super(GeneratorInterface,cls).__new__(cls,sampler.random,sampler.state,sampler.parms)
+        return super(SamplerInterface,cls).__new__(cls,sampler.random,sampler.state,sampler.parms)
 
 class GrammaSampler(object):
     '''
@@ -935,18 +980,28 @@ class GrammaSampler(object):
         samples.
 
     '''
-    __slots__='grammar','sideeffects', 'state','random','stack','x','parms'
+    __slots__='grammar', 'transformers', 'sideeffects', 'state','random','stack','x','parms'
     def __init__(self,grammar=None, **parms):
         self.grammar=grammar
+        self.transformers=[]
         self.sideeffects=[]
         self.random=GrammaRandom()
         self.state=GrammaState()
         self.parms=dict(parms)
 
-    def add_sideeffect(self,sideeffect):
+    def add_sideeffects(self,sideeffect, *l):
         if inspect.isclass(sideeffect):
             sideeffect=sideeffect()
         self.sideeffects.append(sideeffect)
+        for a in l:
+            self.add_sideeffects(a)
+
+    def add_transformers(self,transformer, *l):
+        if inspect.isclass(transformer):
+            transformer=transformer()
+        self.transformers.append(transformer)
+        for a in l:
+            self.add_transformers(a)
 
     def update_cache(self, cachecfg):
         self.state._cache.update(cachecfg.statecache)
@@ -956,14 +1011,12 @@ class GrammaSampler(object):
         self.parms.update(kw)
 
     def reset(self):
-        self.state.depth=0
-
         self.grammar.reset_state(self.state)
 
         for sideeffect in self.sideeffects:
             sideeffect.reset(self.state)
 
-        self.x=GeneratorInterface(self)
+        self.x=SamplerInterface(self)
         self.stack=[]
 
     def sample(self,ge=None):
@@ -977,26 +1030,27 @@ class GrammaSampler(object):
         self.reset()
 
         a=ge
-        wtops=[None]*len(self.sideeffects)
         while True:
             #assert(isinstance(a,GExpr))
 
-            #push
-            setop=tuple(sideeffect.push(self.x,a) for sideeffect in self.sideeffects)
-            top=self.grammar.compile(a)(self.x)
-            wtop=(setop,top) 
+            for transformer in self.transformers:
+                a=transformer.transform(self.x,a)
 
-            self.state.depth+=1
+            #push
+            sideeffect_top=tuple(sideeffect.push(self.x,a) for sideeffect in self.sideeffects)
+            compiled_top=self.grammar.compile(a)(self.x)
+            # wrapped top
+            wtop=(sideeffect_top,compiled_top) 
+
             self.stack.append(wtop)
 
-            a=next(top)
+            a=next(compiled_top)
             while isinstance(a,string_types):
                 #pop
                 for sideeffect,w in zip(self.sideeffects,wtop[0]):
                     sideeffect.pop(self.x,w,a)
 
                 self.stack.pop()
-                self.state.depth-=1
 
                 if len(self.stack)==0:
                     return a
@@ -1005,9 +1059,9 @@ class GrammaSampler(object):
                 a=wtop[1].send(a)
 
 
-class NullSideEffect(object):
+class SideEffect(object):
     '''
-        An execution sideeffect observes key points during sampler execution.
+        A sampler sideeffect that observes key
     '''
     __slots__=()
     def reset(self,state):
@@ -1029,6 +1083,21 @@ class NullSideEffect(object):
         w is the value returned by the corresponding pop.
         '''
         pass
+
+
+class Transformer(object):
+    '''
+        an operation to perform on gexprs before being compiled in the sampler.
+    '''
+    __slots__=()
+    def transform(self, x, ge):
+        '''
+        x is the SamplerInterface, ge is the incoming GExpr
+
+        must return a gexpr
+
+        '''
+        return ge
 
 class GrammaGrammarException(Exception):
     pass
@@ -1052,7 +1121,7 @@ class GFuncAnalyzeVisitor(ast.NodeVisitor):
 
     def __init__(self,target_class,f,allowed_ids=None):
         self.target_class=target_class
-        # id of the GeneratorInterface (first argument of gfunc)
+        # id of the SamplerInterface (first argument of gfunc)
         # other argument ids
         self.allowed_ids=set(GFuncAnalyzeVisitor.allowed_globals)
         if allowed_ids!=None:
@@ -1351,7 +1420,7 @@ class GrammaGrammar(with_metaclass(GrammaGrammarType,object)):
             self.ruledefs[rname]=rvalue
 
     def reset_state(self,state):
-        state.rlim_depth=0
+        pass
 
     @gfunc
     def save_rand(x,slot):
@@ -1390,25 +1459,6 @@ class GrammaGrammar(with_metaclass(GrammaGrammarType,object)):
 
 
 
-    @gfunc
-    def rlim(x,c,n,o):
-        '''
-            recursion limit - if recursively invoked to a depth < n times,
-                sample c, else sample o
-
-            e.g. 
-
-                R :=  rlim("a" . R, 3, "");
-
-                produces "aaa" 
-            
-        '''
-        x.state.rlim_depth+=1
-        n=n.as_int()
-        res=yield (c if x.state.rlim_depth<=n else o)
-        x.state.rlim_depth-=1
-        yield res
-
     def parse(self,gramma_expr_str):
         '''
             parse gramma_expr_sr with the current rules and functions and
@@ -1417,21 +1467,14 @@ class GrammaGrammar(with_metaclass(GrammaGrammarType,object)):
         lt=self.parser.parse('_:=(%s);' % gramma_expr_str)
         return GExpr.parse_larktree(lt.children[0].children[1])
 
-    def generate(self,startexpr=None):
-        '''
-            quick and dirty generator
-        '''
-        sampler=GrammaSampler(self)
-        if startexpr==None:
-            startexpr=self.ruledefs['start']
-        while True:
-            yield sampler.sample(startexpr) 
-
-
     def compile(self, ge):
         if isinstance(ge,GTok):
             def g(x):
                 yield ge.as_str()
+        elif isinstance(ge,GTern):
+            def g(x):
+                s=yield (ge.children[0] if ge.compute_case(x.state) else ge.children[1])
+                yield s
         elif isinstance(ge,GAlt):
             if ge.dynamic:
                 def g(x):
@@ -1492,7 +1535,7 @@ class CacheConfig(object):
         self.randcache[n]=val
         return n
 
-class TTNode(object):
+class TraceNode(object):
     '''
         a node of the tracetree
     '''
@@ -1506,7 +1549,7 @@ class TTNode(object):
         self.outrand=None
 
     def add_child(self,ge):
-        c=TTNode(ge)
+        c=TraceNode(ge)
         c.parent=self
         self.children.append(c)
         return c
@@ -1526,7 +1569,7 @@ class TTNode(object):
 
         #print('%s[%d,%d) %s' % (' '*d, i,j,self.ge))
 
-        if isinstance(self.ge, (GRule,GAlt)):
+        if isinstance(self.ge, (GRule,GTern,GAlt)):
             return self.children[0].child_containing(i,j,d+1)
 
         # don't descend into GFuncs
@@ -1591,7 +1634,10 @@ class TTNode(object):
                 return GCat([grammar.parse('reseed_rand()'),t.ge.copy(),grammar.parse("load_rand('"+slot+"')")])
 
             ge=t.ge
-            if isinstance(ge,GAlt):
+            if isinstance(ge,GTern):
+                # XXX lost sample, rand stream out of sync w/ original
+                return recurse(t.children[0])
+            elif isinstance(ge,GAlt):
                 # XXX lost sample, rand stream out of sync w/ original
                 return recurse(t.children[0])
             elif isinstance(ge,GRule):
@@ -1612,7 +1658,31 @@ class TTNode(object):
 
         return recurse(self).simplify(), cachecfg
 
-class TracingSideEffect(object):
+
+class DepthTracker(SideEffect):
+    __slots__='pred','varname','initial_value'
+
+    def __init__(self,pred=None, varname='depth', initial_value=0):
+        if pred==None:
+            pred=lambda ge:True
+        self.pred=pred
+        self.varname=varname
+        self.initial_value=initial_value
+
+    def reset(self,state):
+        setattr(state, self.varname, self.initial_value)
+
+    def push(self,x,ge):
+        if self.pred(ge):
+            setattr(x.state, self.varname, getattr(x.state, self.varname)+1)
+            return True
+        return False
+
+    def pop(self,x,w,s):
+        if w:
+            setattr(x.state, self.varname, getattr(x.state, self.varname)-1)
+
+class Tracer(SideEffect):
     __slots__='tt','tracetree'
 
     def reset(self,state):
@@ -1620,7 +1690,7 @@ class TracingSideEffect(object):
 
     def push(self,x,ge):
         if self.tracetree==None:
-            self.tt=self.tracetree=TTNode(ge)
+            self.tt=self.tracetree=TraceNode(ge)
         else:
             self.tt=self.tt.add_child(ge)
         self.tt.inrand=x.random.r.get_state()
