@@ -128,21 +128,31 @@ r'''
 
     TODO:
         - quirks
-            - child_containing treats gfuncs as atomic
+            - child_containing treats gfuncs as atomic.. a gfunc an modify a
+              sampled string arbitrarily.  a simple test that would cover a lot
+              of gfuncs would be to compare children sample values to gfunc
+              sample result.. if a child is equal to a sampled result, descend
+              into it.
 
         - state analysis
-            - every GExpr node should provide "uses", "defs" and "uses_random".
-            - GCode nodes must be analyzed
-            - a grammar should define sideeffects it depends on, and the
-              analysis should incorporate sideeffect 
-            - add analysis metaclass to SideEffect so that an effect can't use
-              a state variable it doesn't initialize.
+            - complete analysis in GrammaGrammar constructor.
+                - in a depth first analysis, accumulating from the oldest parent,
+                    - analyze sideeffects
+                        - in particular stacking of state should be doable
+                        - store on sideeffect object.. allowed constructor of
+                          sideffect to pre-populate state metadata to prevent
+                          auto-analysis.
+                    - analyze (previously unanalyzed) gfuncs
+                        - store analysis results on GFuncWrap and in grammar.
+                - analyze GCode in parser, so that all calls to "parse"
+                  benefit from analysis.
+                    - store analysis results on GExpr objects and in grammar.
 
-        - resample
-            - during tracetree construction, store instate and outstate maps
-              for stateful nodes.
-            - insert load(state,slot) and load_rand(slot) in sequence to
-              produce correct output.
+                - state metadata should be useful to the TraceNode, in
+                  particular the resample compiler.
+                    - "if we resample a node that had modified state, do we
+                      need to load that state on exit from the resample of S?
+                      e.g. is it used later?"
 
         - stacked state
             - to create scoped state, so that a statespace exists only at the
@@ -150,14 +160,14 @@ r'''
 
                 r := scoped(definevar(id) . "blah". (r . "blah" . usevar()){2,10} );
 
-             where the GrammaGramma child contains:
+             where the GrammaGramma child class contains:
 
                 def reset_state(state):
                     state.stk=[]
                     state.stktop=None
 
                 @gfunc
-                def scoped(x):
+                def scoped(x,child):
                     stk=x.state.stk
                     if len(stk)>0:
                         # inherit parent scopes values
@@ -167,6 +177,7 @@ r'''
                     x.state.stktop=stk[-1]
                     res = yield(child)
                     stk.pop()
+                    x.state.stktop=stk[-1]
                     yield res
 
                 @gfunc
@@ -191,14 +202,14 @@ r'''
                     if w:
                         x.state.stk.pop...
 
-            - with either implementation, state dependence needs to work
-              harder.. each push effectively introduces a new statespace.
-                - register Analyzer classes to types in order to extend
-                  analyze_gfuncs
+        - resample compilation
+            - add parms.. readonly state that isn't checked for initialization
+            - during tracetree construction, store instate for use nodes and
+              outstate for def nodes.
+            - given a tracetree and a subset of nodes to resample, we compile
+              it to a gexpr by definitizing and using "load", "load_rand", and
+              "reseed_rand" calls.
 
-        - add parms.. readonly state, no checked initialization
-
-        - compilation
             - "tree order": child < parent
 
             - "statespace N order": node1 < node2 if both nodes use the same
@@ -980,7 +991,7 @@ class GrammaSampler(object):
         samples.
 
     '''
-    __slots__='grammar', 'transformers', 'sideeffects', 'state','random','stack','x','parms'
+    __slots__='grammar', 'transformers', 'sideeffects', 'state', 'random', 'stack', 'parms', 'x'
     def __init__(self,grammar=None, **parms):
         self.grammar=grammar
         self.transformers=[]
@@ -989,19 +1000,19 @@ class GrammaSampler(object):
         self.state=GrammaState()
         self.parms=dict(parms)
 
-    def add_sideeffects(self,sideeffect, *l):
-        if inspect.isclass(sideeffect):
-            sideeffect=sideeffect()
-        self.sideeffects.append(sideeffect)
-        for a in l:
-            self.add_sideeffects(a)
+        self.add_sideeffects(*self.grammar.sideeffect_dependencies)
 
-    def add_transformers(self,transformer, *l):
-        if inspect.isclass(transformer):
-            transformer=transformer()
-        self.transformers.append(transformer)
-        for a in l:
-            self.add_transformers(a)
+    def add_sideeffects(self,*sideeffects):
+        for sideeffect in sideeffects:
+            if inspect.isclass(sideeffect):
+                sideeffect=sideeffect()
+            self.sideeffects.append(sideeffect)
+
+    def add_transformers(self,*transformers):
+        for transformer in transformers:
+            if inspect.isclass(transformer):
+                transformer=transformer()
+            self.transformers.append(transformer)
 
     def update_cache(self, cachecfg):
         self.state._cache.update(cachecfg.statecache)
@@ -1066,21 +1077,22 @@ class SideEffect(object):
     __slots__=()
     def reset(self,state):
         '''
-        called right after sample, before the stack machine starts
+        called before the stack machine starts
         '''
         pass
 
     def push(self,x,ge):
         '''
         when an expression is compiled to a coroutine, the stack machine
-        pushes.
+        pushes.  the return value is pushed at the same position in the stack,
+        made available to pop later.
         '''
         return None
 
     def pop(self,x,w,s):
         '''
         when a coroutine complete, returning a string, s, it is popped.
-        w is the value returned by the corresponding pop.
+        w is the value returned by the corresponding push.
         '''
         pass
 
@@ -1387,7 +1399,7 @@ class GrammaGrammarType(type):
         analyze_gfuncs(classobject, getattr(classobject, 'ALLOWED_GLOBAL_IDS', []))
         #print('done with analysis of %s' % classname)
 
-class GrammaGrammar(with_metaclass(GrammaGrammarType,object)):
+class GrammaGrammar(object):
     '''
         The class defining functions and state management for a gramma and
         extensions.
@@ -1404,16 +1416,38 @@ class GrammaGrammar(with_metaclass(GrammaGrammarType,object)):
 
     ALLOWED_GLOBAL_IDS=[]
 
-    parser = lark.Lark(gramma_grammar, parser='earley', lexer='standard')
+    ruledef_parser = lark.Lark(gramma_grammar, parser='earley', lexer='standard', start='start')
+    expr_parser = lark.Lark(gramma_grammar, parser='earley', lexer='standard', start='tern')
 
-    def __init__(self, gramma_expr_str):
+    __slots__='sideeffect_dependencies', 'ruledefs', 'funcdefs'
+
+    def __init__(self, gramma_expr_str, sideeffect_dependencies=None):
+        '''
+            gramma_expr_str defines the grammar, including a start rule.
+
+            sideeffect_dependencies is a list of SideEffect objects or classes
+            which the grammar, GFunc implementations or GCode expressions,
+            require.
+        '''
+        if sideeffect_dependencies==None:
+            sideeffect_dependencies=[]
+        self.sideeffect_dependencies=sideeffect_dependencies
+        # XXX analyze sideffect state variable access
+        # XXX analyze reset_state
+        # XXX analyze gfuncs
+
+        classobject=self.__class__
+        analyze_gfuncs(classobject, getattr(classobject, 'ALLOWED_GLOBAL_IDS', []))
+        # XXX .. now parse gramma_expr_str.. parser will analyze embedded GCode
+        # for state usage.
+
         self.ruledefs={}
         self.funcdefs={}
 
         for n,f in inspect.getmembers(self,predicate=lambda x:isinstance(x,GFuncWrap)):
             self.funcdefs[f.fname]=f
 
-        lt=self.parser.parse(gramma_expr_str)
+        lt=self.ruledef_parser.parse(gramma_expr_str)
         for ruledef in lt.children:
             rname=ruledef.children[0].value
             rvalue=GExpr.parse_larktree(ruledef.children[1])
@@ -1464,8 +1498,7 @@ class GrammaGrammar(with_metaclass(GrammaGrammarType,object)):
             parse gramma_expr_sr with the current rules and functions and
             return a GExpr object
         '''
-        lt=self.parser.parse('_:=(%s);' % gramma_expr_str)
-        return GExpr.parse_larktree(lt.children[0].children[1])
+        return GExpr.parse_larktree(self.expr_parser.parse(gramma_expr_str))
 
     def compile(self, ge):
         if isinstance(ge,GTok):

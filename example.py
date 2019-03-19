@@ -16,8 +16,8 @@ class BasicGrammar(GrammaGrammar):
 
     ALLOWED_GLOBAL_IDS=['g_allowed']
 
-    def __init__(x):
-        GrammaGrammar.__init__(x,type(x).G)
+    def __init__(self):
+        GrammaGrammar.__init__(self, type(self).G, [DepthTracker])
 
     def reset_state(self,state):
         super().reset_state(state)
@@ -73,9 +73,7 @@ class ArithmeticGrammar(GrammaGrammar):
     '''
 
     def __init__(x):
-        GrammaGrammar.__init__(x,type(x).G)
-
-
+        GrammaGrammar.__init__(x,type(x).G, sideeffect_dependencies=[DepthTracker])
 
 
 
@@ -90,18 +88,14 @@ def demo_sampling():
     #g=BasicGrammar()
     g=ArithmeticGrammar()
     sampler=GrammaSampler(g)
-    sampler.add_sideeffects(DepthTracker)
     for i in xrange(10):
         print(sampler.sample())
 
 
 def demo_recursion_limits():
     ruleDepthTracker=DepthTracker(lambda ge:isinstance(ge,GRule))
-
-    #g=GrammaGrammar('start :=  `depth<=3` "a" . start | `depth>3` "";')
-    g=GrammaGrammar('start :=  `depth<=3` ? "a" . start : "" ;')
+    g=GrammaGrammar('start :=  `depth<=3` ? "a" . start : "" ;', [ruleDepthTracker])
     sampler=GrammaSampler(g)
-    sampler.add_sideeffects(ruleDepthTracker)
     sampler.random.seed(0)
     for i in range(10):
         s=sampler.sample()
@@ -118,7 +112,7 @@ def demo_tracetree():
     sampler=GrammaSampler(g)
     sampler.random.seed(0)
     tracer=Tracer()
-    sampler.add_sideeffects(DepthTracker, tracer)
+    sampler.add_sideeffects(tracer)
 
     for i in range(10):
         s=sampler.sample()
@@ -150,7 +144,7 @@ def demo_transform():
     sampler=GrammaSampler(g)
     sampler.random.seed(0)
 
-    sampler.add_sideeffects(DepthTracker, LeftAltTransformer.altDepthTracker)
+    sampler.add_sideeffects(LeftAltTransformer.altDepthTracker)
     sampler.add_transformers(LeftAltTransformer(maxdepth=30))
 
     for i in range(10):
@@ -161,7 +155,6 @@ def demo_transform():
 def demo_random_states():
     g=BasicGrammar()
     sampler=GrammaSampler(g)
-    sampler.add_sideeffects(DepthTracker)
     #sampler.random.seed(0)
 
     def p(n, e):
@@ -204,7 +197,7 @@ def demo_resample():
     sampler=GrammaSampler(g)
     #sampler.random.seed(15)
     tracer=Tracer()
-    sampler.add_sideeffects(DepthTracker, tracer)
+    sampler.add_sideeffects(tracer)
     origs=sampler.sample()
     print('-- the original sample --')
     print(origs)
@@ -242,12 +235,12 @@ def demo_resample():
         print(sampler.sample(rge))
 
 
-def demo_resample2():
+def demo_tracetree_analysis():
     import random
     g=ArithmeticGrammar()
     sampler=GrammaSampler(g)
     tracer=Tracer()
-    sampler.add_sideeffects(DepthTracker, tracer)
+    sampler.add_sideeffects(tracer)
 
     s=sampler.sample()
     print(s)
@@ -266,166 +259,123 @@ def demo_resample2():
 
  
 def demo_grammar_analysis():
+    class GStub(GrammaGrammar):
+        def __init__(self):
+            GrammaGrammar.__init__(self,'start := "";')
 
-    # if a state variable is used by a gfunc, it must be reset
-    s=None
-    try:
-        class AnalyzeMeGrammar1(GrammaGrammar):
-            @gfunc
-            def f(x):
-                yield str(x.state.m)
+    def eval_grammar(Grammar,expect):
+        # if a state variable is used by a gfunc, it must be reset
+        s=None
+        try:
+            g=Grammar()
+        except Exception as e:
+            s=str(e)
+        if (s==None and expect==None) or (s!=None and expect!=None and expect in s):
+            print('Checked: %s' % Grammar.__name__)
+        else:
+            print('check failed. expect:\n  %s\ngot:\n  %s' % (expect, s))
 
-    except Exception as e:
-        s=str(e)
-    assert('has no reset_state method, but uses statespace(s) m' in s)
+    class AnalyzeMeGrammar1(GStub):
+        @gfunc
+        def f(x):
+            yield str(x.state.m)
+    eval_grammar(AnalyzeMeGrammar1,'has no reset_state method, but uses statespace(s) m')
 
-    s=None
-    try:
-        class AnalyzeMeGrammar1fix(GrammaGrammar):
-
-            def reset_state(self,state):
-                state.m=5
-
-            @gfunc
-            def f(x):
-                yield str(x.state.m)
-
-    except Exception as e:
-        s=str(e)
-    assert(s==None)
+    class AnalyzeMeGrammar1fix(GStub):
+        def reset_state(self,state):
+            state.m=5
+        @gfunc
+        def f(x):
+            yield str(x.state.m)
+    eval_grammar(AnalyzeMeGrammar1fix,None)
 
 
     # global are forbidden..
-    s=None
-    try:
-        class AnalyzeMeGrammar2(GrammaGrammar):
+    class AnalyzeMeGrammar2(GStub):
+        @gfunc
+        def f(x):
+            yield str(g_global)
+    eval_grammar(AnalyzeMeGrammar2, "forbidden use of variable 'g_global' in f")
 
-            @gfunc
-            def f(x):
-                yield str(g_global)
-
-    except Exception as e:
-        s=str(e)
-    assert("forbidden use of variable 'g_global' in f" in s)
-
-    # unless explicitly allowed
-    s=None
-    try:
-        class AnalyzeMeGrammar2fix(GrammaGrammar):
-
-            ALLOWED_GLOBAL_IDS=['g_global']
-
-            @gfunc
-            def f(x):
-                yield str(g_global)
-
-    except Exception as e:
-        s=str(e)
-    assert(s==None)
-
-
+    # unless explicitly allowed...
+    class AnalyzeMeGrammar2fix(GStub):
+        ALLOWED_GLOBAL_IDS=['g_global']
+        @gfunc
+        def f(x):
+            yield str(g_global)
+    eval_grammar(AnalyzeMeGrammar2fix,None)
 
 
     # gfuncs don't return their value, they yield it.
-    s=None
-    try:
-        class AnalyzeMeGrammar3(GrammaGrammar):
+    class AnalyzeMeGrammar3(GStub):
+        @gfunc
+        def f(x):
+            return 'my value'
+    eval_grammar(AnalyzeMeGrammar3, "gfunc f of class AnalyzeMeGrammar3 doesn't yield a value")
 
-            @gfunc
-            def f(x):
-                return 'my value'
+    class AnalyzeMeGrammar3fix(GStub):
+        @gfunc
+        def f(x):
+            yield 'my value'
+    eval_grammar(AnalyzeMeGrammar3fix,None)
+    class AnalyzeMeGrammar4(GStub):
+        def reset_state(self,state):
+            state.assigned=1
+            state.used=1
+            state.mod=1
+            state.subscript_use={}
+            state.subscript_def={}
+            state.subscript_mod={}
+            state.subscript_mod2={}
+            state.obj1={}
+            state.obj2={}
+            state.obj3={}
 
-    except Exception as e:
-        s=str(e)
-    assert("gfunc f of class AnalyzeMeGrammar3 doesn't yield a value" in s)
+        @gfunc
+        def f(x):
+            # use
+            if x.state.used:
+                yield ''
+            # def
+            x.state.assigned=True
 
-    s=None
-    try:
-        class AnalyzeMeGrammar3fix(GrammaGrammar):
+            # both
+            x.state.mod+=1
 
-            @gfunc
-            def f(x):
-                yield 'my value'
+            # use
+            if x.state.subscript_use[15]:
+                yield ''
+            # def
+            x.state.subscript_def[15]=True
 
-    except Exception as e:
-        s=str(e)
-    assert(s==None)
+            # both
+            x.state.subscript_mod[15]+=1
 
+            # w/out knowing object types, we can't say, so all of the
+            # following are both
+            x.state.obj1.method()
+            x.state.obj2.field=1
+            x.state.obj3.field.method()
 
-
-
-
-
-    s=None
-    try:
-        class AnalyzeMeGrammar4(GrammaGrammar):
-            def reset_state(self,state):
-                state.assigned=1
-                state.used=1
-                state.mod=1
-                state.subscript_use={}
-                state.subscript_def={}
-                state.subscript_mod={}
-                state.subscript_mod2={}
-                state.obj1={}
-                state.obj2={}
-                state.obj3={}
-
-            @gfunc
-            def f(x):
-                # use
-                if x.state.used:
-                    yield ''
-                # def
-                x.state.assigned=True
-
-                # both
-                x.state.mod+=1
-
-                # use
-                if x.state.subscript_use[15]:
-                    yield ''
-                # def
-                x.state.subscript_def[15]=True
-
-                # both
-                x.state.subscript_mod[15]+=1
-
-                # w/out knowing object types, we can't say, so all of the
-                # following are both
-                x.state.obj1.method()
-                x.state.obj2.field=1
-                x.state.obj3.field.method()
-
-                # both.. can't tell with objects
-                x.state.subscript_mod2[15].method()
+            # both.. can't tell with objects
+            x.state.subscript_mod2[15].method()
 
 
-                s=yield "donkey"
-                yield s
+            s=yield "donkey"
+            yield s
 
-    except Exception as e:
-        s=str(e)
-
+    g=AnalyzeMeGrammar4()
     #print(','.join(sorted(AnalyzeMeGrammar4.f.statevar_uses)))
     #print(','.join(sorted(AnalyzeMeGrammar4.f.statevar_defs)))
-
     assert('mod,obj1,obj2,obj3,subscript_mod,subscript_mod2,subscript_use,used'==','.join(sorted(AnalyzeMeGrammar4.f.statevar_uses)))
     assert('assigned,mod,obj1,obj2,obj3,subscript_def,subscript_mod,subscript_mod2'==','.join(sorted(AnalyzeMeGrammar4.f.statevar_defs)))
+    print('Checked: AnalyzeMeGrammar4')
 
-
-
-    s=None
-    try:
-        class AnalyzeMeGrammar5(GrammaGrammar):
-
-            @gfunc
-            def f(x):
-                yield ''.join([(yield 'e%d') for e in range(3)])
-
-    except Exception as e:
-        s=str(e)
-    assert('yield in a generator expression or list comprehension, in gfunc f of class AnalyzeMeGrammar5 on line 5' in s)
+    class AnalyzeMeGrammar5(GStub):
+        @gfunc
+        def f(x):
+            yield ''.join([(yield 'e%d') for e in range(3)])
+    eval_grammar(AnalyzeMeGrammar5, 'yield in a generator expression or list comprehension, in gfunc f of class AnalyzeMeGrammar5')
 
 
 if __name__=='__main__':
@@ -436,7 +386,7 @@ if __name__=='__main__':
     #demo_transform()
     #demo_random_states()
     #demo_resample()
-    demo_resample2()
-    #demo_grammar_analysis()
+    #demo_tracetree_analysis()
+    demo_grammar_analysis()
 
 # vim: ts=4 sw=4
