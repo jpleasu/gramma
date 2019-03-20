@@ -134,11 +134,8 @@ r'''
               sample result.. if a child is equal to a sampled result, descend
               into it.
 
-        - dynamic repetition, e.g. for indentation:
-            " "{`depth`}.expr."\n"
-
         - state analysis
-            - get_reset_states can attempt to guess the type of a state
+            - get_reset_states could attempt to guess the type of a state
               variable, set/dict/list in order to associate use/def correctly.
 
             - start in GrammaGrammar constructor.
@@ -401,8 +398,8 @@ gramma_grammar = r"""
 
     ?rep: atom ( "{" rep_args "}" )?
 
-    rep_args : INT ("," INT)? ("," func)?
-            | func
+    rep_args : INT ("," INT)? ("," (func|code))?
+            | func | code
 
     ?atom : string
          | rule
@@ -794,6 +791,8 @@ class GRep(GInternal):
         child=children[0] if children else self.child
         if self.dist=='unif':
             return '%s{%d,%d}' % (child, self.lo,self.hi)
+        elif isinstance(self.dist, GCode):
+            return '%s{%d,%d,%s}' % (child, self.lo,self.hi,self.dist)
         return '%s{%d,%d,%s}' % (child, self.lo,self.hi,self.dist)
 
     @classmethod
@@ -801,8 +800,8 @@ class GRep(GInternal):
         child=GExpr.parse_larktree(lt.children[0])
         args=[GExpr.parse_larktree(c) for c in lt.children[1].children[:]]
         a=args[-1]
-        if (not isinstance(a,GTok)) and isinstance(a,GFunc):
-            dist=str(a)
+        if isinstance(a,GFunc):
+            dist=a
             fname=a.fname
             fargs=[x.as_num() for x in a.fargs]
             if fname==u'geom':
@@ -819,6 +818,10 @@ class GRep(GInternal):
                 raise GrammaParseError('no dist %s' % (fname))
 
             f=lambda lo,hi:lambda x:min(hi,max(lo,g(x)))
+            args.pop()
+        elif isinstance(a, GCode):
+            dist=a
+            f=lambda lo,hi:lambda x:min(hi,max(lo,a(x.state)))
             args.pop()
         else:
             dist='unif'

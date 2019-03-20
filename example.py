@@ -80,9 +80,13 @@ class ScopingGrammar(GrammaGrammar):
     G=r'''
         start := "-----\n".expr;
 
-        expr := `depth<20`?scoped:" //";
-
-        scoped := "{\n def ".new(var).";\n".(expr."\n"){0,3}." use ".old().";\n}";
+        ind := "  "{`depth/5-2`};
+        expr := `depth<20`?scoped:ind." //";
+        scoped := ind."{\n".
+                  ind." def ".new(var).";\n".
+                    (expr."\n"){0,3}.
+                  ind." use ".old().";\n".
+                  ind."}";
 
         var := ['a'..'z']{1,5,geom(3)} ;
     '''
@@ -410,14 +414,14 @@ def demo_grammar_analysis():
 
 
 if __name__=='__main__':
-    demo_parser()
+    #demo_parser()
     demo_sampling()
-    demo_recursion_limits()
-    demo_tracetree()
-    demo_transform()
-    demo_random_states()
-    demo_resample()
-    demo_tracetree_analysis()
-    demo_grammar_analysis()
+    #demo_recursion_limits()
+    #demo_tracetree()
+    #demo_transform()
+    #demo_random_states()
+    #demo_resample()
+    #demo_tracetree_analysis()
+    #demo_grammar_analysis()
 
 # vim: ts=4 sw=4
