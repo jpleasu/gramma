@@ -2,6 +2,11 @@
 
 from __future__ import absolute_import, division, print_function
 import sys
+from six import string_types, with_metaclass
+import inspect,ast
+import textwrap
+import numbers
+
 if sys.version_info < (3,0):
     from builtins import (bytes, str, open, super, range,zip, round, input, int, pow)
 
@@ -12,6 +17,8 @@ if sys.version_info < (3,0):
 
     def ast_argname(a):
         return a.id
+
+    ast.arg=ast.Name
 
 else:
     import builtins as __builtin__
@@ -24,14 +31,6 @@ else:
     def ast_argname(a):
         return a.arg
 
-from six import string_types, with_metaclass
-
-import inspect,ast
-
-import textwrap
-
-import numbers
-
 
 try:
     import astpretty
@@ -39,6 +38,9 @@ except ImportError:
     pass
 
 
+
+class NamePathException(Exception):
+    pass
 
 class NamePath(object):
     __slots__='path','s'
@@ -48,18 +50,30 @@ class NamePath(object):
             while isinstance(p[0],(ast.Attribute,ast.Subscript)):
                 p.insert(0,p[0].value)
             self.path=p
+        elif isinstance(n, string_types):
+            self.path=[n]
         else:
             self.path=n
         self.s=self._compute_s()
 
     @staticmethod
     def _tostr(x):
-        if isinstance(x,ast.Name):
+        if isinstance(x,string_types):
+            return x
+        elif isinstance(x,ast.Name):
             return x.id
+        elif isinstance(x,ast.arg):
+            # python3 only
+            return x.arg
         elif isinstance(x,ast.Attribute):
             return x.attr
         elif isinstance(x,ast.Subscript):
             return '[]'
+        elif isinstance(x,ast.Str):
+            return repr(x.s)
+        else:
+            raise NamePathException('not part of a path: %s' % type(x))
+
     def _compute_s(self):
         s=''
         for x in self.path:
@@ -82,10 +96,15 @@ class NamePath(object):
         return hash(self.s)
     
     def __eq__(self,other):
-        return self.s==other.s
+        if isinstance(other,NamePath):
+            return self.s==other.s
+        return self.s==str(other)
 
     def __repr__(self):
         return self.s
+
+    def begins(self, n):
+        return (len(n) <= len(self)) and self[:len(n)]==n
 
 def detup(x):
     return x.elts if isinstance(x,ast.Tuple) else [x]
@@ -99,12 +118,7 @@ class VariableAccesses(ast.NodeVisitor):
     def run(self,funcdef):
         self.stack=[]
 
-        al=f.args.args
-        self.args=[ast_argname(a) for a in al]
-
-        self.f=funcdef
-
-        for item in self.f.body:
+        for item in funcdef.body:
             self.visit(item)
 
     def visit(self,n):
@@ -121,13 +135,13 @@ class VariableAccesses(ast.NodeVisitor):
             raise ValueError('unexpected number of targets in assign')
         tn=[NamePath(x) for x in detup(ass.targets[0])]
         tv=detup(ass.value)
+        self.visit(ass.value)
         for n,v in zip(tn,tv):
             self.defs(n,v)
-        self.visit(ass.value)
 
     def visit_AugAssign(self,aug):
-        self.mods(NamePath(aug.target), aug)
         self.visit(aug.value)
+        self.mods(NamePath(aug.target), aug)
 
     def visit_Name(self,name):
         i=next(i for i in reversed(range(len(self.stack)-1)) if not isinstance(self.stack[i], (ast.Attribute, ast.Subscript)))
@@ -144,20 +158,61 @@ class VariableAccesses(ast.NodeVisitor):
 
     def visit_Call(self,call):
         if isinstance(call.func, (ast.Attribute, ast.Name)):
-            self.calls(NamePath(call.func), call)
+            try:
+                np=NamePath(call.func)
+            except NamePathException:
+                self.visit(call.func)
+            else:
+                self.calls(np, call)
         else:
             self.visit(call.func)
         for a in call.args:
             self.visit(a)
         for a in call.keywords:
             self.visit(a)
+    def defs(self, n, v):
+        pass
+    def uses(self, n):
+        pass
+    def mods(self, n, v):
+        pass
+    def calls(self, n, v):
+        pass
+    def lambdas(self, l):
+        pass
 
-def get_methods(Class):
-    s=inspect.getsource(Class)
-    s=textwrap.dedent(s)
+def class_ast(cls):
+    if isinstance(cls,ast.AST):
+        classdef=cls
+    else:
+        s=inspect.getsource(cls)
+        s=textwrap.dedent(s)
+        classdef=ast.parse(s).body[0]
+    return classdef
 
-    classdef=ast.parse(s).body[0]
+def get_methods(cls):
+    classdef=class_ast(cls)
     return [f for f in classdef.body if isinstance(f,ast.FunctionDef)]
+
+def get_method(cls,name):
+    classdef=class_ast(cls)
+
+    for f in classdef.body:
+        if isinstance(f,ast.FunctionDef) and f.name==name:
+            return f
+    return None
+
+class DefGetter(VariableAccesses):
+    def __init__(self,f):
+        self.nps=[]
+        self.run(f)
+
+    def defs(self,n,v):
+        self.nps.append(n)
+
+def get_defs(f_ast):
+    return DefGetter(f_ast).nps
+
 
 
 class TestClass(object):

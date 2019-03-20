@@ -75,6 +75,34 @@ class ArithmeticGrammar(GrammaGrammar):
     def __init__(x):
         GrammaGrammar.__init__(x,type(x).G, sideeffect_dependencies=[DepthTracker])
 
+class ScopingGrammar(GrammaGrammar):
+
+    G=r'''
+        start := "-----\n".expr;
+
+        expr := `depth<20`?scoped:" //";
+
+        scoped := "{\n def ".new(var).";\n".(expr."\n"){0,3}." use ".old().";\n}";
+
+        var := ['a'..'z']{1,5,geom(3)} ;
+    '''
+
+    def __init__(x):
+        GrammaGrammar.__init__(x,type(x).G, sideeffect_dependencies=[DepthTracker])
+
+    def reset_state(self,state):
+        state.vars=set()
+
+    @gfunc
+    def new(x,ge):
+        n=yield ge
+        x.state.vars.add(n)
+        yield n
+
+    @gfunc
+    def old(x):
+        yield x.random.choice(list(x.state.vars))
+
 
 
 def demo_parser():
@@ -86,11 +114,11 @@ def demo_parser():
 
 def demo_sampling():
     #g=BasicGrammar()
-    g=ArithmeticGrammar()
+    #g=ArithmeticGrammar()
+    g=ScopingGrammar()
     sampler=GrammaSampler(g)
     for i in xrange(10):
         print(sampler.sample())
-
 
 def demo_recursion_limits():
     ruleDepthTracker=DepthTracker(lambda ge:isinstance(ge,GRule))
@@ -273,13 +301,13 @@ def demo_grammar_analysis():
         if (s==None and expect==None) or (s!=None and expect!=None and expect in s):
             print('Checked: %s' % Grammar.__name__)
         else:
-            print('check failed. expect:\n  %s\ngot:\n  %s' % (expect, s))
+            print('check failed for %s. expect:\n  %s\ngot:\n  %s' % (Grammar.__name__, expect, s))
 
     class AnalyzeMeGrammar1(GStub):
         @gfunc
         def f(x):
             yield str(x.state.m)
-    eval_grammar(AnalyzeMeGrammar1,'has no reset_state method, but uses statespace(s) m')
+    eval_grammar(AnalyzeMeGrammar1,'x.state.m used without being initialized in any reset_state')
 
     class AnalyzeMeGrammar1fix(GStub):
         def reset_state(self,state):
@@ -295,7 +323,7 @@ def demo_grammar_analysis():
         @gfunc
         def f(x):
             yield str(g_global)
-    eval_grammar(AnalyzeMeGrammar2, "forbidden use of variable 'g_global' in f")
+    eval_grammar(AnalyzeMeGrammar2, 'forbidden access to variable "g_global"')
 
     # unless explicitly allowed...
     class AnalyzeMeGrammar2fix(GStub):
@@ -365,28 +393,31 @@ def demo_grammar_analysis():
             yield s
 
     g=AnalyzeMeGrammar4()
-    #print(','.join(sorted(AnalyzeMeGrammar4.f.statevar_uses)))
-    #print(','.join(sorted(AnalyzeMeGrammar4.f.statevar_defs)))
-    assert('mod,obj1,obj2,obj3,subscript_mod,subscript_mod2,subscript_use,used'==','.join(sorted(AnalyzeMeGrammar4.f.statevar_uses)))
-    assert('assigned,mod,obj1,obj2,obj3,subscript_def,subscript_mod,subscript_mod2'==','.join(sorted(AnalyzeMeGrammar4.f.statevar_defs)))
-    print('Checked: AnalyzeMeGrammar4')
+    def got_expected(Grammar,s,got,expect):
+        if got==expect:
+            print('Checked: %s %s' % (Grammar.__name__,s))
+        else:
+            print('check failed for %s %s. expect:\n  %s\ngot:\n  %s' % (Grammar.__name__, s, expect, got))
+
+    got_expected(AnalyzeMeGrammar4, 'uses', ','.join(sorted(g.funcdefs['f'].statevar_uses)),'mod,obj1,obj3,subscript_mod,subscript_mod2,subscript_use,used')
+    got_expected(AnalyzeMeGrammar4, 'defs', ','.join(sorted(g.funcdefs['f'].statevar_defs)),'assigned,mod,obj1,obj2,obj3,subscript_def,subscript_mod,subscript_mod2')
 
     class AnalyzeMeGrammar5(GStub):
         @gfunc
         def f(x):
             yield ''.join([(yield 'e%d') for e in range(3)])
-    eval_grammar(AnalyzeMeGrammar5, 'yield in a generator expression or list comprehension, in gfunc f of class AnalyzeMeGrammar5')
+    eval_grammar(AnalyzeMeGrammar5, 'yield in a generator expression or list comprehension')
 
 
 if __name__=='__main__':
-    #demo_parser()
-    #demo_sampling()
-    #demo_recursion_limits()
-    #demo_tracetree()
-    #demo_transform()
-    #demo_random_states()
-    #demo_resample()
-    #demo_tracetree_analysis()
+    demo_parser()
+    demo_sampling()
+    demo_recursion_limits()
+    demo_tracetree()
+    demo_transform()
+    demo_random_states()
+    demo_resample()
+    demo_tracetree_analysis()
     demo_grammar_analysis()
 
 # vim: ts=4 sw=4

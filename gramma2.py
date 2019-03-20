@@ -134,16 +134,14 @@ r'''
               sample result.. if a child is equal to a sampled result, descend
               into it.
 
+        - dynamic repetition, e.g. for indentation:
+            " "{`depth`}.expr."\n"
+
         - state analysis
-            - complete analysis in GrammaGrammar constructor.
-                - in a depth first analysis, accumulating from the oldest parent,
-                    - analyze sideeffects
-                        - in particular stacking of state should be doable
-                        - store on sideeffect object.. allowed constructor of
-                          sideffect to pre-populate state metadata to prevent
-                          auto-analysis.
-                    - analyze (previously unanalyzed) gfuncs
-                        - store analysis results on GFuncWrap and in grammar.
+            - get_reset_states can attempt to guess the type of a state
+              variable, set/dict/list in order to associate use/def correctly.
+
+            - start in GrammaGrammar constructor.
                 - analyze GCode in parser, so that all calls to "parse"
                   benefit from analysis.
                     - store analysis results on GExpr objects and in grammar.
@@ -203,7 +201,7 @@ r'''
                         x.state.stk.pop...
 
         - resample compilation
-            - add parms.. readonly state that isn't checked for initialization
+            - add params.. readonly state that isn't checked for initialization
             - during tracetree construction, store instate for use nodes and
               outstate for def nodes.
             - given a tracetree and a subset of nodes to resample, we compile
@@ -249,6 +247,7 @@ r'''
 
 '''
 from __future__ import absolute_import, division, print_function
+import traceback
 import sys
 if sys.version_info < (3,0):
     #from builtins import (bytes, str, open, super, range,zip, round, input, int, pow, object)
@@ -305,17 +304,19 @@ except ImportError:
     pass
 
 
+import pysa
+
+
 class GFuncWrap(object):
     __slots__='f','statevar_defs','statevar_uses','fname','uses_random','samples','noauto'
-    def __init__(self,f,fname=None,statevar_defs=set(),statevar_uses=set(),noauto=False):
+    def __init__(self,f,fname=None,statevar_defs=set(),statevar_uses=set(),noauto=False,samples=False,uses_random=False):
         self.f=f
         self.fname=fname
         self.statevar_defs=set(statevar_defs)
         self.statevar_uses=set(statevar_uses)
         self.noauto=noauto
-        if noauto:
-            self.samples=True
-            self.uses_random=True
+        self.samples=samples
+        self.uses_random=uses_random
 
     def __call__(self,*l,**kw):
         return self.f(*l,**kw)
@@ -324,6 +325,9 @@ class GFuncWrap(object):
         return 'gfunc %s' % self.fname \
             + (' defs=%s' % ','.join(sorted(self.statevar_defs)) if len(self.statevar_defs)>0 else '')\
             + (' uses=%s' % ','.join(sorted(self.statevar_uses)) if len(self.statevar_uses)>0 else '')
+
+    def copy(self):
+        return GFuncWrap(self.f, self.fname, self.statevar_defs, self.statevar_uses, self.noauto, self.samples, self.uses_random)
 
 def gfunc(*args,**kw):
     '''
@@ -971,14 +975,14 @@ class GrammaRandom(object):
         print(l,kw)
 
 
-class SamplerInterface(namedtuple('SamplerInterface','random state parms')):
+class SamplerInterface(namedtuple('SamplerInterface','random state param')):
     '''
         constructed by GrammaSampler and passed to generators for access to
         random and state.
     '''
 
     def __new__(cls,sampler):
-        return super(SamplerInterface,cls).__new__(cls,sampler.random,sampler.state,sampler.parms)
+        return super(SamplerInterface,cls).__new__(cls,sampler.random,sampler.state,sampler.param)
 
 class GrammaSampler(object):
     '''
@@ -991,14 +995,14 @@ class GrammaSampler(object):
         samples.
 
     '''
-    __slots__='grammar', 'transformers', 'sideeffects', 'state', 'random', 'stack', 'parms', 'x'
-    def __init__(self,grammar=None, **parms):
+    __slots__='grammar', 'transformers', 'sideeffects', 'state', 'random', 'stack', 'param', 'x'
+    def __init__(self,grammar=None, **param):
         self.grammar=grammar
         self.transformers=[]
         self.sideeffects=[]
         self.random=GrammaRandom()
         self.state=GrammaState()
-        self.parms=dict(parms)
+        self.param=dict(param)
 
         self.add_sideeffects(*self.grammar.sideeffect_dependencies)
 
@@ -1019,13 +1023,13 @@ class GrammaSampler(object):
         self.random._cache.update(cachecfg.randcache)
 
     def update_parms(self, **kw):
-        self.parms.update(kw)
+        self.param.update(kw)
 
-    def reset(self):
+    def reset_state(self):
         self.grammar.reset_state(self.state)
 
         for sideeffect in self.sideeffects:
-            sideeffect.reset(self.state)
+            sideeffect.reset_state(self.state)
 
         self.x=SamplerInterface(self)
         self.stack=[]
@@ -1038,7 +1042,7 @@ class GrammaSampler(object):
         if isinstance(ge,string_types):
             ge=self.grammar.parse(ge)
 
-        self.reset()
+        self.reset_state()
 
         a=ge
         while True:
@@ -1070,12 +1074,24 @@ class GrammaSampler(object):
                 a=wtop[1].send(a)
 
 
+def get_reset_states(cls,method_name='reset_state'):
+    m=pysa.get_method(cls,method_name)
+    if m==None:
+        return set()
+    state_id=pysa.ast_argname(m.args.args[1])
+    return set([n[1:] for n in pysa.get_defs(m) if n[0]==state_id])
+
+
 class SideEffect(object):
     '''
-        A sampler sideeffect that observes key
+        Base class for sampler sideeffects
     '''
     __slots__=()
-    def reset(self,state):
+
+    def get_reset_states(self):
+        return get_reset_states(self.__class__)
+
+    def reset_state(self,state):
         '''
         called before the stack machine starts
         '''
@@ -1121,21 +1137,14 @@ def ast_attr_path(x):
     return p
 
 
-class GFuncAnalyzeVisitor(ast.NodeVisitor):
-    '''
-        A python AST node visitor for @gfunc decorated methods of a
-        GrammaGrammar child class.
-
-        This is used by analyze_gfuncs to populate GFuncWrap objects with state
-        spaces, don't use directly.
-    '''
+class GFuncAnalyzer(pysa.VariableAccesses):
     allowed_globals=['struct','True','False','None'] + [x for x in dir(__builtin__) if x.islower()]
-
-    def __init__(self,target_class,f,allowed_ids=None):
+    def __init__(self,target_class,f,reset_states,allowed_ids=None):
+        pysa.VariableAccesses.__init__(self)
         self.target_class=target_class
-        # id of the SamplerInterface (first argument of gfunc)
-        # other argument ids
-        self.allowed_ids=set(GFuncAnalyzeVisitor.allowed_globals)
+        self.reset_states=reset_states
+
+        self.allowed_ids=set(GFuncAnalyzer.allowed_globals)
         if allowed_ids!=None:
             self.allowed_ids.update(allowed_ids)
         self.uses_random=False
@@ -1146,258 +1155,76 @@ class GFuncAnalyzeVisitor(ast.NodeVisitor):
         self.statevar_uses=set()
 
         self.f=f
-        al=f.args.args
-        self.iface_id=ast_argname(al[0])
+        self.fargs=[pysa.NamePath(a) for a in self.f.args.args]
+        self.iface_id=self.fargs[0]
+
         # XXX forbid args with default values?
-        self.allowed_ids.update(ast_argname(a) for a in al)
-
-        self.stack=[]
-
-    def visit(self,n):
-        self.stack.append(n)
-        super().visit(n)
-        self.stack.pop()
-
-    def run(self):
-        for item in self.f.body:
-            self.visit(item)
+        self.allowed_ids.update(a.s for a in self.fargs)
 
     def is_iface_id(self,n):
-        if isinstance(n,ast.Name) and n.id==self.iface_id:
-            return True
-        return isinstance(n,ast.Attribute) and self.is_iface_id(n.value)
+        'n is a NamePath'
+        return n[0].s==self.iface_id
 
+    def _raise(self,msg):
+        raise GrammaGrammarException('''in line %d of gfunc %s of class %s: %s''' % (self.stack[-1].lineno, self.f.name, self.target_class.__name__, msg))
 
-    def call_attrs_subsr(self):
-        'test for a method call a subscript object'
-        if isinstance(self.stack[-1],ast.Subscript):
-            try:
-                n=next(n for n in reversed(self.stack[:-1]) if not isinstance(n,ast.Attribute))
-                if isinstance(n,ast.Call):
-                    return True
-            except StopIteration:
-                pass
-        return False
-
-    def visit_iface_id(self,x,attrs=None,in_subscript=False):
-        if isinstance(x,ast.Name):
-            nm=x.id
-            if attrs!=None:
-                nm+=attrs
-            raise GrammaGrammarException('Forbidden access (%s) on line %d!!' % (nm, x.lineno))
-
-        elif isinstance(x,ast.Attribute):
-            p=ast_attr_path(x)
-            vname='.'.join(x.attr for x in p)
-            if len(p)<=1:
-                raise GrammaGrammarException('Forbidden access to %s, access field by name.' % vname)
-            attr=p[0].attr
-            if attr=='random':
-                self.uses_random=True
-            elif attr=='state':
-                d,u=False,False
-                par=self.stack[-1]
-
-                #print(vname)
-                #print(self.stack)
-                #astpretty.pprint(self.stack[-1])
-
-                # if len(p)>3 and p[2]=='stacked': ...
-
-                if len(p)>2 or isinstance(par, ast.AugAssign) or self.call_attrs_subsr():
-                    # need to discriminate for dynamic statespaces
-                    d=u=True
-                elif isinstance(par,ast.Assign):
-                    d=True
-                else:
-                    u=True
-                if d:
-                    self.statevar_defs.add(p[1].attr)
-                if u:
-                    self.statevar_uses.add(p[1].attr)
+    def defs(self, n, v):
+        if self.is_iface_id(n):
+            if n[1].s=='state':
+                self.statevar_defs.add(n[2].s)
+            elif n[1].s=='random':
+                self._raise('forbidden access to SamplerInterface %s' % n[1:])
             else:
-                raise GrammaGrammarException('''forbidden use of %s.%s in gfunc %s of class %s on line %d''' % (self.iface_id, attr, self.f.name, self.target_class.__name__, x.lineno))
-
+                self._raise('unexpected SamplerInterface field "%s", only "random", "state", and "param" are accessible' % n[1:].s)
         else:
-            raise GrammaGrammarException('iface_id not Attribute or Name? %s' % (x))
+            self.allowed_ids.add(n.s)
 
-    def visit_Subscript(self, sub):
-        if self.is_iface_id(sub.value):
-            self.visit_iface_id(sub.value,in_subscript=True)
+    def uses(self, n):
+        if n.s in self.allowed_ids:
+            return
+        if self.is_iface_id(n):
+            if n[1].s=='state':
+                nn=n[2:]
+                for s in self.reset_states:
+                    if nn.begins(s):
+                        self.statevar_uses.add(n[2].s)
+                        break
+                else:
+                    self._raise('%s used without being initialized in any reset_state' % n.s)
+            elif n[1].s=='random':
+                self.uses_random=True
+            else:
+                self._raise('unexpected SamplerInterface field "%s", only "random", "state", and "param" are accessible' % n[1:].s)
         else:
-            self.visit(sub.value)
-        self.visit(sub.slice)
+            self._raise('forbidden access to variable "%s"' % n.s)
+
+    def mods(self, n, v):
+        self.uses(n)
+        self.defs(n,v)
+
+    def calls(self, n, v):
+        if self.is_iface_id(n):
+            if n[1].s=='state':
+                self.mods(n,v)
+
+    def lambdas(self, l):
+        pass
 
     def visit_Yield(self, y):
         self.visit(y.value)
 
         if any(n for n in self.stack[:-1] if isinstance(n,(ast.GeneratorExp,ast.ListComp))):
-            raise GrammaGrammarException("yield in a generator expression or list comprehension, in gfunc %s of class %s on line %d" % (self.f.name, self.target_class.__name__, y.lineno))
+            self._raise('yield in a generator expression or list comprehension')
 
         p=self.stack[-2]
         if p.value!=y:
-            raise GrammaGrammarException('failed to analyze yield expression in gfunc %s of class %s on line %d' % (self.f.name, self.target_class.__name__, y.lineno))
+            self._raise('failed to analyze yield expression')
 
         if isinstance(p,ast.Expr):
             self.has_terminal_yield=True
         else:
             self.samples=True
 
-    def visit_AugAssign(self, ass):
-        self.visit(ass.value)
-        if self.is_iface_id(ass.target):
-            self.visit_iface_id(ass.target)
-        elif isinstance(ass.target,ast.Subscript):
-            if self.is_iface_id(ass.target.value):
-                self.visit_iface_id(ass.target.value,in_subscript=True)
-
-    def visit_Assign(self, ass):
-        self.visit(ass.value)
-        for a in ass.targets:
-            if self.is_iface_id(a):
-                self.visit_iface_id(a)
-            else:
-                if isinstance(a,ast.Subscript):
-                    if self.is_iface_id(a.value):
-                        self.visit_iface_id(a.value,in_subscript=True)
-                        return
-                self.allowed_ids.add(a.id)
-
-    def visit_Attribute(self,a):
-        if self.is_iface_id(a):
-            self.visit_iface_id(a)
-        else:
-            self.visit(a.value)
-
-    def visit_Name(self,n):
-        if n.id==self.iface_id:
-            self.visit_iface_id(n)
-        elif not n.id in self.allowed_ids:
-            raise GrammaGrammarException('''forbidden use of variable '%s' in %s on line %d
-            of %s! to explicitly allow append to GrammaGrammar class variable
-            list, ALLOWED_GLOBAL_IDS. To prevent analysis of this function, add
-            @gfunc(noauto=True) ''' % (n.id, self.f.name, n.lineno, self.target_class.__name__))
-
-        # done
-    def visit_FunctionDef(self,f):
-        # don't descend!
-        pass
-
-class ResetStateAnalyzer(ast.NodeVisitor):
-    '''
-        A python AST node visitor for the reset_state method of GrammaGrammar
-        child classes.
-
-        This is used by analyze_gfuncs to check that all state spaces are
-        initialized in reset_state.
-
-        XXX: There isn't a way for a user to promise that some state space has
-        been initialized without assigning to it in the reset_state function.
-        More decorators?
-
-    '''
-    def __init__(self,target_class,statespace_usedby,f):
-        self.target_class=target_class
-        self.statespace_usedby=statespace_usedby
-        self.f=f
-        al=f.args.args
-        self.state_id=ast_argname(al[1])
-        self.assigned_statespaces=set()
-
-    def run(self):
-        for item in self.f.body:
-            self.visit(item)
-
-        throwme=[]
-        for uid,fs in self.statespace_usedby.items():
-            if not uid in self.assigned_statespaces:
-                if len(fs)==1:
-                    fss="gfunc '%s'" % next(iter(fs))
-                else:
-                    fss="gfuncs {%s}" % (','.join("'%s'" % fn for fn in fs))
-                throwme.append('''statespace '%s' is used by %s''' %(uid,fss))
-        if len(throwme)>0:
-            raise GrammaGrammarException('%s: initialize state fields in reset_state method of %s!' % (', '.join(throwme), self.target_class.__name__))
-
-    def visit_Assign(self, ass):
-        for a in ass.targets:
-            self.visit_state_var(a)
-        self.visit(ass.value)
-
-    def visit_state_var(self,n):
-        'if n is a state variable reference, add it to the visited set'
-        p=ast_attr_path(n)
-        n=p[0]
-        if isinstance(n,ast.Attribute) and n.value.id==self.state_id:
-            self.assigned_statespaces.add(n.attr)
-
-    def visit_FunctionDef(self,f):
-        pass
-
-def analyze_gfuncs(GrammaChildClass,allowed_ids=None):
-    '''
-        Enumerate @gfunc decorated methods of GrammaChildClass in order to
-        infer state spaces.
-
-        methods tagged with "auto=False" will be skipped.. you're on your own.
-
-    '''
-    s=inspect.getsource(GrammaChildClass)
-    s=textwrap.dedent(s)
-
-    classdef=ast.parse(s).body[0]
-    def isgfuncdec(y):
-        if isinstance(y,ast.Name) and y.id=='gfunc':
-            return True
-        return isinstance(y,ast.Call) and y.func.id=='gfunc'
-
-    gfuncs=[x for x in classdef.body if isinstance(x,ast.FunctionDef) and any(isgfuncdec(y) for y in x.decorator_list)]
-    statespace_usedby={}
-    #print('class %s' % GrammaChildClass.__name__)
-    for gf_ast in gfuncs:
-        gf=getattr(GrammaChildClass,gf_ast.name)
-        if gf.noauto:
-            continue
-
-        #print('==== %s ====' % gf_ast.name)
-        #astpretty.pprint(gf_ast)
-
-        analyzer=GFuncAnalyzeVisitor(GrammaChildClass,gf_ast,allowed_ids)
-        analyzer.run()
-        if not analyzer.has_terminal_yield:
-            raise GrammaGrammarException('''gfunc %s of class %s doesn't yield a value''' % (gf_ast.name, GrammaChildClass.__name__))
-
-        gf.statevar_defs.update(analyzer.statevar_defs)
-        gf.statevar_uses.update(analyzer.statevar_uses)
-        gf.uses_random=analyzer.uses_random
-        gf.samples=analyzer.samples
-
-        for ss in gf.statevar_defs|gf.statevar_uses:
-            statespace_usedby.setdefault(ss,set()).add(gf_ast.name)
-
-        #print(gf)
-
-    #print(statespace_usedby)
-    reset_state_ast=([x for x in classdef.body if isinstance(x,ast.FunctionDef) and x.name=='reset_state']+[None])[0]
-    if len(statespace_usedby.keys())>0 and reset_state_ast==None:
-        raise GrammaGrammarException('%s has no reset_state method, but uses statespace(s) %s' % (GrammaChildClass.__name__, ','.join(sorted(statespace_usedby.keys()))))
-
-    if reset_state_ast != None:
-        analyzer=ResetStateAnalyzer(GrammaChildClass,statespace_usedby,reset_state_ast)
-        analyzer.run()
-
-    
-
-class GrammaGrammarType(type):
-    '''
-        metaclass to kick off analysis of gfuncs in children of GrammaGrammar
-    '''
-    #def __new__(metaname, classname, baseclasses, attrs):
-    #    return type.__new__(metaname, classname, baseclasses, attrs)
-
-    def __init__(classobject, classname, baseclasses, attrs):
-        analyze_gfuncs(classobject, getattr(classobject, 'ALLOWED_GLOBAL_IDS', []))
-        #print('done with analysis of %s' % classname)
 
 class GrammaGrammar(object):
     '''
@@ -1409,9 +1236,7 @@ class GrammaGrammar(object):
          sampler=GrammaSampler(g)
 
          while True:
-             sampler.reset()
-             s=sampler.sample()
-             print(s)
+             print(sampler.sample())
     '''
 
     ALLOWED_GLOBAL_IDS=[]
@@ -1431,27 +1256,54 @@ class GrammaGrammar(object):
         '''
         if sideeffect_dependencies==None:
             sideeffect_dependencies=[]
-        self.sideeffect_dependencies=sideeffect_dependencies
-        # XXX analyze sideffect state variable access
-        # XXX analyze reset_state
-        # XXX analyze gfuncs
 
-        classobject=self.__class__
-        analyze_gfuncs(classobject, getattr(classobject, 'ALLOWED_GLOBAL_IDS', []))
-        # XXX .. now parse gramma_expr_str.. parser will analyze embedded GCode
-        # for state usage.
+        # instantiate sideeffect classes
+        self.sideeffect_dependencies=[sideeffect() if inspect.isclass(sideeffect) else sideeffect for sideeffect in sideeffect_dependencies]
 
-        self.ruledefs={}
+        # analyze sideeffect state variable access
+        reset_states=set()
+        for se in self.sideeffect_dependencies:
+            reset_states|=se.get_reset_states()
+
+        # analyze reset_state
+        reset_states|=self.get_reset_states()
+
+        cls=self.__class__
+        allowed_ids=getattr(cls, 'ALLOWED_GLOBAL_IDS', [])
+
         self.funcdefs={}
+        for n,gf in inspect.getmembers(self,predicate=lambda x:isinstance(x,GFuncWrap)):
+            # make a grammar-local copy of gf
+            gf=gf.copy()
 
-        for n,f in inspect.getmembers(self,predicate=lambda x:isinstance(x,GFuncWrap)):
-            self.funcdefs[f.fname]=f
+            if not gf.noauto:
+                s=inspect.getsource(gf.f)
+                s=textwrap.dedent(s)
+                gf_ast=ast.parse(s).body[0]
 
+                analyzer=GFuncAnalyzer(cls,gf_ast,reset_states,allowed_ids)
+                analyzer.run(gf_ast)
+                if not analyzer.has_terminal_yield:
+                    raise GrammaGrammarException('''gfunc %s of class %s doesn't yield a value''' % (gf_ast.name, cls.__name__))
+
+                gf.statevar_defs.update(analyzer.statevar_defs)
+                gf.statevar_uses.update(analyzer.statevar_uses)
+                gf.uses_random=analyzer.uses_random
+                gf.samples=analyzer.samples
+
+            self.funcdefs[gf.fname]=gf
+
+        # XXX put analysis code into parser so that all GCode elements only use
+        # reset states.. label their parents with used states.
+        self.ruledefs={}
         lt=self.ruledef_parser.parse(gramma_expr_str)
         for ruledef in lt.children:
             rname=ruledef.children[0].value
             rvalue=GExpr.parse_larktree(ruledef.children[1])
             self.ruledefs[rname]=rvalue
+
+    def get_reset_states(self):
+        return get_reset_states(self.__class__)
 
     def reset_state(self,state):
         pass
@@ -1702,7 +1554,10 @@ class DepthTracker(SideEffect):
         self.varname=varname
         self.initial_value=initial_value
 
-    def reset(self,state):
+    def get_reset_states(self):
+        return set([pysa.NamePath(self.varname)])
+
+    def reset_state(self,state):
         setattr(state, self.varname, self.initial_value)
 
     def push(self,x,ge):
@@ -1718,7 +1573,7 @@ class DepthTracker(SideEffect):
 class Tracer(SideEffect):
     __slots__='tt','tracetree'
 
-    def reset(self,state):
+    def reset_state(self,state):
         self.tracetree=None
 
     def push(self,x,ge):
