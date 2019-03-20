@@ -44,7 +44,7 @@ class BasicGrammar(GrammaGrammar):
     def gg(x):
         yield 'gg_return' + g_not_allowed
 
-    @gfunc(statevar_defs=['extrastate'])
+    @gfunc(statevar_defs=set(['extrastate']))
     def h(x):
         yield 'h_return'
 
@@ -112,7 +112,7 @@ class ScopingGrammar(GrammaGrammar):
 def demo_parser():
     g=BasicGrammar()
     print(g.parse('''
-        "a"| `cats` "b"
+        "a"| `depth` "b"
     '''))
 
 
@@ -343,7 +343,7 @@ def demo_grammar_analysis():
         @gfunc
         def f(x):
             return 'my value'
-    eval_grammar(AnalyzeMeGrammar3, "gfunc f of class AnalyzeMeGrammar3 doesn't yield a value")
+    eval_grammar(AnalyzeMeGrammar3, "gfunc f of class AnalyzeMeGrammar3: doesn't yield a value")
 
     class AnalyzeMeGrammar3fix(GStub):
         @gfunc
@@ -403,8 +403,8 @@ def demo_grammar_analysis():
         else:
             print('check failed for %s %s. expect:\n  %s\ngot:\n  %s' % (Grammar.__name__, s, expect, got))
 
-    got_expected(AnalyzeMeGrammar4, 'uses', ','.join(sorted(g.funcdefs['f'].statevar_uses)),'mod,obj1,obj3,subscript_mod,subscript_mod2,subscript_use,used')
-    got_expected(AnalyzeMeGrammar4, 'defs', ','.join(sorted(g.funcdefs['f'].statevar_defs)),'assigned,mod,obj1,obj2,obj3,subscript_def,subscript_mod,subscript_mod2')
+    got_expected(AnalyzeMeGrammar4, 'uses', ','.join(sorted(g.funcdefs['f'].meta.statevar_uses)),'mod,obj1,obj3,subscript_mod,subscript_mod2,subscript_use,used')
+    got_expected(AnalyzeMeGrammar4, 'defs', ','.join(sorted(g.funcdefs['f'].meta.statevar_defs)),'assigned,mod,obj1,obj2,obj3,subscript_def,subscript_mod,subscript_mod2')
 
     class AnalyzeMeGrammar5(GStub):
         @gfunc
@@ -412,16 +412,47 @@ def demo_grammar_analysis():
             yield ''.join([(yield 'e%d') for e in range(3)])
     eval_grammar(AnalyzeMeGrammar5, 'yield in a generator expression or list comprehension')
 
+    class AnalyzeMeGrammar6(GrammaGrammar):
+        def __init__(self):
+            GrammaGrammar.__init__(self, '''
+                start := `abc`?"a":"b";
+            ''')
+    eval_grammar(AnalyzeMeGrammar6, 'abc used without being initialized in any reset_state')
+
+    class AnalyzeMeGrammar6fix(GrammaGrammar):
+        def __init__(self):
+            GrammaGrammar.__init__(self, '''
+                start := `abc`?"a":"b";
+            ''')
+        def reset_state(self, state):
+            state.abc=False
+    eval_grammar(AnalyzeMeGrammar6fix, None)
+
+
+    class AnalyzeMeGrammar7(GrammaGrammar):
+        def __init__(self):
+            GrammaGrammar.__init__(self, '''
+                start := `abc` "a" | "b";
+            ''')
+    eval_grammar(AnalyzeMeGrammar7, 'abc used without being initialized in any reset_state')
+
+    class AnalyzeMeGrammar8(GrammaGrammar):
+        def __init__(self):
+            GrammaGrammar.__init__(self, '''
+                start := "a"{`abc`};
+            ''')
+    eval_grammar(AnalyzeMeGrammar8, 'abc used without being initialized in any reset_state')
+
 
 if __name__=='__main__':
-    #demo_parser()
+    demo_parser()
     demo_sampling()
-    #demo_recursion_limits()
-    #demo_tracetree()
-    #demo_transform()
-    #demo_random_states()
-    #demo_resample()
-    #demo_tracetree_analysis()
-    #demo_grammar_analysis()
+    demo_recursion_limits()
+    demo_tracetree()
+    demo_transform()
+    demo_random_states()
+    demo_resample()
+    demo_tracetree_analysis()
+    demo_grammar_analysis()
 
 # vim: ts=4 sw=4

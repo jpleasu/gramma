@@ -115,11 +115,14 @@ class VariableAccesses(ast.NodeVisitor):
         function (method).
     '''
 
-    def run(self,funcdef):
+    def run(self,n):
         self.stack=[]
 
-        for item in funcdef.body:
-            self.visit(item)
+        if isinstance(n, ast.FunctionDef):
+            for item in n.body:
+                self.visit(item)
+        else:
+            self.visit(n)
 
     def visit(self,n):
         self.stack.append(n)
