@@ -253,9 +253,8 @@ def demo_resample():
     # call, depth is decremented)
     r=tt.first(lambda n:n.ge.get_meta().uses_random).inrand
     sampler.random.set_cached_state('r',r)
-    s=sampler.sample('load_rand("r").def("depth",1).start')
+    s=sampler.sample('def("depth",1).load_rand("r").start')
     assert(s==origs)
-
 
     ## choose the node to resample, n
     allnodes=list(tt.gennodes())

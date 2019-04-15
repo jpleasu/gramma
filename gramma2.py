@@ -210,11 +210,6 @@ r'''
                 - load/def - the first string argument is the name of the state to
                   be def'd.
 
-        - GAlt
-            - string should elide "1" weights.. use unnormalized integers if
-              the representation is smaller.
-            - alt(alt(),alt())  simplification
-
         - "resampling"
             - When a gexpr node is executed, it consumes information from the
               context and produces results.
@@ -376,6 +371,7 @@ if sys.version_info < (3,0):
 
 else:
     import builtins as __builtin__
+    from functools import reduce
 
     def func_name(f):
         return f.__name__
@@ -653,7 +649,7 @@ class GTok(GExpr):
     def copy(self):
         return GTok(self.type,self.value)
 
-    def __str__(self,children=None):
+    def __str__(self):
         return self.value
 
     def as_native(self):
@@ -713,8 +709,8 @@ class GInternal(GExpr):
         for c in self.children:
             c.parent=self
 
-    def __str__(self,children=None):
-        return '%s(%s)' %(self.__class__.tag, ','.join(str(clt) for clt in children or self.children))
+    def __str__(self):
+        return '%s(%s)' %(self.__class__.tag, ','.join(str(clt) for clt in self.children))
 
     @classmethod
     def parse_larktree(cls,lt):
@@ -771,8 +767,8 @@ class GTern(GInternal):
     def compute_case(self,state):
         return self.code(state)
  
-    def __str__(self,children=None):
-        return '%s ? %s : %s' % (self.code, children[0], children[1])
+    def __str__(self):
+        return '%s ? %s : %s' % (self.code, self.children[0], self.children[1])
 
     def simplify(self):
         return GTern(self.code, [c.simplify() for c in self.children])
@@ -788,16 +784,17 @@ class GTern(GInternal):
 class GAlt(GInternal):
     tag='alt'
 
-    __slots__='weights','dynamic'
+    __slots__='weights','dynamic','nweights'
     def __init__(self, weights, children):
         GInternal.__init__(self,children)
-        self.dynamic=any(w for w in weights if callable(w))
+        self.dynamic=any(w for w in weights if isinstance(w,GCode))
 
         if self.dynamic:
             self.weights=weights
         else:
+            self.weights=weights
             w=np.array(weights)
-            self.weights=w/w.sum()
+            self.nweights=w/w.sum()
 
     def get_code(self):
         return [w for w in self.weights if isinstance(w,GCode)]
@@ -811,20 +808,27 @@ class GAlt(GInternal):
             alternation is invoked.
         '''
         if self.dynamic:
-            w=np.array([w(state) if callable(w) else w for w in self.weights])
+            w=np.array([w(state) if isinstance(w,GCode) else w for w in self.weights])
             return w/w.sum()
-        return self.weights
+        return self.nweights
  
-    def __str__(self,children=None):
-        #s='|'.join(str(cge) for cge in children or self.children)
-        s='|'.join('%s %s' % ('`%s`' % w.expr if callable(w) else w,c) for w,c in zip(self.weights, self.children))
+    def __str__(self):
+        weights=[]
+        for w in self.weights:
+            if isinstance(w,GCode):
+                weights.append('`%s` ' % w.expr)
+            elif w==1:
+                weights.append('')
+            else:
+                weights.append(str(w)+' ')
+        s='|'.join('%s%s' % (w,c) for w,c in zip(weights, self.children))
 
-        if self.parent!=None and isinstance(self.parent, (GCat, GRep)):
+        if self.parent!=None: #and isinstance(self.parent, (GCat, GRep)):
             return '(%s)' % s
         return s
 
     def simplify(self):
-        if self.dynamic():
+        if self.dynamic:
             return self.simplify_dynamic()
         return self.simplify_nondynamic()
 
@@ -893,8 +897,8 @@ class GAlt(GInternal):
 class GCat(GInternal):
     tag='cat'
 
-    def __str__(self,children=None):
-        s='.'.join(str(cge) for cge in children or self.children)
+    def __str__(self):
+        s='.'.join(str(cge) for cge in self.children)
         if self.parent!=None and isinstance(self.parent, GRep):
             return '(%s)' % s
         return s
@@ -957,8 +961,8 @@ class GRep(GInternal):
         lo='' if self.lo==0 else '%s' % (self.lo)
         return '%s,%d' % (lo,self.hi)
 
-    def __str__(self,children=None):
-        child=children[0] if children else self.child
+    def __str__(self):
+        child=self.child
         if self.dist=='unif':
             return '%s{%s}' % (child, self.intargs())
         elif isinstance(self.dist, GCode):
@@ -1042,7 +1046,7 @@ class GRange(GExpr):
             return GTok.from_str(chr(self.lo))
         return self.copy()
 
-    def __str__(self,children=None):
+    def __str__(self):
         return "['%s' .. '%s']" % (chr(self.lo), chr(self.hi))
 
     @classmethod
@@ -1069,8 +1073,8 @@ class GFunc(GInternal):
     def fargs(self):
         return self.children
 
-    def __str__(self,children=None):
-        return '%s(%s)' % (self.fname, ','.join(str(a) for a in children or self.fargs))
+    def __str__(self):
+        return '%s(%s)' % (self.fname, ','.join(str(a) for a in self.children or self.fargs))
 
     @classmethod
     def parse_larktree(cls,lt):
@@ -1104,7 +1108,7 @@ class GRule(GExpr):
             return True
         return self.rname==rname
 
-    def __str__(self,children=None):
+    def __str__(self):
         return self.rname
 
     @classmethod
@@ -1134,21 +1138,21 @@ class GrammaRandom(object):
     def seed(self,v):
         self.r.seed(v)
 
-    def set_cached_state(self,n,val):
-        self._cache[n]=val
+    def set_cached_state(self,slot,val):
+        self._cache[slot]=val
 
-    def load(self,n):
+    def load(self,slot):
         '''
-            set this random number generator state to the cached value 'n'
+            set this random number generator state to the cached value 'slot'
         '''
-        st=self._cache.get(n)
+        st=self._cache.get(slot)
         self.r.set_state(st)
 
-    def save(self,n):
+    def save(self,slot):
         '''
-            store the current random number generator state to 'n'
+            store the current random number generator state to 'slot'
         '''
-        self._cache[n]=self.r.get_state()
+        self._cache[slot]=self.r.get_state()
 
     def choice(self,l,p=None):
         return self.r.choice(l,p=p)
@@ -1603,7 +1607,7 @@ class GrammaGrammar(object):
                     yield s
             else:
                 def g(x):
-                    s=yield x.random.choice(ge.children,p=ge.weights)
+                    s=yield x.random.choice(ge.children,p=ge.nweights)
                     yield s
         elif isinstance(ge,GCat):
             def g(x):
