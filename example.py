@@ -12,6 +12,7 @@ class BasicGrammar(GrammaGrammar):
         digit := ['0' .. '9'];
 
         words := (`1000*(depth>20)` "*" | " ").( .25 "dog" | .75 "cat" ).(" f=".f()." ff=".ff()){1,4};
+
     '''
 
     ALLOWED_GLOBAL_IDS=['g_allowed']
@@ -235,12 +236,14 @@ def demo_resample():
     print(origs)
 
     tt=tracer.tracetree
+    #tt.dump()
     # resample with the cached randstate.
     # Note that the dynamic alternations used in ArithmeticGrammar use depth
     # and using "cat(load_rand,start)" increases the depth. Reset the depth
     # with the 'def'. (depth is set to 1 because on _exit_ from the gfunc
     # call, depth is decremented)
-    sampler.random.set_cached_state('r',tt.inrand)
+    r=tt.first(lambda n:n.ge.get_meta().uses_random).inrand
+    sampler.random.set_cached_state('r',r)
     s=sampler.sample('load_rand("r").def("depth",1).start')
     assert(s==origs)
 
@@ -252,7 +255,7 @@ def demo_resample():
     #n=random.choice([n for n in allnodes if isinstance(n.ge,GAlt)])
     #n=random.choice([n for n in allnodes if isinstance(n.ge,GRange)])
 
-    print('depth(n) = %d' % n.depth())
+    print('resampling "%s" at depth(n) = %d' % (n.ge,n.depth()))
     #n.dump()
 
     ## construct a GExpr to resamples n with
@@ -445,14 +448,14 @@ def demo_grammar_analysis():
 
 
 if __name__=='__main__':
-    demo_parser()
-    demo_sampling()
-    demo_recursion_limits()
-    demo_tracetree()
-    demo_transform()
-    demo_random_states()
+    #demo_parser()
+    #demo_sampling()
+    #demo_recursion_limits()
+    #demo_tracetree()
+    #demo_transform()
+    #demo_random_states()
     demo_resample()
-    demo_tracetree_analysis()
-    demo_grammar_analysis()
+    #demo_tracetree_analysis()
+    #demo_grammar_analysis()
 
 # vim: ts=4 sw=4
