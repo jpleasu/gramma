@@ -85,7 +85,7 @@ class ScopingGrammar(GrammaGrammar):
         expr := `depth<20`?scoped:ind." //";
         scoped := ind."{\n".
                   ind." def ".new(var).";\n".
-                    (expr."\n"){0,3}.
+                    (expr."\n"){,3}.
                   ind." use ".old().";\n".
                   ind."}";
 
@@ -114,6 +114,15 @@ def demo_parser():
     g=BasicGrammar()
     print(g.parse('''
         "a"| `depth` "b"
+    '''))
+    print(g.parse('''
+        "a"{1,2}
+    '''))
+    print(g.parse('''
+        "a"{,2}
+    '''))
+    print(g.parse('''
+        "a"{2}
     '''))
 
 

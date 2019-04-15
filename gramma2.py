@@ -210,9 +210,6 @@ r'''
                 - load/def - the first string argument is the name of the state to
                   be def'd.
 
-        - GRep
-            - string form should avoid including lo if it's 0 and hi if it's
-              2**32
         - GAlt
             - string should elide "1" weights.. use unnormalized integers if
               the representation is smaller.
@@ -537,7 +534,7 @@ gramma_grammar = r"""
 
     ?rep: atom ( "{" rep_args "}" )?
 
-    rep_args : INT ("," INT)? ("," (func|code))?
+    rep_args : INT? (COMMA INT)? (COMMA (func|code))?
             | func | code
 
     ?atom : string
@@ -572,6 +569,7 @@ gramma_grammar = r"""
     LONG_STRING.2: /[ubf]?r?("(?:"").*?(?<!\\)(\\\\)*?"(?:"")|'''.*?(?<!\\)(\\\\)*?''')/is
 
     COMMENT : /#[^\n]*/
+    COMMA: ","
 
     %import common.WS
     %import common.FLOAT
@@ -953,18 +951,25 @@ class GRep(GInternal):
     def simplify(self):
         return GRep([self.child.simplify()],self.lo,self.hi,self.rgen,self.dist)
 
+    def intargs(self):
+        if self.lo==self.hi:
+            return '%d' % (self.lo)
+        lo='' if self.lo==0 else '%s' % (self.lo)
+        return '%s,%d' % (lo,self.hi)
+
     def __str__(self,children=None):
         child=children[0] if children else self.child
         if self.dist=='unif':
-            return '%s{%d,%d}' % (child, self.lo,self.hi)
+            return '%s{%s}' % (child, self.intargs())
         elif isinstance(self.dist, GCode):
-            return '%s{%d,%d,%s}' % (child, self.lo,self.hi,self.dist)
-        return '%s{%d,%d,%s}' % (child, self.lo,self.hi,self.dist)
+            return '%s{%s,%s}' % (child, self.intargs(),self.dist)
+        return '%s{%s,%s}' % (child, self.intargs(),self.dist)
 
     @classmethod
     def parse_larktree(cls,lt):
         child=GExpr.parse_larktree(lt.children[0])
         args=[GExpr.parse_larktree(c) for c in lt.children[1].children[:]]
+        # figure out the distribution.. if not a GCode or a GFunc, assume uniform
         a=args[-1]
         if isinstance(a,GFunc):
             dist=a
@@ -984,23 +989,34 @@ class GRep(GInternal):
                 raise GrammaParseError('no dist %s' % (fname))
 
             f=lambda lo,hi:lambda x:min(hi,max(lo,g(x)))
-            args.pop()
+            del args[-2:]
         elif isinstance(a, GCode):
             dist=a
             f=lambda lo,hi:lambda x:min(hi,max(lo,a(x.state)))
-            args.pop()
+            del args[-2:]
         else:
             dist='unif'
             f=lambda lo,hi:lambda x:x.random.randint(lo,hi+1)
 
+        # parse bounds
         if len(args)==0:
             lo=0
             hi=2**32
         elif len(args)==1:
-            lo=hi=args.pop(0).as_int()
+            # {2}
+            lo=hi=args[0].as_int()
+        elif len(args)==2:
+            # {,2}
+            if str(args[0])!=',':
+                raise GrammaParseError('expected comma in repetition arg "%s"' % lt)
+            lo=0
+            hi=args[1].as_int()
+        elif len(args)==3:
+            # {2,3}
+            lo=args[0].as_int()
+            hi=args[2].as_int()
         else:
-            lo=args.pop(0).as_int()
-            hi=args.pop(0).as_int()
+            raise GrammaParseError('failed to parse repetition arg "%s"' % lt)
 
         rgen=f(lo,hi)
         #print('lo=%d hi=%d' % (lo,hi))
