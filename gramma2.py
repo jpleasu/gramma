@@ -197,42 +197,31 @@ r'''
 
 
     TODO:
-        - get_reset_states could attempt to guess the type of a state variable
-          by finding the right hand side of assignments to it in reset_state.
-          E.g.  set/dict/list.  That way, method access can be interpreted
-          correctly.
+        - finish TraceNode.resample
+            - given a tracetree and a subset of nodes to resample, we compile
+              it to a gexpr by 
+                - definitizing unselected nodes (replacing with GCats then
+                  simplifying)
+                - using "load", "load_rand", and "reseed_rand" at resampled
+                  nodes.
+            - if we assume a new incoming random, we don't need to reseed random..
+              and if the only users of random that follow are also being resampled,
+              we don't need to reload previous random.
+            - if we resample from a statevar using node, we will need to
+              provide the state.. do we assume that successive resample nodes
+              use the corresponding, possibly new, state, or are they all
+              resumed w/ the state they were run with previously?
+                - first off, drop any resample nodes that are children of other
+                  resample nodes.. they won't exist in the new world!
+                - it seems sane that distinct stateful nodes should resume with
+                  the state they had last time.
 
-        - analysis in GrammaGrammar constructor.
-            - analyze GCode in parser, so that all calls to "parse" benefit
-              from analysis
-                - store analysis results on GExpr objects (and in grammar?)
-            - the def, load, load_rand, and reseed_rand gfuncs are special.
-                - load/def - the first string argument is the name of the state to
-                  be def'd.
+            
 
-        - "resampling"
-            - When a gexpr node is executed, it consumes information from the
-              context and produces results.
+        - add params.. values that aren't checked for initialization, readonly
+          in gfuncs and gcode.
 
-                - if a node samples
-                    - IN_sample return from sampling
-                    - ? OUT effects from sampling?
-                - if a node uses_random
-                    - IN_rand on enter
-                    - OUT_rand before sampling
-                    - IN_rand after sampling
-                    - OUT_rand on return
-                - if a node uses state:
-                    - IN_state on enter
-                    - IN_state after sampling
-                - if a node defs state:
-                    - OUT_state before sampling
-                    - OUT_state on return
-
-            - The Tracer records all of this information for every node during
-              the exectuion of a gexpr. 
-
-        - state metadata should be useful to TraceNode, in particular the
+       - state metadata should be useful to TraceNode, in particular the
           resample compiler.
             - "if we resample a node that had modified state, do we need to
               load that state on exit from the resample of S?  e.g. is it used
@@ -305,50 +294,19 @@ r'''
                     if w:
                         x.state.stk.pop...
 
-        - resample compilation
-            - add params.. readonly state that isn't checked for initialization
-            - during tracetree construction, store instate for use nodes and
-              outstate for def nodes.
-            - given a tracetree and a subset of nodes to resample, we compile
-              it to a gexpr by definitizing and using "load", "load_rand", and
-              "reseed_rand" calls.
+        - get_reset_states could attempt to guess the type of a state variable
+          by finding the right hand side of assignments to it in reset_state.
+          E.g.  set/dict/list.  That way, method access can be interpreted
+          correctly.
 
-            - "tree order": child < parent
+        - analysis in GrammaGrammar constructor.
+            - analyze GCode in parser, so that all calls to "parse" benefit
+              from analysis
+                - store analysis results on GExpr objects (and in grammar?)
+            - the def, load, load_rand, and reseed_rand gfuncs are special.
+                - load/def - the first string argument is the name of the state to
+                  be def'd.
 
-            - "statespace N order": node1 < node2 if both nodes use the same
-              statespace, N, and node1 occurs before node2 in preorder
-              traversal of the tracetree.
-                - the compile GExpr visitation is preorder trace tree traversal,
-                  collect a list of nodes for each statespace and random
-
-            - "randstate order": for replay analysis, x.random is treated as a
-              statespace used by range, alt, rep, and any gfunc that
-              uses_random.  Every use is really a use/def, since the random
-              stream changes.
-
-            - the union quasiorder includes tree and state orders, but not
-              randstate.
-
-            - for each ordering, if n1<n2 then the value of n1 affects the
-              value of n2.  To determine unaffected nodes, we take the
-              complement of the upset of the changed node(s) in the union
-              quasiorder. every other node will need to be recomputed.
-
-
-            - where state (including randstate) can be replayed, we can split
-              intervals
-
-                - resume by sequencing:
-
-                    def(N, value).f(x)
-
-            - if all descendents of an interval are fixed, can replay each
-              node of interval as string
-
-            - if a descendent of a gfunc is changed, must replay the entire
-              principal upset to set state e.g. the argument "x" of "g" :
-                  
-                  f()  ...  g(x)
 
 '''
 from __future__ import absolute_import, division, print_function
@@ -1663,6 +1621,34 @@ class CacheConfig(object):
 class TraceNode(object):
     '''
         a node of the tracetree
+
+        Tracer populates each TraceNode w/ incoming and outgoing rand and state
+        values.
+        - __when__
+            - __it's_saved_to__
+
+        - if a node samples
+            - n.children
+        - if a node uses_random,
+            - on enter
+                - n.inrand
+            - before sampling child
+                - child.inrand
+            - after sampling child
+                - child.outrand
+            - on return
+                - n.outrand
+        - if a node uses state:
+            - on enter
+                - n.instate
+            - after sampling child
+                - child.outstate
+        - if a node defs state:
+            - before sampling child
+                - child.instate
+            - on return
+                - n.outstate
+
     '''
     __slots__='ge','parent','children','s','inrand','outrand','instate','outstate'
     def __init__(self,ge):
@@ -1764,8 +1750,8 @@ class TraceNode(object):
         '''
             computes ge, a GExpr that resamples only the nodes satisfying pred.
 
-            also computes cfg, a CacheConfig populated with any extra random and state
-            values needed by ge.
+            computes cfg, a CacheConfig populated with any extra random and
+            state values needed by ge.
 
             return ge,cfg
         '''
@@ -1774,11 +1760,15 @@ class TraceNode(object):
 
         def recurse(t):
             if pred(t):
-                lastrand=t.last(lambda n:n.ge.get_meta().uses_random)
-                if lastrand!=None:
-                    slot=cachecfg.new_randstate(lastrand.outrand)
-                    return GCat([grammar.parse('reseed_rand()'),t.ge.copy(),grammar.parse("load_rand('"+slot+"')")])
+                outrand=t.last(lambda n:n.ge.get_meta().uses_random)
+                if outrand!=None:
+                    ## resample ##
+                    slot=cachecfg.new_randstate(outrand.outrand)
+                    #return GCat([grammar.parse('reseed_rand()'),t.ge.copy(),grammar.parse("load_rand('"+slot+"')")])
+                    # assume "fresh" incoming random and no need to resume outgoing random
+                    return t.ge.copy()
 
+            ## definitize ##
             ge=t.ge
             if isinstance(ge,GTern):
                 # XXX lost sample, rand stream out of sync w/ original

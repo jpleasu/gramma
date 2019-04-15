@@ -230,23 +230,15 @@ def demo_random_states():
     # we can also reseed the random number generator from within the grammar
     d=p('D', 'reseed_rand().start')
 
-
-def demo_resample():
-    import random
+    ## resample with the cached randstate.
 
     g=ArithmeticGrammar()
-    #g=BasicGrammar()
     sampler=GrammaSampler(g)
-    #sampler.random.seed(15)
     tracer=Tracer()
     sampler.add_sideeffects(tracer)
     origs=sampler.sample()
-    print('-- the original sample --')
-    print(origs)
 
     tt=tracer.tracetree
-    #tt.dump()
-    # resample with the cached randstate.
     # Note that the dynamic alternations used in ArithmeticGrammar use depth
     # and using "cat(load_rand,start)" increases the depth. Reset the depth
     # with the 'def'. (depth is set to 1 because on _exit_ from the gfunc
@@ -256,17 +248,26 @@ def demo_resample():
     s=sampler.sample('def("depth",1).load_rand("r").start')
     assert(s==origs)
 
+
+def demo_resample():
+    import random
+    g=ArithmeticGrammar()
+    sampler=GrammaSampler(g)
+    tracer=Tracer()
+    sampler.add_sideeffects(tracer)
+
+    origs=sampler.sample()
+    print('-- the original sample --')
+    print(origs)
+    tt=tracer.tracetree
+
     ## choose the node to resample, n
-    allnodes=list(tt.gennodes())
-    #random.seed(5)
-    n=random.choice([n for n in allnodes if isinstance(n.ge,GRule)])
-    #n=random.choice([n for n in allnodes if isinstance(n.ge,GAlt)])
-    #n=random.choice([n for n in allnodes if isinstance(n.ge,GRange)])
+    n=random.choice([n for n in tt.gennodes() if isinstance(n.ge,GRule)])
 
-    print('resampling "%s" at depth(n) = %d' % (n.ge,n.depth()))
-    #n.dump()
+    print('-- resampling --')
+    print('"%s" at depth(n) = %d' % (n.ge,n.depth()))
 
-    ## construct a GExpr to resamples n with
+    ## construct a GExpr that resamples only n
     rge,cfg=tt.resample(g,lambda t:t==n)
     print('-- the resample expression --')
     print(rge)
