@@ -74,27 +74,79 @@ r'''
         - evaluation is left to right.
         - functions aren't allowed to "look up" the execution stack, only back.
 
+    TraceTree
+    =========
+    Sampling in Gramma is a form of expression tree evaluation where each node
+    can use a random number generator.  E.g. to sample from
+
+        "a" | "b"{1,5};
+
+    The head of this expression, alternation, randomly chooses between its
+    children, generating either "a" or a random sample of "b"{1,5} with equal
+    odds.
+
+    If "a" is chosen, the sample is complete.  If "b"{1,5} is chosen, its head,
+    the repetition node, draws a random count between 1 and 5, then samples its
+    child, "b", that number of times.  The results are concatenated, returned
+    to the parent alternation node, and the sample is complete.
+
+    Each possibility results in a different tree. Pictorially,
+
+        alt       or         alt
+         |                    |
+        "a"                  rep
+                            /...\
+                           |     |
+                          "b"   "b"
+
+    The Tracer sideeffect computes this, so called, "trace tree", storing
+    random number generator and other state when entering and exiting each
+    node.
+
+    Note: When sampling from a rule, the trace tree resembles the "recursion
+    tree" of the recursion tree method for evaluating recursive programs. For
+    example, a sample from
+
+        r := "a" | "b" . r;
+    
+    could produce the trace tree
+
+        alt
+         |
+        cat
+        / \
+       |   |
+      "b" rule(r)
+           |
+          alt
+           |
+          "a"
+
+    where the first alternation selected "b" . r, a concatenation whose
+    righthand child samples the rule r recursively.
+    
+
     Resampling
     ==========
-    To produce strings similar to a previously sampled string, we can hold
-    fixed (or definitize) part of the corresponding tracetree.  We effectively
-    create a template from a sample which we can then re-sample.
+    To produce strings similar to previous samples, we can hold fixed (or
+    definitize) part of the corresponding trace tree.  By choosing to replay
+    the context of execution for some but not all nodes of the trace tree, we
+    can effectively create a template from a sample.
 
-    The TraceNode API provides a high level interface, while what follows
-    describes the underlying operation.
+    The TraceNode object computed by the Tracer sideffect provides an interface
+    for performing the operations presented below.
 
     - "resampling" starts with a tracetree and a node. For example, given the
       GExpr
 
             a(b(),c(),d())
 
-        To resample at "c" we compute:
+        To record the random context around "c" we compute:
 
             save_rand('r0').a(b(),c().save_rand('r1'),d())
 
-        and store r0 and r1.  The random number generator on entering
-        "c" is then reseeded on entry, and resumed with at r1 after
-        exiting "c".
+        and store r0 and r1.  The random number generator on entering "c" is
+        then reseeded on entry, and resumed with r1 after exiting "c".
 
             load_rand('r0').a(b(), reseed_rand().c().load_rand('r1'), d())
 
@@ -124,18 +176,31 @@ r'''
             load_rand('r0').("-".("-".("-"
                 .reseed_rand().r.load_rand('r1') | ">") | ">") | ">");
 
+    Rope Aplenty
+    ============
+    GFuncs are (nearly) arbitraty code, so the analysis done by Gramma is
+    necessarily limited.  To understand when Gramma might "give up", examples
+    are given here.
+
+    "Well behaved" GFuncs are generally subsumed by other constructs in Gramma,
+    like ternary operators or dynamic alternations.  Heuristics, therefore,
+    which would apply to "well behaved" gfuncs are avoided, assuming that
+    grammars using gfuncs really need them.
+
+    TraceNode.child_containing
+    --------------------------
+    .. treats gfuncs as atomic. a gfunc can modify the strings that it samples,
+    so Gramma can't tell what parts of the string sampled from a gfunc are from
+    what child.
+
+
 
 
     TODO:
-        - quirks
-            - child_containing treats gfuncs as atomic.. a gfunc an modify a
-              sampled string arbitrarily.  a simple test that would cover a lot
-              of gfuncs would be to compare children sample values to gfunc
-              sample result.. if a child is equal to a sampled result, descend
-              into it.
-
-        - get_reset_states could attempt to guess the type of a state variable,
-          set/dict/list in order to associate use/def correctly.
+        - get_reset_states could attempt to guess the type of a state variable
+          by finding the right hand side of assignments to it in reset_state.
+          E.g.  set/dict/list.  That way, method access can be interpreted
+          correctly.
 
         - analysis in GrammaGrammar constructor.
             - analyze GCode in parser, so that all calls to "parse" benefit
@@ -154,9 +219,8 @@ r'''
             - alt(alt(),alt())  simplification
 
         - "resampling"
-
-            - When a gexpr node is executed, it is influenced (IN) by the
-              execution context and and effects (OUT) it as well.
+            - When a gexpr node is executed, it consumes information from the
+              context and produces results.
 
                 - if a node samples
                     - IN_sample return from sampling
@@ -174,21 +238,7 @@ r'''
                     - OUT_state on return
 
             - The Tracer records all of this information for every node during
-              the exectuion of a gexpr, resulting in a tracetree composed of
-              TraceNode objects. 
-
-            - if we sample a string with some good effect, we can use the
-              tracetree to generate a new gexpr whose samples are structurally
-              similar.
-
-            - To sample structurally similar strings, we keep some parts the
-              same and "resample" other parts.  As the tree structure of the
-              tracetree is the prevalent structure, deciding how to resample
-              starts with the nodes of the tracetree.
-
-              Depending on the grammar, state managed by sideffects, gfuncs,
-              and gcode elements can represent important structure. Resampling
-              must take this into account as well.
+              the exectuion of a gexpr. 
 
         - state metadata should be useful to TraceNode, in particular the
           resample compiler.
@@ -394,6 +444,7 @@ class GExprMetadata(object):
                 self.samples|other.samples, self.uses_random|other.uses_random)
 
 GExprMetadata.DEFAULT=GExprMetadata()
+GExprMetadata.DEFAULT_RANDOM=GExprMetadata(uses_random=True)
 
 class GFuncWrap(object):
     __slots__='f','fname','noauto','meta'
@@ -448,13 +499,13 @@ def gfunc(*args,**kw):
             fname = string
                 provides a name other than the method name to use in glf
 
-            XXX
             noauto = True/False
                 set to True to disable autoanalysis
-            defs = list/set
-            uses = list/set
+            statevar_defs = list/set
+            statevar_uses = list/set
                 manual override for automatically inferred state def/use
-            
+            uses_random = True/False
+                manual override for use of context random
     '''
     def _decorate(f,**kw):
         fname=kw.pop('fname',func_name(f))
@@ -754,7 +805,7 @@ class GAlt(GInternal):
         return [w for w in self.weights if isinstance(w,GCode)]
 
     def get_meta(self):
-        return reduce(lambda a,b:a|b, (w for w in self.weights if isinstance(w,GCode)))
+        return reduce(lambda a,b:a|b, (w.meta for w in self.weights if isinstance(w,GCode)), GExprMetadata(uses_random=True))
 
     def compute_weights(self,state):
         '''
@@ -890,7 +941,7 @@ class GRep(GInternal):
     def get_meta(self):
         if isinstance(self.dist, GCode):
             return self.dist.meta
-        return GExprMetadata.DEFAULT
+        return GExprMetadata.DEFAULT_RANDOM
 
     @property
     def child(self):
@@ -966,6 +1017,9 @@ class GRange(GExpr):
 
     def copy(self):
         return GRange(self.lo,self.hi)
+
+    def get_meta(self):
+        return GExprMetadata.DEFAULT_RANDOM
 
     def simplify(self):
         if self.hi-self.lo==1:
@@ -1590,7 +1644,7 @@ class TraceNode(object):
     '''
         a node of the tracetree
     '''
-    __slots__='ge','parent','children','s','inrand','outrand'
+    __slots__='ge','parent','children','s','inrand','outrand','instate','outstate'
     def __init__(self,ge):
         self.ge=ge
         self.parent=None
@@ -1598,6 +1652,8 @@ class TraceNode(object):
         self.s=None
         self.inrand=None
         self.outrand=None
+        self.instate=None
+        self.outstate=None
 
     def add_child(self,ge):
         c=TraceNode(ge)
@@ -1643,9 +1699,19 @@ class TraceNode(object):
 
         raise GrammaParseError('unknown expression (%s)%s' % (type(self.ge), self.ge))
 
-    def first_rule(self,rname):
+
+    def first(self, pred):
         for n in self.gennodes():
-            if n.ge.is_rule(rname):
+            if pred(n):
+                return n
+        return None
+
+    def first_rule(self,rname):
+        return self.first(lambda n:n.ge.is_rule(rname))
+
+    def last(self, pred):
+        for n in self.gennodesr():
+            if pred(n):
                 return n
         return None
 
@@ -1654,6 +1720,13 @@ class TraceNode(object):
         for c in self.children:
             for cc in c.gennodes():
                 yield cc
+
+    def gennodesr(self):
+        'reverse node generator'
+        for c in reversed(self.children):
+            for cc in c.gennodesr():
+                yield cc
+        yield self
 
     def depth(self,pred=lambda x:True):
         '''
@@ -1681,8 +1754,10 @@ class TraceNode(object):
 
         def recurse(t):
             if pred(t):
-                slot=cachecfg.new_randstate(t.outrand)
-                return GCat([grammar.parse('reseed_rand()'),t.ge.copy(),grammar.parse("load_rand('"+slot+"')")])
+                lastrand=t.last(lambda n:n.ge.get_meta().uses_random)
+                if lastrand!=None:
+                    slot=cachecfg.new_randstate(lastrand.outrand)
+                    return GCat([grammar.parse('reseed_rand()'),t.ge.copy(),grammar.parse("load_rand('"+slot+"')")])
 
             ge=t.ge
             if isinstance(ge,GTern):
@@ -1747,12 +1822,26 @@ class Tracer(SideEffect):
             self.tt=self.tracetree=TraceNode(ge)
         else:
             self.tt=self.tt.add_child(ge)
-        self.tt.inrand=x.random.r.get_state()
+        m=ge.get_meta()
+        if m.uses_random:
+            self.tt.inrand=x.random.r.get_state()
+        if m.statevar_uses:
+            self.tt.instate=type('',(),{})()
+            for varname in m.statevar_uses:
+                setattr(self.tt.instate, varname, copy.deepcopy(getattr(x.state,varname)))
         return None
 
     def pop(self,x,w,s):
+        m=self.tt.ge.get_meta()
+
         self.tt.s=s
-        self.tt.outrand=x.random.r.get_state()
+        if m.uses_random:
+            self.tt.outrand=x.random.r.get_state()
+        if m.statevar_defs:
+            self.tt.outstate=type('',(),{})()
+            for varname in m.statevar_defs:
+                setattr(self.tt.outstate, varname, copy.deepcopy(getattr(x.state,varname)))
+
         self.tt=self.tt.parent
 
 # vim: ts=4 sw=4
