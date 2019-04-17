@@ -3,7 +3,7 @@
 from gramma2 import *
 from builtins import super
 
-class BasicGrammar(GrammaGrammar):
+class DemoGrammar(GrammaGrammar):
     G=r'''
         start := recurs;
 
@@ -41,7 +41,11 @@ class BasicGrammar(GrammaGrammar):
     def g(x):
         yield 'g_return' + g_allowed
 
-    @gfunc(noauto=True)
+    @staticmethod
+    def punt(ge):
+        pass
+
+    @gfunc(analyzer=punt)
     def gg(x):
         yield 'gg_return' + g_not_allowed
 
@@ -53,6 +57,15 @@ class BasicGrammar(GrammaGrammar):
     def hh(x):
         x.state.extrastate=7
         yield ''
+
+    @gfunc
+    def incra(x):
+        x.state.a+=1
+        yield ''
+
+    @gfunc
+    def geta(x):
+        yield '%d' % (x.state.a)
 
 
 class ArithmeticGrammar(GrammaGrammar):
@@ -111,7 +124,7 @@ class ScopingGrammar(GrammaGrammar):
 
 
 def demo_parser():
-    g=BasicGrammar()
+    g=DemoGrammar()
     print(g.parse('''
         "a"| `depth` "b"
     '''))
@@ -127,7 +140,7 @@ def demo_parser():
 
 
 def demo_sampling():
-    #g=BasicGrammar()
+    #g=DemoGrammar()
     #g=ArithmeticGrammar()
     g=ScopingGrammar()
     sampler=GrammaSampler(g)
@@ -149,7 +162,7 @@ def demo_tracetree():
     '''
         generate a tracetree for a sample then pick an alt node to re-sample with chosen bias.
     '''
-    #g=BasicGrammar()
+    #g=DemoGrammar()
     g=ArithmeticGrammar()
     sampler=GrammaSampler(g)
     sampler.random.seed(0)
@@ -182,7 +195,7 @@ class LeftAltTransformer(Transformer):
     altDepthTracker=DepthTracker(varname='altdepth', pred=lambda ge:isinstance(ge,GAlt))
 
 def demo_transform():
-    g=BasicGrammar()
+    g=DemoGrammar()
     sampler=GrammaSampler(g)
     sampler.random.seed(0)
 
@@ -195,7 +208,7 @@ def demo_transform():
 
 
 def demo_random_states():
-    g=BasicGrammar()
+    g=DemoGrammar()
     sampler=GrammaSampler(g)
     #sampler.random.seed(0)
 
@@ -257,9 +270,9 @@ def demo_resample():
     sampler.add_sideeffects(tracer)
 
     origs=sampler.sample()
+    tt=tracer.tracetree
     print('-- the original sample --')
     print(origs)
-    tt=tracer.tracetree
 
     ## choose the node to resample, n
     n=random.choice([n for n in tt.gennodes() if isinstance(n.ge,GRule)])
@@ -277,6 +290,67 @@ def demo_resample():
     for i in range(10):
         print('---')
         print(sampler.sample(rge))
+
+class FuncyGrammar(GrammaGrammar):
+    G=r'''
+        start := r;
+        r :=  "s."
+            | `1-revcalled` "rev(".rev(r).")"
+            | decide("t"|"f","a.".r,"b.".r) 
+            | "c." . r;
+    '''
+
+    def __init__(self):
+        GrammaGrammar.__init__(self, type(self).G, [DepthTracker])
+
+    def reset_state(self, state):
+        state.revcalled=False
+
+    @gfunc
+    def rev(x,child):
+        x.state.revcalled=True
+        yield ''.join(reversed((yield child)))
+
+    @gfunc
+    def decide(x,child1,child2,child3):
+        s1=yield child1
+        if 't' in s1:
+            yield (yield child2)
+        yield (yield child3)
+
+def demo_resample_funcy():
+    import random
+    g=FuncyGrammar()
+    sampler=GrammaSampler(g)
+    tracer=Tracer()
+    sampler.add_sideeffects(tracer)
+
+    while True:
+        origs=sampler.sample()
+        tt=tracer.tracetree
+        funcy=[n for n in tt.gennodes() if isinstance(n.ge,GFunc)]
+        if len(funcy)>0:
+            break
+    f=random.choice(funcy)
+    n=random.choice([n for n in f.gennodes() if not isinstance(n.ge,GFunc) and n.ge.get_meta().uses_random])
+    print('-- the original sample --')
+    print(origs)
+    print('  with %d funcy node(s)' % len(funcy))
+    print('chose funcy at depth(n) = %d' % (f.depth()))
+    print(' and child %s at depth(n) = %d' % (n.ge,n.depth()))
+    #tt.dump()
+
+    ## construct a GExpr that resamples only n
+    rge,cfg=tt.resample(g,lambda t:t==n)
+    print('-- the resample expression --')
+    print(rge)
+
+    sampler.update_cache(cfg)
+
+    for i in range(10):
+        print('---')
+        print(sampler.sample(rge))
+
 
 
 def demo_tracetree_analysis():
@@ -362,6 +436,19 @@ def demo_grammar_analysis():
         def f(x):
             yield 'my value'
     eval_grammar(AnalyzeMeGrammar3fix,None)
+
+    # gfuncs don't return their value, they yield it.
+    class AnalyzeMeGrammar3b(GStub):
+        @gfunc
+        def f(x,ge):
+            s=yield ge
+            s+=yield (ge)
+            s+=yield 'not an argument'
+            yield  s
+    eval_grammar(AnalyzeMeGrammar3b, "gfuncs can only sample from their arguments")
+    
+
+
     class AnalyzeMeGrammar4(GStub):
         def reset_state(self,state):
             state.assigned=1
@@ -376,7 +463,7 @@ def demo_grammar_analysis():
             state.obj3={}
 
         @gfunc
-        def f(x):
+        def f(x,ge):
             # use
             if x.state.used:
                 yield ''
@@ -405,7 +492,7 @@ def demo_grammar_analysis():
             x.state.subscript_mod2[15].method()
 
 
-            s=yield "donkey"
+            s=yield ge
             yield s
 
     g=AnalyzeMeGrammar4()
@@ -423,6 +510,18 @@ def demo_grammar_analysis():
         def f(x):
             yield ''.join([(yield 'e%d') for e in range(3)])
     eval_grammar(AnalyzeMeGrammar5, 'yield in a generator expression or list comprehension')
+
+    class AnalyzeMeGrammar5a(GStub):
+        @gfunc
+        def f(x,**kw):
+            yield ''
+    eval_grammar(AnalyzeMeGrammar5a, "gfuncs mustn't take keyword arguments")
+
+    class AnalyzeMeGrammar5b(GStub):
+        @gfunc
+        def f(x,y=1):
+            yield ''
+    eval_grammar(AnalyzeMeGrammar5b, "gfuncs mustn't use default argument values")
 
     class AnalyzeMeGrammar6(GrammaGrammar):
         def __init__(self):
@@ -456,6 +555,37 @@ def demo_grammar_analysis():
     eval_grammar(AnalyzeMeGrammar8, 'abc used without being initialized in any reset_state')
 
 
+def demo_meta():
+    g=DemoGrammar()
+    ge=g.parse('''
+             geta()
+           . "=0."
+           . def("a",`9`)
+           . geta()
+           . "=9."
+           . load("a","a0")
+           . geta()
+           . "=13."
+           . incra()
+           . geta()
+           . "=14."
+           . save("a","a1")
+    ''')
+
+    sampler=GrammaSampler(g)
+    sampler.update_statecache(a0=13)
+    s=sampler.sample(ge)
+    print(s)
+    print(sampler.get_statecache())
+    def r(ge,indent=0):
+        print((' '*indent) + '%s[%s]' % (ge,ge.get_meta()))
+
+        if isinstance(ge,GInternal):
+            for c in ge.children:
+                r(c,indent+1)
+    print('node[meta]')
+    r(ge)
+
 if __name__=='__main__':
     #demo_parser()
     #demo_sampling()
@@ -463,8 +593,10 @@ if __name__=='__main__':
     #demo_tracetree()
     #demo_transform()
     #demo_random_states()
-    demo_resample()
+    #demo_resample()
+    #demo_resample_funcy()
     #demo_tracetree_analysis()
-    #demo_grammar_analysis()
+    demo_grammar_analysis()
+    #demo_meta()
 
 # vim: ts=4 sw=4
