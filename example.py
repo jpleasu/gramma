@@ -594,9 +594,9 @@ if __name__=='__main__':
     #demo_transform()
     #demo_random_states()
     #demo_resample()
-    #demo_resample_funcy()
+    demo_resample_funcy()
     #demo_tracetree_analysis()
-    demo_grammar_analysis()
+    #demo_grammar_analysis()
     #demo_meta()
 
 # vim: ts=4 sw=4

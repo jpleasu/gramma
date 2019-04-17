@@ -195,19 +195,45 @@ r'''
 
     TraceNode.resample
     ------------------
+    When a child node of a gfunc is resampled, Gramma tries to match previously
+    sampled arguments with gexpr children of the original call, so that a new
+    call can be constructed with appropriately sampled/definitized arguments.
 
+        e.g. suppose we have
+
+            choose(X,Y,Z)
+
+        where
+
+            @gfunc
+            def choose(x, a, b, c):
+                if (yield a)=='y':
+                    yield (yield b)
+                else:
+                    yield (yield b)
+
+        The tracetree records the sampled X and _depending on it's value_
+        either the sampled Y or the sampled Z, but not both.
+
+        If we resample X, and suppose the original sample had chosen Y. Gramma
+        will use the definitized sample of Y in the 2nd argument and the
+        original expression for Z in the 3rd.
+
+        If we resample Y, Y must have been sampled.. so Z was not.. we will use
+        the previous sample for X, which will again choose Y.. what we use in
+        the 3rd argument doesn't matter in this case, but Gramma will use the
+        original Z.
 
 
     TODO:
         - we should compile ONCE per gexpr
 
         - finish TraceNode.resample
-            - given a tracetree and a subset of nodes to resample, we compile
-              it to a gexpr by 
-                - definitizing unselected nodes (replacing with GCats then
-                  simplifying)
-                - using "load", "load_rand", and "reseed_rand" at resampled
-                  nodes.
+            - low level api allows decisions at each node:
+                - on enter, use saved random, current random
+                - on enter, use saved state or current state for each statevar
+                - "definitize" - shorthand for use saved random and use saved
+                  state
             - if we assume a new incoming random, we don't need to reseed random..
               and if the only users of random that follow are also being resampled,
               we don't need to reload previous random.
@@ -233,7 +259,7 @@ r'''
 
         - stacked state
             - finish scoping exampling
-            - to create scoped state, so that a statespace exists only at the
+            - to create scoped state, so that a statevar exists only at the
               depth it's scoped for, e.g.
 
                 r := scoped(definevar(id) . "blah". (r . "blah" . usevar()){2,10} );
@@ -430,23 +456,24 @@ def gfunc(*args,**kw):
                 will be a string.
             *) may access entropy from the SamplerInterface instance
         
-        The fields of the SamplerInterface state used by a gfunc represent its
-        "state space".  By tracking non-overlapping state spaces, Gramma can
-        optimize certain operations.
+        The SamplerInterface state fields are referred to as "state vars".  By
+        tracking their use in gfuncs, Gramma can optimize certain operations.
 
         gfunc decorator keyword arguments
 
             fname = string
                 provides a name other than the method name to use in glf
 
-            analyzer = static function
-                if set, disables autoanalysis, is called whenever
-                gfunc is parsed to "manually" update metadata
+            analyzer = static function taking a single GFunc argument
+                if set, disables autoanalysis, it's called whenever gfunc is
+                parsed. The analyzer should populate the GFunc's metadata.
+
             statevar_defs = list/set
             statevar_uses = list/set
-                manual override for automatically inferred state def/use
+                manual override for automatically inferred statevar def/use
+
             uses_random = True/False
-                manual override for use of context random
+                manual override for use of random
     '''
     def _decorate(f,**kw):
         fname=kw.pop('fname',func_name(f))
@@ -1010,7 +1037,7 @@ class GFunc(GInternal):
     def __init__(self, fname, fargs, gf=None):
         GInternal.__init__(self,fargs)
         self.fname=fname
-        # only set in finalize_gexpr
+        # set in finalize_gexpr
         self.gf=gf
 
     def get_meta(self):
@@ -1585,6 +1612,7 @@ class GrammaGrammar(object):
         if isinstance(ge, GInternal):
             for c in ge.children:
                 self.finalize_gexpr(c)
+        return ge
 
     def parse(self, gramma_expr_str):
         ''' gramma expression -> GExpr'''
@@ -1806,53 +1834,59 @@ class TraceNode(object):
         cachecfg=CacheConfig()
 
         def recurse(t):
+            ''' return resampled, gexpr'''
             if pred(t):
                 outrand=t.last(lambda n:n.ge.get_meta().uses_random)
                 if outrand!=None:
                     ## resample ##
-                    slot=cachecfg.new_randstate(outrand.outrand)
-                    return GCat([grammar.parse('reseed_rand()'),t.ge.copy(),grammar.parse("load_rand('"+slot+"')")])
+                    #slot=cachecfg.new_randstate(outrand.outrand)
+                    #return GCat([grammar.parse('reseed_rand()'),t.ge.copy(),grammar.parse("load_rand('"+slot+"')")])
                     # assume "fresh" incoming random and no need to resume outgoing random
-                    #return t.ge.copy()
+                    return True, t.ge.copy()
+                    #return True, GCat([GTok.from_str('>>>>>>>'),t.ge.copy(),GTok.from_str('<<<<<<<<')])
 
             ## definitize ##
             ge=t.ge
             if isinstance(ge,GTern):
                 return recurse(t.children[0])
-            elif isinstance(ge,(GAlt,GTern)):
+            elif isinstance(ge,GAlt):
                 return recurse(t.children[0])
             elif isinstance(ge,GRule):
                 return recurse(t.children[0])
-            elif isinstance(ge,GCat):
-                return GCat([recurse(c) for c in t.children])
-            elif isinstance(ge,GRep):
-                return GCat([recurse(c) for c in t.children])
+            elif isinstance(ge,(GCat,GRep)):
+                l=[recurse(c) for c in t.children]
+                return any(r for (r,ge) in l), GCat([ge for (r,ge) in l])
             elif isinstance(ge,GRange):
-                return GTok.from_str(t.s)
+                return False, GTok.from_str(t.s)
             elif isinstance(ge,GTok):
-                return ge.copy()
+                return False, ge.copy()
             elif isinstance(ge,GFunc):
-                # we want to change a child of f, assuming it's an argument
-                #  without changing "what f does"
-                # if f makes decisions based on the sample result, reproducing
-                # behavior doesn't make sense.
-
-                # gfunc might sample conditioned on previous samples.. only way
-                # to reproduce is to provide identical samples.
-                # gfuncs can sample from arbitrary gexprs..  e.g. non argument
-                # gexprs.
-                # are the children arguments?
+                l=[recurse(c) for c in t.children]
+                if not any(r for (r,ge) in l):
+                    return False, GTok.from_str(t.s)
                 fargmap={}
-                for c in t.children:
-                    fargmap.setdefault(c.ge,[]).append(c)
-
-                print('XXX descend into gfunc arguments when sensible!')
-                return GTok.from_str(t.s)
-                #return ge.copy()
+                for i,c in enumerate(t.children):
+                    fargmap.setdefault(c.ge,[]).append(i)
+                args=[]
+                for a in t.ge.fargs:
+                    ta=fargmap.get(a,[])
+                    if len(ta)>1:
+                        print('FAIL on %s: %s' % (ge.fname,ta))
+                        print(fargmap)
+                        return False, GTok.from_str(t.s)
+                    if len(ta)==0:
+                        # this argument wasn't sampled from.. use a copy of the
+                        # original
+                        args.append(a.copy())
+                    else:
+                        # use the computed recursion on the tracenode child
+                        args.append(l[ta[0]][1])
+                return True, GFunc(ge.fname,args,ge.gf)
             else:
                 raise ValueError('unknown GExpr node type: %s' % type(ge))
 
-        return recurse(self).simplify(), cachecfg
+        b,ge=recurse(self)
+        return ge.simplify(), cachecfg
 
 
 class DepthTracker(SideEffect):
