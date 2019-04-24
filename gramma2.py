@@ -215,25 +215,46 @@ r'''
         The tracetree records the sampled X and _depending on it's value_
         either the sampled Y or the sampled Z, but not both.
 
-        If we resample X, and suppose the original sample had chosen Y. Gramma
-        will use the definitized sample of Y in the 2nd argument and the
-        original expression for Z in the 3rd.
+        If we resample (a child of) X, and suppose the original sample had
+        chosen Y. Gramma will use the definitized sample of Y in the 2nd
+        argument and the original expression for Z in the 3rd.
 
-        If we resample Y, Y must have been sampled.. so Z was not.. we will use
-        the previous sample for X, which will again choose Y.. what we use in
-        the 3rd argument doesn't matter in this case, but Gramma will use the
-        original Z.
+        If we resample (a child of) Y, Y must have been sampled.. so Z was
+        not.. we will use the previous sample for X, which will again choose
+        Y.. what we use in the 3rd argument doesn't matter in this case, but
+        Gramma will use the original Z.
+
+        If we resample X and Y, then it's possible that Z is sampled, since the
+        1st arg might choose differently.
 
 
     TODO:
-        - we should compile ONCE per gexpr
+        - examples
+            - resample: sample, pick an "interesting" node, resample..
+                - identify failing nodes by parsing compile error line
+                  references.
+                - AFL
+                - hypothesis testing
+                - function fitting
+                - novelty search
+
+            - regression: parameterize alternations w/ independent variables,
+              compute dependent variable.
 
         - finish TraceNode.resample
+            - when a gfunc is resampled, we should ensure it gets the same
+              state as it would have in the original execution.
+
             - low level api allows decisions at each node:
                 - on enter, use saved random, current random
                 - on enter, use saved state or current state for each statevar
                 - "definitize" - shorthand for use saved random and use saved
                   state
+                - behavior might depend on child's behavior.. e.g. in the
+                  simple resample case, a gfunc with a reampled child must be
+                  executed again, meaning it might need to load the original
+                  state first.
+
             - if we assume a new incoming random, we don't need to reseed random..
               and if the only users of random that follow are also being resampled,
               we don't need to reload previous random.
@@ -248,14 +269,6 @@ r'''
 
         - add params.. values that aren't checked for initialization, readonly
           in gfuncs and gcode.
-
-        - examples
-            - resample: sample, pick an "interesting" node, resample..
-                - identify failing nodes by parsing compile error line
-                  references.
-                - AFL
-            - regression: parameterize alternations w/ independent variables,
-              compute dependent variable.
 
         - stacked state
             - finish scoping exampling
@@ -324,6 +337,7 @@ r'''
 from __future__ import absolute_import, division, print_function
 import traceback
 import sys
+import time
 if sys.version_info < (3,0):
     #from builtins import (bytes, str, open, super, range,zip, round, input, int, pow, object)
     
@@ -339,6 +353,9 @@ if sys.version_info < (3,0):
     def ast_argname(a):
         return a.id
 
+    def perf_counter():
+        return time.clock()
+
 else:
     import builtins as __builtin__
     from functools import reduce
@@ -350,6 +367,10 @@ else:
 
     def ast_argname(a):
         return a.arg
+
+    def perf_counter():
+        return time.perf_counter()
+
 
 import copy
 
@@ -374,6 +395,8 @@ import textwrap
 
 import numbers
 
+import logging
+
 try:
     import astpretty
 except ImportError:
@@ -381,6 +404,8 @@ except ImportError:
 
 
 import pysa
+
+log=logging.getLogger('gramma')
 
 class GExprMetadata(object):
     '''
@@ -400,6 +425,8 @@ class GExprMetadata(object):
             l.append('defs=%s' % ','.join(sorted(self.statevar_defs)))
         if len(self.statevar_uses)>0:
             l.append('uses=%s' % ','.join(sorted(self.statevar_uses)))
+        if self.uses_random:
+            l.append('uses_random')
         return ' '.join(l)
     def copy(self):
         return GExprMetadata(copy.deepcopy(self.statevar_defs), copy.deepcopy(self.statevar_uses), self.samples, self.uses_random)
@@ -756,6 +783,14 @@ class GTern(GInternal):
     def copy(self):
         return GTern(self.code, [c.copy() for c in self.children])
 
+class defaultdict(dict):
+    __slots__='default_func',
+    def __init__(self,default_func):
+        self.default_func=default_func
+
+    def __missing__(self, key):
+        return self.default_func(key)
+
 class GAlt(GInternal):
     tag='alt'
 
@@ -868,7 +903,7 @@ class GAlt(GInternal):
 
     def copy(self):
         return GAlt(self.weights, [c.copy() for c in self.children])
- 
+
 class GCat(GInternal):
     tag='cat'
 
@@ -1141,6 +1176,9 @@ class GrammaRandom(object):
     def randint(self,low,high):
         return self.r.randint(low,high)
 
+    def rand(self):
+        return self.r.rand()
+
     def geometric(self,p):
         return self.r.geometric(p)
 
@@ -1179,6 +1217,7 @@ class GrammaSampler(object):
 
         self.add_sideeffects(*self.grammar.sideeffect_dependencies)
 
+
     def add_sideeffects(self,*sideeffects):
         for sideeffect in sideeffects:
             if inspect.isclass(sideeffect):
@@ -1216,7 +1255,7 @@ class GrammaSampler(object):
 
     def sample(self,ge=None):
         if ge==None:
-            ge='start'
+            ge=self.grammar.ruledefs['start']
 
         if isinstance(ge,string_types):
             ge=self.grammar.parse(ge)
@@ -1230,9 +1269,7 @@ class GrammaSampler(object):
             for transformer in self.transformers:
                 a=transformer.transform(self.x,a)
 
-            #push
-            sideeffect_top=tuple(sideeffect.push(self.x,a) for sideeffect in self.sideeffects)
-            # XXX cache compilation results?
+            sideeffect_top=[sideeffect.push(self.x,a) for sideeffect in self.sideeffects]
             compiled_top=self.grammar.compile(a)(self.x)
             # wrapped top
             wtop=(sideeffect_top,compiled_top) 
@@ -1240,6 +1277,7 @@ class GrammaSampler(object):
             self.stack.append(wtop)
 
             a=next(compiled_top)
+
             while isinstance(a,string_types):
                 #pop
                 for sideeffect,w in zip(self.sideeffects,wtop[0]):
@@ -1302,8 +1340,9 @@ class Transformer(object):
         '''
         x is the SamplerInterface, ge is the incoming GExpr
 
-        must return a gexpr
+        must return a gexpr.
 
+        note: cache results!
         '''
         return ge
 
@@ -1398,7 +1437,7 @@ class GFuncAnalyzer(pysa.VariableAccesses):
                 else:
                     self._raise('%s used without being initialized in any reset_state' % n.s)
             elif n[1].s=='random':
-                self.uses_random=True
+                self._raise('direct use of random object?')
             else:
                 self._raise('unexpected SamplerInterface field "%s", only "random", "state", and "param" are accessible' % n[1:].s)
         else:
@@ -1412,6 +1451,10 @@ class GFuncAnalyzer(pysa.VariableAccesses):
         if self.is_iface_id(n):
             if n[1].s=='state':
                 self.mods(n,v)
+            elif n[1].s=='random':
+                self.uses_random=True
+            else:
+                self._raise('forbidden all to variable "%s"' % n.s)
 
     def lambdas(self, l):
         pass
@@ -1821,6 +1864,74 @@ class TraceNode(object):
             n=n.parent
         return d
 
+    def resample_mostly(self,grammar,pred, factor=10):
+        '''
+            like resample, but non-resampled nodes aren't definitized, they're
+            just biased toward their previous decision.
+
+            factor is how much more likely the previous selection should be at
+            each alternation and ternary.
+        '''
+        cachecfg=CacheConfig()
+
+        def recurse(t):
+            ''' 
+                return resampled, gexpr
+                    where resampled is True if a subexpression will be resampled
+            '''
+            if pred(t):
+                outrand=t.last(lambda n:n.ge.get_meta().uses_random)
+                if outrand!=None:
+                    return True, t.ge.copy()
+
+            ## mostly definitize ##
+            ge=t.ge
+            if isinstance(ge,(GAlt,GTern)):
+                tc=t.children[0]
+                b,tcc=recurse(tc)
+                cmap=defaultdict(lambda c:(1,c))
+                cmap[tc.ge]=(factor,tcc)
+
+                weights,children=zip(*[cmap[c] for c in ge.children])
+                return b,GAlt(weights,children)
+            elif isinstance(ge,GRule):
+                return recurse(t.children[0])
+            elif isinstance(ge,(GCat,GRep)):
+                l=[recurse(c) for c in t.children]
+                return any(r for (r,ge) in l), GCat([ge for (r,ge) in l])
+            elif isinstance(ge,GRange):
+                return False, GTok.from_str(t.s)
+            elif isinstance(ge,GTok):
+                return False, ge.copy()
+            elif isinstance(ge,GFunc):
+                l=[recurse(c) for c in t.children]
+                if not any(r for (r,ge) in l):
+                    return False, GTok.from_str(t.s)
+                fargmap={}
+                for i,c in enumerate(t.children):
+                    fargmap.setdefault(c.ge,[]).append(i)
+                args=[]
+                for a in t.ge.fargs:
+                    ta=fargmap.get(a,[])
+                    if len(ta)>1:
+                        log.error('more than one argument mapped for %s(..,%s,..): %s' % (ge.fname,a,ta))
+                        log.error(str(fargmap))
+                        return False, GTok.from_str(t.s)
+                    if len(ta)==0:
+                        # this argument wasn't sampled.. use a copy of the
+                        # original
+                        args.append(a.copy())
+                    else:
+                        # use the computed recursion on the tracenode child
+                        args.append(l[ta[0]][1])
+                return True, GFunc(ge.fname,args,ge.gf)
+            else:
+                raise ValueError('unknown GExpr node type: %s' % type(ge))
+
+        b,ge=recurse(self)
+        return ge.simplify(), cachecfg
+
+
     def resample(self,grammar,pred):
         '''
             computes ge, a GExpr that resamples only the nodes satisfying pred.
@@ -1834,7 +1945,10 @@ class TraceNode(object):
         cachecfg=CacheConfig()
 
         def recurse(t):
-            ''' return resampled, gexpr'''
+            ''' 
+                return resampled, gexpr
+                    where resampled is True if a subexpression will be resampled
+            '''
             if pred(t):
                 outrand=t.last(lambda n:n.ge.get_meta().uses_random)
                 if outrand!=None:
@@ -1871,11 +1985,11 @@ class TraceNode(object):
                 for a in t.ge.fargs:
                     ta=fargmap.get(a,[])
                     if len(ta)>1:
-                        print('FAIL on %s: %s' % (ge.fname,ta))
-                        print(fargmap)
+                        log.error('more than one argument mapped for %s(..,%s,..): %s' % (ge.fname,a,ta))
+                        log.error(str(fargmap))
                         return False, GTok.from_str(t.s)
                     if len(ta)==0:
-                        # this argument wasn't sampled from.. use a copy of the
+                        # this argument wasn't sampled.. use a copy of the
                         # original
                         args.append(a.copy())
                     else:

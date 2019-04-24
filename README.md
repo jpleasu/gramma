@@ -6,13 +6,11 @@ Gramma is a probabilistic programming language for grammar based fuzzing.
 ## Install
 
 ```
-pip install lark-parser
-pip install future
+pip install lark-parser six future numpy
 ```
 or
 
 ```
-pip3 install lark-parser
-pip3 install future
+pip3 install lark-parser six future numpy
 ```
 
