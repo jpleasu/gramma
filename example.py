@@ -299,6 +299,7 @@ class FuncyGrammar(GrammaGrammar):
         r :=  "s."
             | `1-revcalled` "rev(".rev(r).")"
             | decide("t"|"f","a.".r,"b.".r) 
+            | dub("a"|"b")
             | "c." . r;
     '''
 
@@ -320,6 +321,10 @@ class FuncyGrammar(GrammaGrammar):
             yield (yield child2)
         yield (yield child3)
 
+    @gfunc
+    def dub(x,child):
+        yield (yield child)+(yield child)
+
 def demo_resample_funcy():
     import random
     g=FuncyGrammar()
@@ -330,15 +335,15 @@ def demo_resample_funcy():
     while True:
         origs=sampler.sample()
         tt=tracer.tracetree
-        funcy=[n for n in tt.gennodes() if isinstance(n.ge,GFunc)]
-        if len(funcy)>0:
+        funcs=[n for n in tt.gennodes() if isinstance(n.ge,GFunc)]
+        if len(funcs)>0:
             break
-    f=random.choice(funcy)
+    f=random.choice(funcs)
     n=random.choice([n for n in f.gennodes() if not isinstance(n.ge,GFunc) and n.ge.get_meta().uses_random])
     print('-- the original sample --')
     print(origs)
-    print('  with %d funcy node(s)' % len(funcy))
-    print('chose funcy at depth(n) = %d' % (f.depth()))
+    print('  with %d func node(s)' % len(funcs))
+    print('chose func "%s" at depth(n) = %d' % (f.ge.fname, f.depth()))
     print(' and child %s at depth(n) = %d' % (n.ge,n.depth()))
     #tt.dump()
 
@@ -410,6 +415,15 @@ def demo_fit():
     def meth0():
         'wild west'
         return samp()
+
+    def meth1():
+        'fiddle with alts of last best'
+        if tt==None:
+            return None
+        rge,cfg=tt.resample_mostly(g,lambda t:False, factor=factor)
+        sampler.update_cache(cfg)
+        return samp(rge)
+
     def mkmeth(pred):
         'resample nodes'
         def meth():
@@ -424,8 +438,10 @@ def demo_fit():
             return samp(rge)
         return meth
 
+
     #meths=[meth0, mkmeth(lambda n:isinstance(n.ge,GRule)), mkmeth(lambda n:isinstance(n.ge,GFunc))]
-    meths=[meth0, mkmeth(lambda n:isinstance(n.ge,GRule))]
+    #meths=[meth0, mkmeth(lambda n:isinstance(n.ge,GRule))]
+    meths=[meth0, meth1]
 
     try:
         while True:
@@ -719,12 +735,12 @@ if __name__=='__main__':
     #demo_transform()
     #demo_random_states()
     #demo_resample()
-    #demo_resample_funcy()
+    demo_resample_funcy()
     #demo_tracetree_analysis()
     #demo_grammar_analysis()
     #demo_meta()
 
-    demo_fit()
+    #demo_fit()
 
     #demo_timing()
     #demo_profile()

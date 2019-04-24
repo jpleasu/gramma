@@ -227,6 +227,24 @@ r'''
         If we resample X and Y, then it's possible that Z is sampled, since the
         1st arg might choose differently.
 
+    If an argument is sampled more than once by a gfunc, that's a different story.
+        
+        suppose we have
+
+            bigger("a"{0,5})
+
+        where
+
+            @gfunc
+            def bigger(x, a):
+                a1=(yield a)
+                a2=(yield a)
+                yield (a1 if len(a1)>len(a2) else a2)
+
+        Suppose we resample the longer "a"{0,5} sample. Without replaying the
+        previous sample, there's no way reproduce the function's behavior.  In
+        this case, we therefore resample the entire argument.
+
 
     TODO:
         - examples
@@ -405,6 +423,7 @@ except ImportError:
 
 import pysa
 
+logging.basicConfig(format='%(asctime)-15s.%(msecs)d [%(name)s]: %(message)s', datefmt="%Y-%m-%d %H:%M:%S", level=logging.DEBUG)
 log=logging.getLogger('gramma')
 
 class GExprMetadata(object):
@@ -1469,6 +1488,9 @@ class GFuncAnalyzer(pysa.VariableAccesses):
         if isinstance(p,ast.Call):
             if not y in p.args:
                 self._raise('failed to analyze yield expression')
+        elif isinstance(p,ast.BinOp):
+            if p.left!=y and p.right!=y:
+                self._raise('failed to analyze yield expression')
         else:
             if p.value!=y:
                 self._raise('failed to analyze yield expression')
@@ -1871,6 +1893,9 @@ class TraceNode(object):
 
             factor is how much more likely the previous selection should be at
             each alternation and ternary.
+
+            Even with a factor of 0, this resample is useful for preserving the
+            tracetree structure for future resample operations.
         '''
         cachecfg=CacheConfig()
 
@@ -1906,7 +1931,8 @@ class TraceNode(object):
             elif isinstance(ge,GFunc):
                 l=[recurse(c) for c in t.children]
                 if not any(r for (r,ge) in l):
-                    return False, GTok.from_str(t.s)
+                    # preserve the function call
+                    return False, GFunc(ge.fname,[arg[1] for arg in l],ge.gf)
                 fargmap={}
                 for i,c in enumerate(t.children):
                     fargmap.setdefault(c.ge,[]).append(i)
@@ -1914,10 +1940,10 @@ class TraceNode(object):
                 for a in t.ge.fargs:
                     ta=fargmap.get(a,[])
                     if len(ta)>1:
-                        log.error('more than one argument mapped for %s(..,%s,..): %s' % (ge.fname,a,ta))
-                        log.error(str(fargmap))
-                        return False, GTok.from_str(t.s)
-                    if len(ta)==0:
+                        log.warning('argument sampled multiple times in %s(..,%s,..): %s, resampling original expression' % (ge.fname,a,ta))
+                        #log.warning(str(fargmap))
+                        args.append(a.copy())
+                    elif len(ta)==0:
                         # this argument wasn't sampled.. use a copy of the
                         # original
                         args.append(a.copy())
@@ -1985,10 +2011,10 @@ class TraceNode(object):
                 for a in t.ge.fargs:
                     ta=fargmap.get(a,[])
                     if len(ta)>1:
-                        log.error('more than one argument mapped for %s(..,%s,..): %s' % (ge.fname,a,ta))
-                        log.error(str(fargmap))
-                        return False, GTok.from_str(t.s)
-                    if len(ta)==0:
+                        log.warning('argument sampled multiple times in %s(..,%s,..): %s, resampling original expression' % (ge.fname,a,ta))
+                        #log.warning(str(fargmap))
+                        args.append(a.copy())
+                    elif len(ta)==0:
                         # this argument wasn't sampled.. use a copy of the
                         # original
                         args.append(a.copy())
