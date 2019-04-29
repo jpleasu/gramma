@@ -37,3 +37,16 @@ setup
       tree = parser.grammarSpec()
 
 
+usage
+=====
+- e.g. for json
+  ./g4toglf.py grammars-v4/json/JSON.g4
+
+- ANTLR grammars are for parsing, not generation of strings, so certain constructs need tweaking.
+  - in ANTLR, X* will recognize any sequence of X's... to generate, we need a distribution on the number of repetitions.
+    g4toglf puts a placeholder "_MAX_REP" in place of either a distribution or upperbound.
+  - negated ranges are output as PARSEME_RANGE(~....) since we typically don't want to generate an arbitrary value
+    outside the specified range.
+  - recursion is unchecked, so if the resulting grammar hangs, identify alternations where the recursive route is
+    takens, and make them less likely.
+

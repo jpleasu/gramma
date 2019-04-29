@@ -247,6 +247,8 @@ r'''
 
 
     TODO:
+        - analyze grammar to identify recusions.. insert parameters to
+          alternations to help control depth.
         - examples
             - resample: sample, pick an "interesting" node, resample..
                 - identify failing nodes by parsing compile error line
@@ -284,9 +286,6 @@ r'''
                   resample nodes.. they won't exist in the new world!
                 - it seems sane that distinct stateful nodes should resume with
                   the state they had last time.
-
-        - add params.. values that aren't checked for initialization, readonly
-          in gfuncs and gcode.
 
         - stacked state
             - finish scoping exampling
@@ -757,8 +756,9 @@ class GCode(GExpr):
         self.expr=expr
         self.meta=GExprMetadata.DEFAULT.copy() if meta==None else meta
 
-    def __call__(self, state):
-        return eval(self.expr, globals(), {k: getattr(state, k) for k in dir(state)})
+    def invoke(self, x):
+        locs=dict(x.params.__dict__, **x.state.__dict__)
+        return eval(self.expr, globals(), locs)
 
     def __str__(self):
         return '`%s`' % self.expr
@@ -785,8 +785,8 @@ class GTern(GInternal):
     def get_meta(self):
         return self.code.meta
 
-    def compute_case(self,state):
-        return self.code(state)
+    def compute_case(self,x):
+        return self.code.invoke(x)
  
     def __str__(self):
         return '%s ? %s : %s' % (self.code, self.children[0], self.children[1])
@@ -831,13 +831,13 @@ class GAlt(GInternal):
     def get_meta(self):
         return reduce(lambda a,b:a|b, (w.meta for w in self.weights if isinstance(w,GCode)), GExprMetadata(uses_random=True))
 
-    def compute_weights(self,state):
+    def compute_weights(self,x):
         '''
-            dynamic weights are computed using the state variable every time an
-            alternation is invoked.
+            dynamic weights are computed using the SamplerInterface variable
+            every time an alternation is invoked.
         '''
         if self.dynamic:
-            w=np.array([w(state) if isinstance(w,GCode) else w for w in self.weights])
+            w=np.array([w.invoke(x) if isinstance(w,GCode) else w for w in self.weights])
             return w/w.sum()
         return self.nweights
  
@@ -1025,7 +1025,7 @@ class GRep(GInternal):
             del args[-2:]
         elif isinstance(a, GCode):
             dist=a
-            f=lambda lo,hi:lambda x:min(hi,max(lo,a(x.state)))
+            f=lambda lo,hi:lambda x:min(hi,max(lo,a.invoke(x)))
             del args[-2:]
         else:
             dist='unif'
@@ -1205,14 +1205,14 @@ class GrammaRandom(object):
         print(l,kw)
 
 
-class SamplerInterface(namedtuple('SamplerInterface','random state param')):
+class SamplerInterface(namedtuple('SamplerInterface','random state params')):
     '''
         constructed by GrammaSampler and passed to generators for access to
         random and state.
     '''
 
     def __new__(cls,sampler):
-        return super(SamplerInterface,cls).__new__(cls,sampler.random,sampler.state,sampler.param)
+        return super(SamplerInterface,cls).__new__(cls,sampler.random,sampler.state,sampler.params)
 
 class GrammaSampler(object):
     '''
@@ -1225,16 +1225,16 @@ class GrammaSampler(object):
         samples.
 
     '''
-    __slots__='grammar', 'transformers', 'sideeffects', 'state', 'random', 'stack', 'param', 'x'
-    def __init__(self,grammar=None, **param):
+    __slots__='grammar', 'transformers', 'sideeffects', 'state', 'random', 'stack', 'params', 'x'
+    def __init__(self,grammar=None, **params):
         self.grammar=grammar
         self.transformers=[]
         self.sideeffects=[]
         self.random=GrammaRandom()
         self.state=GrammaState()
-        self.param=dict(param)
+        self.params=type('Params',(),{})
 
-        self.add_sideeffects(*self.grammar.sideeffect_dependencies)
+        self.add_sideeffects(*self.grammar.sideeffects)
 
 
     def add_sideeffects(self,*sideeffects):
@@ -1260,8 +1260,9 @@ class GrammaSampler(object):
         self.state._cache.update(cachecfg.statecache)
         self.random._cache.update(cachecfg.randcache)
 
-    def update_parms(self, **kw):
-        self.param.update(kw)
+    def update_params(self, **kw):
+        for k,v in kw.items():
+            setattr(self.params,k,v)
 
     def reset_state(self):
         self.grammar.reset_state(self.state)
@@ -1377,14 +1378,15 @@ def ast_attr_path(x):
 
 class GFuncAnalyzer(pysa.VariableAccesses):
     allowed_globals=['struct','True','False','None'] + [x for x in dir(__builtin__) if x.islower()]
-    def __init__(self,target_class,gf,reset_states,allowed_ids=None):
+    def __init__(self,target_class,gf,reset_states,param_ids=None,allowed_global_ids=None):
         pysa.VariableAccesses.__init__(self)
         self.target_class=target_class
         self.reset_states=reset_states
 
         self.allowed_ids=set(GFuncAnalyzer.allowed_globals)
-        if allowed_ids!=None:
-            self.allowed_ids.update(allowed_ids)
+        if allowed_global_ids!=None:
+            self.allowed_ids.update(allowed_global_ids)
+        self.param_ids=[] if param_ids==None else param_ids
         self.uses_random=False
         self.samples=False
         self.has_terminal_yield=False
@@ -1436,10 +1438,10 @@ class GFuncAnalyzer(pysa.VariableAccesses):
         if self.is_iface_id(n):
             if n[1].s=='state':
                 self.statevar_defs.add(n[2].s)
-            elif n[1].s=='random':
+            elif n[1].s=='random' or n[1].s=='params':
                 self._raise('forbidden access to SamplerInterface %s' % n[1:])
             else:
-                self._raise('unexpected SamplerInterface field "%s", only "random", "state", and "param" are accessible' % n[1:].s)
+                self._raise('unexpected SamplerInterface field "%s", only "random", "state", and "params" are accessible' % n[1:].s)
         else:
             self.allowed_ids.add(n.s)
 
@@ -1454,11 +1456,16 @@ class GFuncAnalyzer(pysa.VariableAccesses):
                         self.statevar_uses.add(n[2].s)
                         break
                 else:
-                    self._raise('%s used without being initialized in any reset_state' % n.s)
+                    self._raise('%s used without being initialized in any reset_state or explicitly allowed in allowed_global_ids or param_ids' % n.s)
+            elif n[1].s=='params':
+                if n[2]=='[]':
+                    self._raise('params is not indexed, define ids with the param_ids argument of GrammaGrammar and set with update_params method of GrammaSampler')
+                if not n[2] in self.param_ids:
+                    self._raise('param "%s" not declared by grammar' % n[2].s)
             elif n[1].s=='random':
                 self._raise('direct use of random object?')
             else:
-                self._raise('unexpected SamplerInterface field "%s", only "random", "state", and "param" are accessible' % n[1:].s)
+                self._raise('unexpected SamplerInterface field "%s", only "random", "state", and "params" are accessible' % n[1:].s)
         else:
             self._raise('forbidden access to variable "%s"' % n.s)
 
@@ -1506,7 +1513,7 @@ class GFuncAnalyzer(pysa.VariableAccesses):
 class GCodeAnalyzer(pysa.VariableAccesses):
     def __init__(self, grammar, code):
         self.grammar=grammar
-        self.allowed_ids=set(GFuncAnalyzer.allowed_globals) | set(self.grammar.allowed_ids)
+        self.allowed_ids=set(GFuncAnalyzer.allowed_globals) | set(self.grammar.allowed_global_ids) | set(self.grammar.param_ids)
         code.meta=GExprMetadata.DEFAULT.copy()
         self.code=code
         code_ast=ast.parse(code.expr).body[0]
@@ -1529,7 +1536,7 @@ class GCodeAnalyzer(pysa.VariableAccesses):
                 self.code.meta.statevar_uses.add(n[0].s)
                 break
         else:
-            self._raise('%s used without being initialized in any reset_state' % n.s)
+            self._raise('%s used without being initialized in any reset_state or explicitly allowed in allowed_global_ids or param_ids' % n.s)
 
 
 def analyzer_use_first_arg(ge):
@@ -1551,37 +1558,41 @@ class GrammaGrammar(object):
              print(sampler.sample())
     '''
 
-    ALLOWED_GLOBAL_IDS=[]
-
     ruledef_parser = lark.Lark(gramma_grammar, parser='earley', lexer='standard', start='start')
     expr_parser = lark.Lark(gramma_grammar, parser='earley', lexer='standard', start='tern')
 
-    __slots__='sideeffect_dependencies', 'ruledefs', 'funcdefs', 'reset_states', 'allowed_ids'
+    __slots__='sideeffects', 'ruledefs', 'funcdefs', 'reset_states', 'allowed_global_ids', 'param_ids'
 
-    def __init__(self, gramma_expr_str, sideeffect_dependencies=None):
+    def __init__(self, gramma_expr_str, sideeffects=None, param_ids=None, allowed_global_ids=None):
         '''
-            gramma_expr_str defines the grammar, including a start rule.
+            gramma_expr_str - defines the grammar, including a start rule.
 
-            sideeffect_dependencies is a list of SideEffect objects or classes
-            which the grammar, GFunc implementations or GCode expressions,
-            require.
+            sideeffects - a list of SideEffect objects or classes which the
+            grammar, GFunc implementations or GCode expressions, require.
+
+            param_ids - a list of param names that will be ignored by the GFunc
+            and GCode analyzers.
+
+            allowed_global_ids - a list of global variable identifiers ignored
+            by GFunc and GCode analyzers.
         '''
-        if sideeffect_dependencies==None:
-            sideeffect_dependencies=[]
+        if sideeffects==None:
+            sideeffects=[]
 
         # instantiate sideeffect classes
-        self.sideeffect_dependencies=[sideeffect() if inspect.isclass(sideeffect) else sideeffect for sideeffect in sideeffect_dependencies]
+        self.sideeffects=[sideeffect() if inspect.isclass(sideeffect) else sideeffect for sideeffect in sideeffects]
 
         # analyze sideeffect state variable access
         reset_states=set()
-        for se in self.sideeffect_dependencies:
+        for se in self.sideeffects:
             reset_states|=se.get_reset_states()
 
         # analyze reset_state
         reset_states|=self.get_reset_states()
 
         cls=self.__class__
-        allowed_ids=getattr(cls, 'ALLOWED_GLOBAL_IDS', [])
+        allowed_global_ids=[] if allowed_global_ids==None else allowed_global_ids
+        param_ids=[] if param_ids==None else param_ids
 
         self.funcdefs={}
         for n,gf in inspect.getmembers(self,predicate=lambda x:isinstance(x,GFuncWrap)):
@@ -1589,13 +1600,14 @@ class GrammaGrammar(object):
             gf=gf.copy()
 
             if gf.analyzer==None:
-                GFuncAnalyzer(cls,gf,reset_states,allowed_ids)
+                GFuncAnalyzer(cls,gf,reset_states,param_ids=param_ids, allowed_global_ids=allowed_global_ids)
 
             self.funcdefs[gf.fname]=gf
 
         # record metadata
         self.reset_states=reset_states
-        self.allowed_ids=allowed_ids
+        self.allowed_global_ids=allowed_global_ids
+        self.param_ids=param_ids
 
         self.ruledefs={}
         lt=GrammaGrammar.ruledef_parser.parse(gramma_expr_str)
@@ -1642,7 +1654,7 @@ class GrammaGrammar(object):
         if isinstance(v,GTok):
             v=v.as_native()
         elif isinstance(v,GCode):
-            v=v(x.state)
+            v=v.invoke(x)
         setattr(x.state,n.as_str(), v)
         yield ''
 
@@ -1691,12 +1703,12 @@ class GrammaGrammar(object):
                 yield ge.as_str()
         elif isinstance(ge,GTern):
             def g(x):
-                s=yield (ge.children[0] if ge.compute_case(x.state) else ge.children[1])
+                s=yield (ge.children[0] if ge.compute_case(x) else ge.children[1])
                 yield s
         elif isinstance(ge,GAlt):
             if ge.dynamic:
                 def g(x):
-                    s=yield x.random.choice(ge.children,p=ge.compute_weights(x.state))
+                    s=yield x.random.choice(ge.children,p=ge.compute_weights(x))
                     yield s
             else:
                 def g(x):

@@ -17,10 +17,10 @@ class DemoGrammar(GrammaGrammar):
 
     '''
 
-    ALLOWED_GLOBAL_IDS=['g_allowed']
+    
 
     def __init__(self):
-        GrammaGrammar.__init__(self, type(self).G, [DepthTracker])
+        GrammaGrammar.__init__(self, self.G, sideeffects=[DepthTracker],allowed_global_ids=['g_allowed'])
 
     def reset_state(self,state):
         super().reset_state(state)
@@ -89,7 +89,7 @@ class ArithmeticGrammar(GrammaGrammar):
     '''
 
     def __init__(x):
-        GrammaGrammar.__init__(x,type(x).G, sideeffect_dependencies=[DepthTracker])
+        GrammaGrammar.__init__(x,type(x).G, sideeffects=[DepthTracker])
 
 class ScopingGrammar(GrammaGrammar):
 
@@ -108,7 +108,7 @@ class ScopingGrammar(GrammaGrammar):
     '''
 
     def __init__(x):
-        GrammaGrammar.__init__(x,type(x).G, sideeffect_dependencies=[DepthTracker])
+        GrammaGrammar.__init__(x,type(x).G, sideeffects=[DepthTracker])
 
     def reset_state(self,state):
         state.vars=set()
@@ -151,7 +151,7 @@ def demo_sampling():
 
 def demo_recursion_limits():
     ruleDepthTracker=DepthTracker(lambda ge:isinstance(ge,GRule))
-    g=GrammaGrammar('start :=  `depth<=3` ? "a" . start : "" ;', [ruleDepthTracker])
+    g=GrammaGrammar('start :=  `depth<=3` ? "a" . start : "" ;', sideeffects=[ruleDepthTracker])
     sampler=GrammaSampler(g)
     sampler.random.seed(0)
     for i in range(10):
@@ -304,7 +304,7 @@ class FuncyGrammar(GrammaGrammar):
     '''
 
     def __init__(self):
-        GrammaGrammar.__init__(self, type(self).G, [DepthTracker])
+        GrammaGrammar.__init__(self, type(self).G, sideeffects=[DepthTracker])
 
     def reset_state(self, state):
         state.revcalled=False
@@ -386,7 +386,7 @@ def demo_fit():
         '''
     
         def __init__(x):
-            GrammaGrammar.__init__(x,type(x).G, sideeffect_dependencies=[DepthTracker])
+            GrammaGrammar.__init__(x,type(x).G, sideeffects=[DepthTracker])
 
         @gfunc
         def const(x):
@@ -501,8 +501,8 @@ def demo_tracetree_analysis():
  
 def demo_grammar_analysis():
     class GStub(GrammaGrammar):
-        def __init__(self):
-            GrammaGrammar.__init__(self,'start := "";')
+        def __init__(self,**kw):
+            GrammaGrammar.__init__(self,'start := "";',**kw)
 
     def eval_grammar(Grammar,expect):
         # if a state variable is used by a gfunc, it must be reset
@@ -540,7 +540,8 @@ def demo_grammar_analysis():
 
     # unless explicitly allowed...
     class AnalyzeMeGrammar2fix(GStub):
-        ALLOWED_GLOBAL_IDS=['g_global']
+        def __init__(self):
+            GStub.__init__(self,allowed_global_ids=['g_global'])
         @gfunc
         def f(x):
             yield str(g_global)
@@ -727,22 +728,56 @@ def demo_profile():
     import cProfile
     cProfile.run('demo_timing()')
 
+
+
+def demo_params():
+    #  anonymous grammar with some gcode using a param
+    g=GrammaGrammar('''
+        start:="a"{`x`};
+    ''',param_ids=['x'])
+    sampler=GrammaSampler(g)
+    sampler.update_params(x=7)
+    assert(sampler.sample()=='a'*7)
+    sampler.update_params(x=3)
+    assert(sampler.sample()=='a'*3)
+
+    # named class with a gfunc using a param
+    class ParamsGrammar(GrammaGrammar):
+        G='''
+            start:=f();
+        '''
+        def __init__(self):
+            GrammaGrammar.__init__(self, self.G, param_ids=['x'])
+        @gfunc
+        def f(x):
+            yield str(x.params.x)
+
+    g=ParamsGrammar()
+    sampler=GrammaSampler(g)
+    sampler.update_params(x=7)
+    assert(sampler.sample()=='7')
+    sampler.update_params(x=3)
+    assert(sampler.sample()=='3')
+
+
 if __name__=='__main__':
-    #demo_parser()
-    #demo_sampling()
-    #demo_recursion_limits()
-    #demo_tracetree()
-    #demo_transform()
-    #demo_random_states()
-    #demo_resample()
+    demo_parser()
+    demo_sampling()
+    demo_recursion_limits()
+    demo_tracetree()
+    demo_transform()
+    demo_random_states()
+    demo_resample()
     demo_resample_funcy()
-    #demo_tracetree_analysis()
-    #demo_grammar_analysis()
-    #demo_meta()
+    demo_tracetree_analysis()
+    demo_grammar_analysis()
+    demo_meta()
+    demo_params()
 
     #demo_fit()
 
     #demo_timing()
     #demo_profile()
+
 
 # vim: ts=4 sw=4
