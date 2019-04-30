@@ -247,7 +247,7 @@ r'''
 
 
     TODO:
-        - analyze grammar to identify recusions.. insert parameters to
+        - analyze grammar to identify recursions.. insert parameters to
           alternations to help control depth.
         - examples
             - resample: sample, pick an "interesting" node, resample..
@@ -572,16 +572,16 @@ gramma_grammar = r"""
 
     number: INT|FLOAT
 
-    range : "[" ESCAPED_CHAR  ".." ESCAPED_CHAR "]"
+    range : "[" CHAR  ".." CHAR "]"
 
     NAME : /[a-z_][a-z_0-9]*/
 
-    string : ESCAPED_CHAR|STRING|LONG_STRING
+    string : STRING|CHAR|LONG_STRING
 
     code : /`[^`]*`/
 
     STRING : /[ubf]?r?("(?!"").*?(?<!\\)(\\\\)*?"|'(?!'').*?(?<!\\)(\\\\)*?')/i
-    ESCAPED_CHAR.2 : /'([^\']|\\([\nrt']|x[0-9a-fA-F][0-9a-fA-F]))'/
+    CHAR.2 : /'([^\\']|\\([\nrt']|x[0-9a-fA-F][0-9a-fA-F]))'/
     LONG_STRING.2: /[ubf]?r?("(?:"").*?(?<!\\)(\\\\)*?"(?:"")|'''.*?(?<!\\)(\\\\)*?''')/is
 
     COMMENT : /#[^\n]*/

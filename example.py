@@ -126,9 +126,16 @@ class ScopingGrammar(GrammaGrammar):
 
 
 def demo_parser():
-    g=DemoGrammar()
+    g=GrammaGrammar('start:="";')
+    #g=DemoGrammar()
+    print(g.parse(r'''
+        ['a'..'z']
+    '''))
+    print(g.parse(r'''
+        '\''."insinglequotes".'\''
+    '''))
     print(g.parse('''
-        "a"| `depth` "b"
+        "a"| `15` "b"
     '''))
     print(g.parse('''
         "a"{1,2}
