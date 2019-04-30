@@ -61,6 +61,8 @@ r'''
         x{geom(3)}
             - sample a number n from a geometric distribution with mean 3, then
               generate x n times
+        x{3,,geom(3)}
+            - same as above, but reject n less than 3
         x{1,5,geom(3)}
             - same as above, but reject n outside of the interval [1,5]
 
@@ -550,7 +552,7 @@ gramma_grammar = r"""
 
     ?rep: atom ( "{" rep_args "}" )?
 
-    rep_args : INT? (COMMA INT)? (COMMA (func|code))?
+    rep_args : INT? (COMMA INT?)? (COMMA (func|code))?
             | func | code
 
     ?atom : string
@@ -1031,28 +1033,37 @@ class GRep(GInternal):
             dist='unif'
             f=lambda lo,hi:lambda x:x.random.randint(lo,hi+1)
 
+        #print('lenargs=%d' % len(args))
+
         # parse bounds
         if len(args)==0:
+            # {`dynamic`}
             lo=0
             hi=2**32
         elif len(args)==1:
-            # {2}
+            # {2} or {2,`dynamic`}.. where the latter is pretty stupid
             lo=hi=args[0].as_int()
         elif len(args)==2:
-            # {,2}
-            if str(args[0])!=',':
-                raise GrammaParseError('expected comma in repetition arg "%s"' % lt)
-            lo=0
-            hi=args[1].as_int()
+            # {0,,`dynamic`}
+            if(str(args[1])==','):
+                lo=args[0].as_int()
+                hi=2**32
+            else:
+                # {,2} or {,2,`dynamic`}
+                if str(args[0])!=',':
+                    raise GrammaParseError('expected comma in repetition arg "%s"' % lt)
+                lo=0
+                hi=args[1].as_int()
         elif len(args)==3:
-            # {2,3}
+            # {2,3} or {2,3,`dynamic`}
             lo=args[0].as_int()
             hi=args[2].as_int()
         else:
             raise GrammaParseError('failed to parse repetition arg "%s"' % lt)
 
         rgen=f(lo,hi)
-        #print('lo=%d hi=%d' % (lo,hi))
+        # print(lt)
+        #print('lo=%d hi=%d\n\n' % (lo,hi))
         return GRep([child],lo,hi,rgen,dist)
 
 class GRange(GExpr):
@@ -1610,7 +1621,10 @@ class GrammaGrammar(object):
         self.param_ids=param_ids
 
         self.ruledefs={}
-        lt=GrammaGrammar.ruledef_parser.parse(gramma_expr_str)
+        self.add_rules(gramma_expr_str)
+
+    def add_rules(self, ruledef_str):
+        lt=GrammaGrammar.ruledef_parser.parse(ruledef_str)
         for ruledef in lt.children:
             self.ruledefs[ruledef.children[0].value]=GExpr.parse_larktree(ruledef.children[1])
         for ge in self.ruledefs.values():
@@ -1665,10 +1679,12 @@ class GrammaGrammar(object):
                 1) compute meta for GCode nodes
                 2) lookup GFuncs
                 3) lookup rules
+
         '''
         if isinstance(ge,GFunc):
             if ge.gf!=None:
-                raise GrammaGrammarException('GFunc reference repeated in expression!')
+                # already finalized
+                return
             gf=self.funcdefs.get(ge.fname,None)
             if gf==None:
                 raise GrammaGrammarException('no gfunc named %s available to %s' % (ge.fname,self.__class__.__name__))
@@ -1678,6 +1694,9 @@ class GrammaGrammar(object):
                 gf.analyzer(ge)
 
         elif isinstance(ge,GRule):
+            if ge.rhs!=None:
+                # already finalized
+                return
             rhs=self.ruledefs.get(ge.rname,None)
             if rhs==None:
                 raise GrammaGrammarException('no rule named %s available to %s' % (ge.rname,self.__class__.__name__))
