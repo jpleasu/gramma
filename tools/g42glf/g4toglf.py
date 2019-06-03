@@ -1,11 +1,14 @@
 #!/usr/bin/env python2
 '''
+- emits "neg" gfunc for negated character ranges.
+- emits "`maxrep`" upper range value for unbounded iterations
+
 TODO
 ====
 - generator should insert whitespace between tokens if g4 ignores it.. each
   (non fragment?) token could be preceded by a space?
-
 '''
+from __future__ import absolute_import, division, print_function
 
 import sys
 
@@ -18,15 +21,15 @@ from antlr4parser.ANTLRv4Parser import ANTLRv4Parser
 
 from builtins import super
 
-def dump(n,indent=''):
+def dump(n,indent='',file=sys.stdout):
   if n.getChildCount()>0:
-    print('%s%s' % (indent,type(n).__name__))
+    print('%s%s' % (indent,type(n).__name__),file=file)
     for c in n.getChildren():
-      dump(c,indent+'  ')
+      dump(c,indent+'  ',file=file)
   elif isinstance(n, TerminalNode):
-    print('%s"%s"' % (indent,n.getText()))
+    print('%s"%s"' % (indent,n.getText()),file=file)
   else:
-    print('%s%s: "%s"' % (indent,type(n).__name__, n.getText()))
+    print('%s%s: "%s"' % (indent,type(n).__name__, n.getText()),file=file)
 
 def gchar(c):
   'unicode char -> gramma char'
@@ -62,6 +65,8 @@ class TransformingVisitor(antlr4.ParseTreeVisitor):
     return '|'.join(self.visit(c) for c in alt.getChildren() if not isinstance(c, TerminalNode))
     
   def visitAlternative(self, alt):
+    if alt.getChildCount()==0:
+      return "''"
     s='.'.join(self.visit(e) for e in alt.element())
     if alt.elementOptions()!=None:
       if s=='':
@@ -101,11 +106,21 @@ class TransformingVisitor(antlr4.ParseTreeVisitor):
       if neg:
         return 'neg(%s)' % ns
       return ns
+    elif s[0]=="'" and s[-1]=="'":
+      # single character
+      return s
     else:
       return 'PARSEME_RANGE(%s)' % r.getText()
 
   def visitNotSet(self,ns):
-    return self.do_range(ns)
+    return 'neg(%s)' % self.visit(ns.getChild(1))
+  def visitBlockSet(self,e):
+    children=list(e.getChildren())[1:-1]
+    # block sets are only within NotSet, so don't wrap w/ parens
+    return ''.join(self.visit(c) for c in children) # use existing '|' tokens from antlr
+
+  def visitSetElement(self,e):
+    return self.do_range(e)
 
   def visitTerminal(self, la):
     s=la.getText()
@@ -114,6 +129,10 @@ class TransformingVisitor(antlr4.ParseTreeVisitor):
       return s # o/w need to escape quotes
     elif s.startswith("[") and s.endswith("]"):
       return self.do_range(la)
+    elif s=='.':
+      return 'any()'
+    elif s=='EOF':
+      return 'eof()'
     return s
 
 
@@ -122,14 +141,15 @@ class TransformingVisitor(antlr4.ParseTreeVisitor):
 
   def visitEbnfSuffix(self,s):
     s=s.getText()
-    if s=='*':
-      return '{0,_MAX_REP}'
-    elif s=='+':
-      return '{1,_MAX_REP}'
-    elif s=='?':
+    ## suffix can be lazy, e.g. "*?".. we don't care.
+    if s[0]=='*':
+      return '{0,,`maxrep`}'
+    elif s[0]=='+':
+      return '{1,,`maxrep`}'
+    elif s[0]=='?':
       return '{0,1}'
     else:
-      return s
+      return 'PARSEME_SUFFIX(%s)' % s
 
   def visitParserRuleSpec(self, pr):
     lhs=pr.RULE_REF()
@@ -160,7 +180,7 @@ class TransformingVisitor(antlr4.ParseTreeVisitor):
 
 def gettree():
   #lexer = ANTLRv4Lexer(antlr4.FileStream('grammars-v4/antlr4/examples/Hello.g4'))
-  lexer = ANTLRv4Lexer(antlr4.FileStream('grammars-v4/antlr4/examples/CPP14.g4'))
+  lexer = ANTLRv4Lexer(antlr4.FileStream('grammars-v4/antlr4/examples/CPP14.g4', encoding='utf8'))
   stream = antlr4.CommonTokenStream(lexer)
   parser = ANTLRv4Parser(stream)
   return parser.grammarSpec()
@@ -179,9 +199,10 @@ if __name__ == '__main__':
   #do_dump()
   #do_visit()
 
-  lexer = ANTLRv4Lexer(antlr4.FileStream(sys.argv[1]))
+  lexer = ANTLRv4Lexer(antlr4.FileStream(sys.argv[1],encoding='utf8'))
   stream = antlr4.CommonTokenStream(lexer)
   parser = ANTLRv4Parser(stream)
   tree = parser.grammarSpec()
-  #dump(tree)
-  print(TransformingVisitor().visit(tree))
+  dump(tree)
+  print(TransformingVisitor().visit(tree),file=sys.stderr)
+  #print(TransformingVisitor().visit(tree))

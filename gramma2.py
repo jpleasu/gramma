@@ -576,7 +576,7 @@ gramma_grammar = r"""
 
     range : "[" CHAR  ".." CHAR "]"
 
-    NAME : /[a-z_][a-z_0-9]*/
+    NAME : /[a-zA-Z_][a-zA-Z_0-9]*/
 
     string : STRING|CHAR|LONG_STRING
 
@@ -1761,6 +1761,7 @@ class GrammaGrammar(object):
         else:
             raise GrammaGrammarException('unrecognized expression: (%s) %s' % (type(ge), ge))
         return g
+
 
 class CacheConfig(object):
     __slots__='randcache','statecache'
