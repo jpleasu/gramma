@@ -134,11 +134,12 @@ class VariableAccesses(ast.NodeVisitor):
 
     def visit_Assign(self,ass):
         if len(ass.targets)!=1:
-            astpretty.pprint(ass)
+            #astpretty.pprint(ass)
             raise ValueError('unexpected number of targets in assign')
+        self.visit(ass.value)
+
         tn=[NamePath(x) for x in detup(ass.targets[0])]
         tv=detup(ass.value)
-        self.visit(ass.value)
         for n,v in zip(tn,tv):
             self.defs(n,v)
 
@@ -149,7 +150,7 @@ class VariableAccesses(ast.NodeVisitor):
     def visit_Name(self,name):
         i=next(i for i in reversed(range(len(self.stack)-1)) if not isinstance(self.stack[i], (ast.Attribute, ast.Subscript)))
         n=NamePath(self.stack[i+1])
-        p=self.stack[i]
+        #p=self.stack[i]
         self.uses(n)
 
     def visit_Lambda(self,lam):
@@ -173,6 +174,17 @@ class VariableAccesses(ast.NodeVisitor):
             self.visit(a)
         for a in call.keywords:
             self.visit(a)
+
+    def visit_ListComp(self, lc):
+        for g in lc.generators:
+            tn=[NamePath(x) for x in detup(g.target)]
+            for n in tn:
+                self.defs(n, g)
+            for i in g.ifs:
+                self.visit(i)
+            self.visit(g.iter)
+        self.visit(lc.elt)
+
     def defs(self, n, v):
         pass
     def uses(self, n):

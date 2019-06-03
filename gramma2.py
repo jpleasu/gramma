@@ -559,7 +559,7 @@ gramma_grammar = r"""
          | rule
          | func
          | range
-         | "(" alt ")"
+         | "(" tern ")"
 
     rule : NAME
 
@@ -1478,6 +1478,7 @@ class GFuncAnalyzer(pysa.VariableAccesses):
             else:
                 self._raise('unexpected SamplerInterface field "%s", only "random", "state", and "params" are accessible' % n[1:].s)
         else:
+            #astpretty.pprint(self.stack[-2])
             self._raise('forbidden access to variable "%s"' % n.s)
 
     def mods(self, n, v):
