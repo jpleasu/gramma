@@ -723,7 +723,7 @@ class GTok(GExpr):
 
     @staticmethod
     def new_empty():
-        return GTok.as_str('')
+        return GTok.from_str('')
 
 class GInternal(GExpr):
     '''
@@ -2023,20 +2023,43 @@ class TraceNode(object):
 
         cachecfg=CacheConfig()
 
+        # the enumeration below is done left to right, so our accumulation of
+        # statevar should be correct
+        # these are the statevars defed by defintinitized elements.. e.g. that
+        # won't be available unless they're explicitly provided
+        statevar_defs=set()
+
         def recurse(t):
             ''' 
                 return resampled, gexpr
                     where resampled is True if a subexpression will be resampled
             '''
+            meta=t.ge.get_meta()
+
             if pred(t):
-                outrand=t.last(lambda n:n.ge.get_meta().uses_random)
-                if outrand!=None:
-                    ## resample ##
-                    #slot=cachecfg.new_randstate(outrand.outrand)
-                    #return GCat([grammar.parse('reseed_rand()'),t.ge.copy(),grammar.parse("load_rand('"+slot+"')")])
-                    # assume "fresh" incoming random and no need to resume outgoing random
+                if statevar_defs.isdisjoint(meta.statevar_uses):
+                    for v in meta.statevar_defs:
+                        statevar_defs.discard(v)
                     return True, t.ge.copy()
-                    #return True, GCat([GTok.from_str('>>>>>>>'),t.ge.copy(),GTok.from_str('<<<<<<<<')])
+                l=[]
+                for varname in statevar_defs&meta.statevar_uses:
+                    slot=cachecfg.new_state(getattr(t.instate,varname))
+                    l.append(grammar.parse('''load('%s','%s')''' % (varname,slot) ) )
+
+                l.append(t.ge.copy())
+                for v in meta.statevar_defs:
+                    statevar_defs.discard(v)
+
+                return True,GCat(l)
+
+                ## generate new random ##
+                #slot=cachecfg.new_randstate(outrand.outrand)
+                #return GCat([grammar.parse('reseed_rand()'),t.ge.copy(),grammar.parse("load_rand('"+slot+"')")])
+                #return True, GCat([GTok.from_str('>>>>>>>'),t.ge.copy(),GTok.from_str('<<<<<<<<')])
+
+            statevar_defs0=statevar_defs.copy()
+            for v in meta.statevar_defs:
+                statevar_defs.add(v)
 
             ## definitize ##
             ge=t.ge
@@ -2074,7 +2097,25 @@ class TraceNode(object):
                     else:
                         # use the computed recursion on the tracenode child
                         args.append(l[ta[0]][1])
-                return True, GFunc(ge.fname,args,ge.gf)
+
+                newgf=GFunc(ge.fname,args,ge.gf)
+
+                # if this function needs state, load what it had last time
+                # XXX it's getting a new random, so this isn't definitized!
+                # given that the gfunc might use random in and amongst samples,
+                # AND we might use rand in combination with samples, it's messy
+                # to recreate..
+                #   load_rand('gf_inrand').gf(arg1.load_rand('arg1_outrand'), ...).reseed_rand()
+                if statevar_defs0.isdisjoint(meta.statevar_uses):
+                    return True, newgf
+
+                l=[]
+                for varname in statevar_defs0&meta.statevar_uses:
+                    slot=cachecfg.new_state(getattr(t.instate,varname))
+                    l.append(grammar.parse('''load('%s','%s')''' % (varname,slot) ) )
+                l.append(newgf)
+
+                return True, GCat(l)
             else:
                 raise ValueError('unknown GExpr node type: %s' % type(ge))
 
@@ -2123,7 +2164,7 @@ class Tracer(SideEffect):
         if m.uses_random:
             self.tt.inrand=x.random.r.get_state()
         if m.statevar_uses:
-            self.tt.instate=type('',(),{})()
+            self.tt.instate=type('InState',(),{})()
             for varname in m.statevar_uses:
                 setattr(self.tt.instate, varname, copy.deepcopy(getattr(x.state,varname)))
         return None
@@ -2135,7 +2176,7 @@ class Tracer(SideEffect):
         if m.uses_random:
             self.tt.outrand=x.random.r.get_state()
         if m.statevar_defs:
-            self.tt.outstate=type('',(),{})()
+            self.tt.outstate=type('OutState',(),{})()
             for varname in m.statevar_defs:
                 setattr(self.tt.outstate, varname, copy.deepcopy(getattr(x.state,varname)))
 
