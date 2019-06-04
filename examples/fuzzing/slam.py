@@ -191,7 +191,7 @@ class Slammer():
 
 slammer = Slammer(sys.argv[1])
 
-#import gen_greatview as greatview
+#import greatview
 #g = greatview.Greatview(sys.argv[2])
 
 import cml
@@ -204,83 +204,87 @@ tests = 0
 
 def no_resample():
     global tests
-    for (st, x) in g.generate():
+    sampler=GrammaSampler(g)
+    while True:
+        x=sampler.sample()
         #slammer.slam_one(x)
         slammer.afl_one(x)
 
 def use_resample():
+    sampler0=GrammaSampler(g)
+
+    sampler=GrammaSampler(g)
+    tracer=Tracer()
+    sampler.add_sideeffects(tracer)
+
     while True:
-        x = g.build_richsample(np.random.get_state())
-        progress = slammer.afl_one(x.s)
+        x=sampler.sample()
+        progress = slammer.afl_one(x)
         # progress = slammer.afl_one('new num a 10\n\x00')
         # exit(0)
         progress = 0
         if progress:
-            nesting_nodes=[rr for rr in x.genwalk() if isinstance(rr.gt,GRule) and rr.gt.rname=='nesting']
+            tt=tracer.tracetree
+            nesting_nodes=[n for n in tt.gennodes() if isinstance(n.ge,GFunc) and n.ge.fname=='nesting']
             node = np.random.choice(nesting_nodes)
-            saved_state = node.inrand
-            node.inrand = None
-            for s in islice(g.gen_resamples(x),20):
-                slammer.afl_one(s)
-            node.inrand = saved_state
-            
+            rge,cfg=tt.resample(g,lambda t:t==node)
+            for i in range(20):
+                slammer.afl_one(sampler0.sample(rge))
+
 np.random.seed()
-def slam_sample():
-    x = g.build_richsample(np.random.get_state())
-    nesting_nodes=[rr for rr in x.genwalk() if isinstance(rr.ogt,GRule) and rr.ogt.rname=='nesting']
-    l = len(nesting_nodes)
+def slam_sample(pred=lambda n:isinstance(n.ge,GFunc) and n.ge.fname=='nesting'):
+    sampler0=GrammaSampler(g)
+
+    sampler=GrammaSampler(g)
+    tracer=Tracer()
+    sampler.add_sideeffects(tracer)
+
+    x = sampler.sample()
+    tt=tracer.tracetree
+    nodes=[n for n in tt.gennodes() if pred(n)]
+
+    l = len(nodes)
     rule_cnt = [0 for y in xrange(0, l)]
-    slammer.afl_one(x.s)
+    slammer.afl_one(x)
     while True:
         idx = np.random.randint(l)
-        node = nesting_nodes[idx]
-        saved_state = node.inrand
-        node.inrand = None
-
-        for s in islice(g.gen_resamples(x),1):
+        node = nodes[idx]
+        rge,cfg=tt.resample(g,lambda t:t==node)
+        for i in range(1):
+            s=sampler0.sample(rge)
             res = slammer.afl_one(s)
             if res > 0:
                 rule_cnt[idx] += 1
                 print 'cnt:', rule_cnt
-        node.inrand = saved_state
-            
-def slam_sample():
-    x = g.build_richsample(np.random.get_state())
-    nesting_nodes=[rr for rr in x.genwalk()]
-    l = len(nesting_nodes)
-    rule_cnt = [0 for y in xrange(0, l)]
-    slammer.afl_one(x.s)
-    while True:
-        idx = np.random.randint(l)
-        node = nesting_nodes[idx]
-        saved_state = node.inrand
-        node.inrand = None
 
-        for s in islice(g.gen_resamples(x),10):
-            res = slammer.afl_one(s)
-            if res > 0:
-                rule_cnt[idx] += 1
-#                print 'cnt:', rule_cnt
-        node.inrand = saved_state
-            
-def slam_det():
-    x = g.build_richsample(np.random.get_state())
-    nesting_nodes=[rr for rr in x.genwalk()]
-    l = len(nesting_nodes)
+def slam_det(pred=lambda n:isinstance(n.ge,GFunc) and n.ge.fname=='nesting'):
+    sampler0=GrammaSampler(g)
+
+    sampler=GrammaSampler(g)
+    tracer=Tracer()
+    sampler.add_sideeffects(tracer)
+
+    x = sampler.sample()
+    tt=tracer.tracetree
+    nodes=[n for n in tt.gennodes() if pred(n)]
+
     rule_cnt = [0 for y in xrange(0, l)]
-    slammer.afl_one(x.s)
+    slammer.afl_one(x)
     for idx in xrange(0,l):
         node = nesting_nodes[idx]
-        saved_state = node.inrand
-        node.inrand = None
 
-        for s in islice(g.gen_resamples(x),100):
+        rge,cfg=tt.resample(g,lambda t:t==node)
+        for i in range(100):
+            s=sampler0.sample(rge)
             res = slammer.afl_one(s)
             if res > 0:
                 rule_cnt[idx] += 1
                 print 'cnt:', rule_cnt
-        node.inrand = saved_state
-            
+
 #use_resample()
-slam_sample()
+#slam_sample()
+slam_sample(lambda n:True)
 #slam_det()
+#slam_det(lambda n:True)
+
+# vim: ts=4 sw=4

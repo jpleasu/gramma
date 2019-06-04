@@ -33,13 +33,13 @@ set_view := "set " . old('view') . " byteSize " . old('num') . "\n";
 
 del := "del " . (old('num') | old('arr') | old('view')) . "\n";
 
-nesting :=  rlim(
+nesting :=  `depth<=5`?(
       new_num . nesting{0,2} . get_num
     | new_arr . nesting{0,2} . new_view{0,1} . nesting{0,2} . get_arr. nesting{0,1}
     | ifdef('num', set_num)
     | ifdef('arr', "del ". old('arr')."\n")
     | ifdef('view', ifdef('num', set_view|get_view))
-  , 5, "")
+  ):""
 ;
 
 # nesting := new_num . new_arr . new_view . set_view . set_num . get_view

@@ -22,10 +22,10 @@ ver_check := '\x08' . data;
 attribute := (' ' . name . '=' . '"' . data . '"'){0,2};
 content := data
 	 | (element . data){1,3};
-element := rlim(
+element := `depth<=3`?(
 	(el_builder(left, name, attribute, content, right) |
-	 left . name . attribute . '/' . right),
-	3, "");
+	 left . name . attribute . '/' . right)
+	):"";
 
 start := element;
 #start := init . size(data{0,5});
