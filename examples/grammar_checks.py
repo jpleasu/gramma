@@ -8,7 +8,7 @@
 from __future__ import absolute_import, division, print_function
 from builtins import super
 
-from gramma2 import *
+from gramma import *
 
 class GStub(GrammaGrammar):
     def __init__(self,**kw):

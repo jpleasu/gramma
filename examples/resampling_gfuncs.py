@@ -8,7 +8,7 @@ import random
 
 from datetime import datetime,timedelta
 
-from gramma2 import *
+from gramma import *
 
 class FuncyGrammar(GrammaGrammar):
     G=r'''

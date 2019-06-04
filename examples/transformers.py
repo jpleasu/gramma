@@ -8,7 +8,7 @@ from __future__ import absolute_import, division, print_function
 
 import random
 
-from gramma2 import *
+from gramma import *
 
 from simple_grammars import ArithmeticGrammar,VarietyGrammar
 

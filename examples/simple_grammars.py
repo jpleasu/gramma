@@ -7,7 +7,7 @@ simple grammars -- used in other examples
 
 from __future__ import absolute_import, division, print_function
 
-from gramma2 import *
+from gramma import *
 
 class ArithmeticGrammar(GrammaGrammar):
     G=r'''

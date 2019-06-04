@@ -12,7 +12,7 @@ import random
 
 from datetime import datetime,timedelta
 
-from gramma2 import *
+from gramma import *
 
 class FunctionGrammar(GrammaGrammar):
     G=r'''

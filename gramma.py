@@ -3,182 +3,400 @@ r'''
     Overview
     ========
 
-    A Gramma expression is a stochastic expression with string value.
-    Expressions are built from literals, operators, and functions.
+    Expressions in Gramma are probabilistc programs with string value.  They
+    are written in GLF, an extensible syntax for formal language description
+    that resembles Backus-Naur form (BNF).
 
-    The Gramma Language
-    ===================
+    GLF is extended with custom functions implemented in extensions of the base
+    GrammaGrammar class.
 
-        - literals - same syntax as Pytnon strings
-            'this is a string'
-            """this is a (possibly 
-                multiline) string"""
-        - alternation (|) - random choice from alternatives
-            x | y
-        - concatenation (.) - definite concatenation
-            x . y
-        - repetition ({}) - randome repeats
-            x{3}
-                - generate x exactly 3 times
-            x{1,3}
-                - generate a number n uniformly in [1,3] then generate x n
-                  times
-            x{geom(3)}
-                - sample a number n from a geometric distribution with mean 3,
-                  then generate x n times
-            x{1,5,geom(3)}
-                - same as above, but reject n outside of the interval [1,5]
-        - function call (gfuncs) - as defined by Gramma extension
-            f(x)
+    A typical application of Gramma in fuzzing would be as follows:
 
-            - by inheriting the Gramma class and adding decorated functions,
-              the syntax can be extended.  See below.
-            - functions can be stateful, meaning they rely on information
-              stored in the Gramma object.
-            - evaluation is left to right.
-            - functions aren't allowed to "look up" the execution stack, only
-              back.
+        Create a grammar based on the input grammar for the application under
+        test.
 
-    gfuncs
-    ------
-    Functions in Gramma are implemented by @gfunc decorated methods of the
-    Gramma sampler object.  Without narrowing the influence of a gfunc, Gramma
-    assumes it might use any state, which restricts Gramma's ability to optmize
-    sampling from contrained expressions that use it.  For example, consider
-    the expression
-        f() . ("a" | "b") . f()
-    under the constraint
-        cat(child1="x", child2=alt(c=2,alt(c=2,"b")))
-    Because the first call to 'f' might have side effects that the second call
-    relies on, we can't replace it with a constant "x". If, on the other hand,
-    we knew that 'f' was stateless, we could compile the constraints expression
-    to
-        "xa".f()
-    PyDoc of the gfunc decorator gives details.
+        Feed the instrumented application samples and compute a measure of
+        interest for each.
+
+        Tweak numerical parameters of the grammar and/or use previous samples
+        as templates to update the grammar.
+
+        Repeat.
 
 
+    GLF Syntax
+    ==========
 
+    literals - same syntax as Python strings
+        'this is a string'
+        """this is a (possibly 
+            multiline) string"""
 
-    Constraints
-    ===========
+    ternary operator (?:) - choice based on computed boolean
+        `depth<5` ? x : y
+        - the code term, `depth<5`, is a python expression testing the state
+          variables 'depth'.  If the computed result is True, the result is
+          x, else y.
 
-    For parameter estimation and resampling conditional distribtuions, Gramma
-    provides a mechanism to construct and apply _tree constraints_.
+    weighted alternation (|) - weighted random choice from alternatives
+        2 x | 3.2 y | z
+        - selects on of x, y, or z with probability 2/5.3, 2.3/5.3, and 1/5.3
+          respectively.  The weight on z is implicitly 1.
+        - omitting all weights corresponds to flat random choice, e.g.
+            x | y | z
+          selects one of x,y, or z with equal likelihood.
+        - weights can also be code in backticks. For example:
+            recurs := `depth<5` recurs | "token";
+            - this sets the recurse branch weight to 1 (int(True)) if depth <5,
+              and 0 otherwise.
 
-    "Tree constraints" provide a restricted, but useful, filter for the
-    evaluation of a Gramma expression. For example, sampling from
-        ("a" | "b"){1,2}
-    results in "a", "b", "aa", "ab", "ba", "bb", with the diagraphs half as
-    likely as the single character strings.
+    concatenation (.) - definite concatenation
+        x . y
 
-    The execution resulting in "ab" can be depicted with a tree as follows:
+    repetition ({}) - random repeats
+        x{3}
+            - generate x exactly 3 times
+        x{1,3}
+            - generate a number n uniformly in [1,3] then generate x n times
+        x{geom(3)}
+            - sample a number n from a geometric distribution with mean 3, then
+              generate x n times
+        x{3,,geom(3)}
+            - same as above, but reject n less than 3
+        x{1,5,geom(3)}
+            - same as above, but reject n outside of the interval [1,5]
 
-        rep
+     function call (gfuncs) - as defined in a GrammaGrammar subclass
+        f(x)
+
+        - by inheriting the GrammaGrammar class and adding decorated functions,
+          GLF syntax can be extended.  See below.
+        - functions can be stateful, meaning they rely on information stored in
+          the SamplerInterface object.
+        - evaluation is left to right.
+        - functions aren't allowed to "look up" the execution stack, only back.
+
+    TraceTree
+    =========
+    Sampling in Gramma is a form of expression tree evaluation where each node
+    can use a random number generator.  E.g. to sample from
+
+        "a" | "b"{1,5};
+
+    The head of this expression, alternation, randomly chooses between its
+    children, generating either "a" or a random sample of "b"{1,5} with equal
+    odds.
+
+    If "a" is chosen, the sample is complete.  If "b"{1,5} is chosen, its head,
+    the repetition node, draws a random count between 1 and 5, then samples its
+    child, "b", that number of times.  The results are concatenated, returned
+    to the parent alternation node, and the sample is complete.
+
+    Each possibility results in a different tree. Pictorially,
+
+        alt       or         alt
+         |                    |
+        "a"                  rep
+                            /...\
+                           |     |
+                          "b"   "b"
+
+    The Tracer sideeffect computes this, so called, "trace tree", storing
+    random number generator and other state when entering and exiting each
+    node.
+
+    Note: When sampling from a rule, the trace tree resembles the "recursion
+    tree" of the recursion tree method for evaluating recursive programs. For
+    example, a sample from
+
+        r := "a" | "b" . r;
+    
+    could produce the trace tree
+
+        alt
+         |
+        cat
         / \
-      alt alt
        |   |
-       a   b
+      "b" rule(r)
+           |
+          alt
+           |
+          "a"
 
-    Where the rep and each alt have made random choices.  We might be
-    intersested in the other results where some, but not all, of those random
-    decisions are made same way.
+    where the first alternation selected "b" . r, a concatenation whose
+    righthand child samples the rule r recursively.
+    
 
-    For example, we might want the root, rep, to always choose 2 and the second
-    alt to choose "b" -- the resulting constrained sampler would produce "ab"
-    and "bb" with equal probability.
+    Resampling
+    ==========
+    To produce strings similar to previous samples, we can hold fixed (or
+    definitize) part of the corresponding trace tree.  By choosing to replay
+    the context of execution for some but not all nodes of the trace tree, we
+    can effectively create a template from a sample.
 
-    Whatever the representation for constraints, we should be able to combine
-    them with conjuction (and disjunction?) to be efficient.  Tree regular
-    predicate language?
+    The TraceNode object computed by the Tracer sideffect provides an interface
+    for performing the operations presented below.
 
-    The _defining_ constaint on ("a"|"b"){1,2} that produced "ab" is
-        rep(n=2,child1=alt(c=1,child="a"), child2=alt(c=2,child="b"))
-    By omitting the constraint on child1 of the root rep, we get
-        rep(n=2,child2=alt(c=2,child="b"))
-    In this case, we can compile this constrained expression to
-        ("a"|"b")."b"
+    - "resampling" starts with a tracetree and a node. For example, given the
+      GExpr
 
+            a(b(),c(),d())
 
+        To record the random context around "c" we compute:
+
+            save_rand('r0').a(b(),c().save_rand('r1'),d())
+
+        and store r0 and r1.  The random number generator on entering "c" is
+        then reseeded on entry, and resumed with r1 after exiting "c".
+
+            load_rand('r0').a(b(), reseed_rand().c().load_rand('r1'), d())
+
+        we could also choose the reseed explicitly via a load, e.g. if
+        we'd saved a random state "r2" we could use:
+
+            load_rand('r0').a(b(), load_rand(r2).c().load_rand('r1'), d())
+
+    - to handle recursion, we must "unroll" rules until the point where the
+      resampled node occurs.  e.g. the following generates arrows, "---->"
+      with length (minus 1) distributed geometrically.
+
+            r:= "-".r | ">";
+
+        To resample the "r" node that's three deep in the trace tree of
+        "----->", we partially unroll the expression "r":
+
+            "-".("-".("-".r | ">") | ">") | ">";
+            
+        and instrument:
+
+            save_rand('r0').("-".("-".("-"
+                .r.save_rand('r1') | ">") | ">") | ">");
+            
+        then replay with a reseed
+
+            load_rand('r0').("-".("-".("-"
+                .reseed_rand().r.load_rand('r1') | ">") | ">") | ">");
+
+    Rope Aplenty
+    ============
+    GFuncs are (nearly) arbitraty code, so the analysis done by Gramma is
+    necessarily limited.  To understand when Gramma might "give up", examples
+    are given here.
+
+    "Well behaved" GFuncs are generally subsumed by other constructs in Gramma,
+    like ternary operators or dynamic alternations.  Heuristics, therefore,
+    which would apply to "well behaved" gfuncs are avoided, assuming that
+    grammars using gfuncs really need them.
+
+    TraceNode.child_containing
+    --------------------------
+    .. treats gfuncs as atomic. a gfunc can modify the strings that it samples,
+    so Gramma can't tell what parts of the string sampled from a gfunc are from
+    what child.
+
+    TraceNode.resample
+    ------------------
+    When a child node of a gfunc is resampled, Gramma tries to match previously
+    sampled arguments with gexpr children of the original call, so that a new
+    call can be constructed with appropriately sampled/definitized arguments.
+
+        e.g. suppose we have
+
+            choose(X,Y,Z)
+
+        where
+
+            @gfunc
+            def choose(x, a, b, c):
+                if (yield a)=='y':
+                    yield (yield b)
+                else:
+                    yield (yield b)
+
+        The tracetree records the sampled X and _depending on it's value_
+        either the sampled Y or the sampled Z, but not both.
+
+        If we resample (a child of) X, and suppose the original sample had
+        chosen Y. Gramma will use the definitized sample of Y in the 2nd
+        argument and the original expression for Z in the 3rd.
+
+        If we resample (a child of) Y, Y must have been sampled.. so Z was
+        not.. we will use the previous sample for X, which will again choose
+        Y.. what we use in the 3rd argument doesn't matter in this case, but
+        Gramma will use the original Z.
+
+        If we resample X and Y, then it's possible that Z is sampled, since the
+        1st arg might choose differently.
+
+    If an argument is sampled more than once by a gfunc, that's a different story.
+        
+        suppose we have
+
+            bigger("a"{0,5})
+
+        where
+
+            @gfunc
+            def bigger(x, a):
+                a1=(yield a)
+                a2=(yield a)
+                yield (a1 if len(a1)>len(a2) else a2)
+
+        Suppose we resample the longer "a"{0,5} sample. Without replaying the
+        previous sample, there's no way reproduce the function's behavior.  In
+        this case, we therefore resample the entire argument.
 
 
     TODO:
-        - ReplacingSampler and the "replace" function.
-            - expressions composed of stochastic operations that don't
-              influence state are definite strings.
-            - stateful operations must be re-executed with the same incoming
-              state in order to recreate the same (sub)result.
-              - if functions used _labeled_ state, we could define a scope and
-                avoid computation. If all nodes below the sup of nodes using a
-                given label were definite, we could make those functions
-                definite.
+        - analyze grammar to identify recursions.. insert parameters to
+          alternations to help control depth.
+        - examples
+            - resample: sample, pick an "interesting" node, resample..
+                - identify failing nodes by parsing compile error line
+                  references.
+                - AFL
+                - hypothesis testing
+                - function fitting
+                - novelty search
 
-                f(x).x.X.x.g(x)
+            - regression: parameterize alternations w/ independent variables,
+              compute dependent variable.
 
-        - weird effects
-            - Gramma can't guarantee sample production when some stateful nodes
-              are resampled and others are definitized.
-                - with functions:
-                    @gfunc
-                    def f(x):
-                        x.value=x.random.random_sample() >.5:
-                        return ''
-                    @gfunc
-                    def g(x,arg1,arg2):
-                        if x.value:
-                            return x.sample(arg1)
-                        else:
-                            return x.sample(arg2)
-                - and grammar
-                    start := f() . g(A,B);
-                - if we choose to resample f() only
-                    - x.value is set randomly by f
-                    - g is executed because it's stateful, but what variable
-                      does it sample?  we should sample arg1 or arg2, whichever
-                      is chosen implicitly by f.. The replacing sampler will be
-                      wrong half the time.
-                    - what if we resample f() as well as A.  We can only
-                      sensibly do this if we have a sample for B already.
-                    - the idea of re-sampling doesn't make sense, since we
-                      never sampled one of the arguments at all in the first
-                      run.
-            - a more drastic example of the same
-                - with functions:
-                    @gfunc
-                    def f(x):
-                        x.value=x.random.randint(10)
-                        return ''
-                    @gfunc
-                    def g(x,arg):
-                        return ''.join(x.sample(arg) for i in xrange(x.value))
+        - finish TraceNode.resample
+            - when a gfunc is resampled, we should ensure it gets the same
+              state as it would have in the original execution.
 
-                - and grammar
-                    A := f();
-                    B := g('1');
-                    start := A . B;
-                - again, resample only A.  With the ReplacingSampler, B can run
-                  out of samples in an attempt to use the x.value set by g.
+            - low level api allows decisions at each node:
+                - on enter, use saved random, current random
+                - on enter, use saved state or current state for each statevar
+                - "definitize" - shorthand for use saved random and use saved
+                  state
+                - behavior might depend on child's behavior.. e.g. in the
+                  simple resample case, a gfunc with a reampled child must be
+                  executed again, meaning it might need to load the original
+                  state first.
 
-                    
+            - if we assume a new incoming random, we don't need to reseed random..
+              and if the only users of random that follow are also being resampled,
+              we don't need to reload previous random.
+            - if we resample from a statevar using node, we will need to
+              provide the state.. do we assume that successive resample nodes
+              use the corresponding, possibly new, state, or are they all
+              resumed w/ the state they were run with previously?
+                - first off, drop any resample nodes that are children of other
+                  resample nodes.. they won't exist in the new world!
+                - it seems sane that distinct stateful nodes should resume with
+                  the state they had last time.
 
+        - stacked state
+            - finish scoping exampling
+            - to create scoped state, so that a statevar exists only at the
+              depth it's scoped for, e.g.
 
-        abcde
+                r := scoped(definevar(id) . "blah". (r . "blah" . usevar()){2,10} );
 
-                r1
-          r2         r3
-         [0,2)      [2,5)
-         ab         cde
+             where the GrammaGramma child class contains:
 
-  support(e) = { k!00, k!10, k!20 }
+                def reset_state(state):
+                    state.stk=[]
+                    state.stktop=None
+
+                @gfunc
+                def scoped(x,child):
+                    stk=x.state.stk
+                    if len(stk)>0:
+                        # inherit parent scopes values
+                        stk.append(set(stk[-1]))
+                    else:
+                        stk.append(set())
+                    x.state.stktop=stk[-1]
+                    res = yield(child)
+                    stk.pop()
+                    x.state.stktop=stk[-1]
+                    yield res
+
+                @gfunc
+                def definevar(x,id):
+                    id=yield id
+                    x.state.stktop.add(id)
+                    yield id
+
+                @gfunc
+                def usevar(x):
+                    yield random.choice(x.state.stktop)
+
+            - we could also use a sideeffect to manage the stack, then just
+              depend on the stack sideeffect and use it in gfuncs.
+                def push(self,x,ge):
+                    if is_our_node_type(ge):
+                        x.state.stk.push..
+                        return True
+                    return False
+
+                def pop(self,x,w,s):
+                    if w:
+                        x.state.stk.pop...
+
+        - get_reset_states could attempt to guess the type of a state variable
+          by finding the right hand side of assignments to it in reset_state.
+          E.g.  set/dict/list.  That way, method access can be interpreted
+          correctly.
+
+        - analysis in GrammaGrammar constructor.
+            - analyze GCode in parser, so that all calls to "parse" benefit
+              from analysis
+                - store analysis results on GExpr objects (and in grammar?)
+            - the def, load, load_rand, and reseed_rand gfuncs are special.
+                - load/def - the first string argument is the name of the state to
+                  be def'd.
 
 
 '''
 from __future__ import absolute_import, division, print_function
-from builtins import (bytes, str, open, super, range,
-                              zip, round, input, int, pow, object)
-
+import traceback
 import sys
+import time
+if sys.version_info < (3,0):
+    #from builtins import (bytes, str, open, super, range,zip, round, input, int, pow, object)
+    
+    # builtins' object fucks up slots
+    from builtins import (bytes, str, open, super, range,zip, round, input, int, pow)
+    # builtins str also fucks up isinstance(x,str).. use six.string_types
+
+    import __builtin__
+
+    def func_name(f):
+        return f.func_name
+
+    def ast_argname(a):
+        return a.id
+
+    def perf_counter():
+        return time.clock()
+
+else:
+    import builtins as __builtin__
+    from functools import reduce
+
+    def func_name(f):
+        return f.__name__
+
+    xrange=range
+
+    def ast_argname(a):
+        return a.arg
+
+    def perf_counter():
+        return time.perf_counter()
+
+
+import copy
+
 #sys.setrecursionlimit(20000)
 sys.setrecursionlimit(200000)
+
+from six import string_types, with_metaclass
 
 import lark
 
@@ -192,101 +410,128 @@ from collections import namedtuple
 
 from functools import wraps
 
-_gfunc_defaults=dict(
-        stateful=True
-)
+import textwrap
+
+import numbers
+
+import logging
+
+try:
+    import astpretty
+except ImportError:
+    pass
+
+
+import pysa
+
+logging.basicConfig(format='%(asctime)-15s.%(msecs)d [%(name)s]: %(message)s', datefmt="%Y-%m-%d %H:%M:%S", level=logging.DEBUG)
+log=logging.getLogger('gramma')
+
+class GExprMetadata(object):
+    '''
+    state and rand metadata for use by TraceNode in resampling
+    '''
+    __slots__='statevar_defs','statevar_uses','uses_random','samples'
+
+    def __init__(self,statevar_defs=None,statevar_uses=None,samples=False,uses_random=False):
+        self.statevar_defs=set() if statevar_defs==None else statevar_defs
+        self.statevar_uses=set() if statevar_uses==None else statevar_uses
+        self.samples=samples
+        self.uses_random=uses_random
+
+    def __str__(self):
+        l=[]
+        if len(self.statevar_defs)>0:
+            l.append('defs=%s' % ','.join(sorted(self.statevar_defs)))
+        if len(self.statevar_uses)>0:
+            l.append('uses=%s' % ','.join(sorted(self.statevar_uses)))
+        if self.uses_random:
+            l.append('uses_random')
+        return ' '.join(l)
+    def copy(self):
+        return GExprMetadata(copy.deepcopy(self.statevar_defs), copy.deepcopy(self.statevar_uses), self.samples, self.uses_random)
+
+    def __or__(self, other):
+        return GExprMetadata(self.statevar_defs|other.statevar_defs,
+                self.statevar_uses|other.statevar_uses,
+                self.samples|other.samples, self.uses_random|other.uses_random)
+
+GExprMetadata.DEFAULT=GExprMetadata()
+GExprMetadata.DEFAULT_RANDOM=GExprMetadata(uses_random=True)
+
+class GFuncWrap(object):
+    __slots__='f','fname','analyzer','meta'
+    def __init__(self,f,fname=None, analyzer=None, meta=None):
+        self.f=f
+        self.fname=fname
+        self.analyzer=analyzer
+        self.meta=GExprMetadata.DEFAULT.copy() if meta==None else meta
+
+    def __call__(self,*l,**kw):
+        return self.f(*l,**kw)
+
+    def __str__(self):
+        return 'gfunc %s%s %s' % (self.fname, ' %s' % self.analyzer if self.analyzer!=None else '', self.meta)
+
+    def copy(self):
+        return GFuncWrap(self.f, self.fname, self.analyzer, self.meta.copy())
+
 def gfunc(*args,**kw):
     '''
-        Gramma function decorator.
+        GrammaGrammar function decorator.
 
-        To add functions to a Gramma extension language, annote methods of the
-        Gramma child class with @gfunc.
+        To extend GLF, annote methods of a GrammaGrammar child class with
+        @gfunc.
 
         A gfunc
-            1) mustn't be static - so it's first argument will be the Gramma
-               instance it's designed for
-            2) mustn't access global variables
-            3) must store any state as fields of the Gramma instance
-            4) may accept additional GTree arguments
-            5) mustn't take keyword arguments
-            6) may sample from GTree arguments using the Gramma instance
-            7) may access entropy from the Gramma instance
+            *) has prototype
+                    f(x,args*)
+                where
+                    x is the gfunc interface:
+                        x.state - a GrammaState object for managing all state
+                        x.random - a GrammaRandom object for all entropy
+
+                    args are the arguments of f as GExpr elements.  In
+                    particular, "constants" are are type GTok and must be
+                    converted, and generate GEXpr objects can be sampled from.
+
+            *) mustn't access global variables
+            *) may store state as fields of the GrammaState instance, state
+            *) mustn't take additional keyword arguments, only "grammar",
+                and "state" are allowed.
+            *) may sample from GExpr arguments by yielding a GExpr.. the result
+                will be a string.
+            *) may access entropy from the SamplerInterface instance
         
-        The field names of a Gramma instance used as state in gfunc coincide
-        with "state spaces".  This is important when sampling from a
-        constrained Gramma expression, in particular Gramma cannot break the
-        "intervals of consequence" for any state space.
+        The SamplerInterface state fields are referred to as "state vars".  By
+        tracking their use in gfuncs, Gramma can optimize certain operations.
 
+        gfunc decorator keyword arguments
 
-        Keywork arguments
-            statespaces = list/set
-                state space names which this gfunc depends on
             fname = string
-                provides a name other than the method name to use in Gramma syntax
+                provides a name other than the method name to use in glf
 
-        XXX Rule scoped state spaces
-            - state spaces that only exist within the context of a rule, e.g.
-                    r:= def() . use() . r . use() . use() | "term";
-                entering r, a "rule scoped" variable should be reset, and
-                pushed onto a stack.  it's then available for _that rule only_.
+            analyzer = static function taking a single GFunc argument
+                if set, disables autoanalysis, it's called whenever gfunc is
+                parsed. The analyzer should populate the GFunc's metadata.
 
-                During optimization, we assume that deeper nodes are independent.
+            statevar_defs = list/set
+            statevar_uses = list/set
+                manual override for automatically inferred statevar def/use
 
-
-        For example:
-
-            class MyGramma(Gramma):
-
-                # don't foreget to initialize any gfunc state
-                def reset(self):
-                    super().reset()
-                    self.f_state=False
-
-                @gfunc
-                def f(self,arg):
-                    # 'f_state' is the only state space used by the gfunc f
-                    self.f_state=not self.f_state
-                    if self.f_state:
-                        # f uses random
-                        return self.random.choice('a', 'b')
-                    else:
-                        # .. and f samples
-                        return self.sample(arg)
-
-            # now f(expr) is available in the extended grammar
-
-            
+            uses_random = True/False
+                manual override for use of random
     '''
-    kw=dict(_gfunc_defaults, **kw)
-
     def _decorate(f,**kw):
-        kw=dict(_gfunc_defaults,**kw)
-        @wraps(f)
-        def g(x,*l,**kw):
-            return f(x,*l,**kw)
-        g.is_gfunc=True
-        g.fname=kw.get('fname',f.func_name)
-        g.stateful=kw.get('stateful')
-        return g
+        fname=kw.pop('fname',func_name(f))
+        analyzer=kw.pop('analyzer',None)
+        return GFuncWrap(f,fname,analyzer,GExprMetadata(**kw))
 
     if len(args)==0 or not callable(args[0]):
-        if len(args)>=1:
-            name=args[0]
-        else:
-            name=kw.get('fname')
-        return lambda f:_decorate(f,**kw)
-    f=args[0]
-    kw['fname']=f.func_name
-    return _decorate(f,**kw)
+        return lambda f:_decorate(f,*args,**kw)
 
-def decorator(original_function=None, optional_argument1=None, optional_argument2=None):
-    def _decorate(function):
-        @wraps(function)
-        def wrapped_function(*args, **kwargs):
-            return wrapped_function
-    if original_function:
-        return _decorate(original_function)
-    return _decorate
+    f=args[0]
+    return _decorate(f,**kw)
 
 
 class GrammaParseError(Exception):
@@ -297,22 +542,24 @@ gramma_grammar = r"""
 
     ruledefs : (ruledef|COMMENT)+
 
-    ruledef : NAME ":=" alt ";"
+    ruledef : NAME ":=" tern ";"
 
-    ?alt : cat ("|" cat)*
+    ?tern :  code "?" alt ":" alt | alt 
+
+    ?alt : weight? cat ("|" weight? cat)*
 
     ?cat : rep ("." rep)*
 
     ?rep: atom ( "{" rep_args "}" )?
 
-    rep_args : INT ("," INT)? ("," func)?
-            | func
+    rep_args : INT? (COMMA INT?)? (COMMA (func|code))?
+            | func | code
 
     ?atom : string
          | rule
          | func
          | range
-         | "(" alt ")"
+         | "(" tern ")"
 
     rule : NAME
 
@@ -321,20 +568,26 @@ gramma_grammar = r"""
 
     func_args : func_arg ("," func_arg)*
 
-    ?func_arg : alt|INT|FLOAT
+    ?func_arg : code|alt|INT|FLOAT
 
-    range : "[" ESCAPED_CHAR  ".." ESCAPED_CHAR "]"
+    ?weight: number| code
 
-    NAME : /[a-z_][a-z_0-9]*/
+    number: INT|FLOAT
 
-    string : ESCAPED_CHAR|STRING|LONG_STRING
+    range : "[" CHAR  ".." CHAR "]"
 
+    NAME : /[a-zA-Z_][a-zA-Z_0-9]*/
+
+    string : STRING|CHAR|LONG_STRING
+
+    code : /`[^`]*`/
 
     STRING : /[ubf]?r?("(?!"").*?(?<!\\)(\\\\)*?"|'(?!'').*?(?<!\\)(\\\\)*?')/i
-    ESCAPED_CHAR.2 : /'([^\']|\\([\nrt']|x[0-9a-fA-F][0-9a-fA-F]))'/
+    CHAR.2 : /'([^\\']|\\([\nrt']|x[0-9a-fA-F][0-9a-fA-F]))'/
     LONG_STRING.2: /[ubf]?r?("(?:"").*?(?<!\\)(\\\\)*?"(?:"")|'''.*?(?<!\\)(\\\\)*?''')/is
 
     COMMENT : /#[^\n]*/
+    COMMA: ","
 
     %import common.WS
     %import common.FLOAT
@@ -345,16 +598,19 @@ gramma_grammar = r"""
 """
 
 
-class GParseError(Exception):
-    pass
-
-class GTree(object):
+class GExpr(object):
     '''
-        the expression tree for a Gramma expression.
+        the expression tree for a GLF expression.
     '''
-    __slots__=['parent']
+    __slots__='parent',
     def __init__(self):
         self.parent=None
+
+    def get_code(self):
+        return []
+
+    def get_meta(self):
+        return GExprMetadata.DEFAULT
 
     def get_ancestor(self, cls):
         p=self.parent
@@ -364,33 +620,24 @@ class GTree(object):
             p=p.parent
         return p
 
-    def writeslotsto(self,d):
-        'convenience method for deepcopy'
-        for a in self.__slots__:
-            setattr(d,a,getattr(self,a))
-
-    def isrule(self, rname):
+    def is_rule(self, rname=None):
         return False
     
-    def is_stateful(self,x,assume_no=None):
-        '''
-            does sampling have side effects on the sampler other than using x.random?
-        '''
-        return True
-
-    # tag2cls[lark_tree_node.data]=GTree_with_parse_larktree_method
+    # tag2cls[lark_tree_node.data]=GExpr_with_parse_larktree_method
     tag2cls={}
 
     @classmethod
     def parse_larktree(cls,lt):
         if isinstance(lt,lark.lexer.Token):
-            return GTok(lt.type,lt.value)
+            return GTok.from_ltok(lt)
         if lt.data=='string':
             return GTok('string',lt.children[0].value)
+        if lt.data=='code':
+            return GCode(lt.children[0].value[1:-1])
 
-        cls=GTree.tag2cls.get(lt.data)
+        cls=GExpr.tag2cls.get(lt.data)
         if cls==None:
-            raise GParseError, '''unrecognized Lark node %s during parse of Gramma''' % lt
+            raise GrammaParseError('''unrecognized Lark node %s during parse of glf''' % lt)
         return cls.parse_larktree(lt)
  
 
@@ -401,27 +648,58 @@ class GTree(object):
         'copy self.. caller must ultimately set parent attribute'
         return self.copy()
 
-class GTok(GTree):
-    __slots__=['type','value']
+
+    def dump_meta(ge,out=sys.stdout,indent=0):
+        'recursive meta dumper'
+        print((' '*indent) + '%s[%s]' % (ge,ge.get_meta()),file=out)
+    
+        if isinstance(ge,GInternal):
+            for c in ge.children:
+                c.dump_meta(out,indent+1)
+
+    def as_num(self):
+        raise GrammaParseError('''only tokens (literal numbers) have an as_num method''')
+
+    def as_float(self):
+        raise GrammaParseError('''only tokens (literal ints) have an as_float method''')
+
+    def as_int(self):
+        raise GrammaParseError('''only tokens (literal ints) have an as_int method''')
+
+    def as_str(self):
+        raise GrammaParseError('''only tokens (literal strings) have an as_str method''')
+
+class GTok(GExpr):
+    __slots__='type','value'
     def __init__(self,type,value):
-        GTree.__init__(self)
+        GExpr.__init__(self)
         self.type=type
         self.value=value
 
     def copy(self):
         return GTok(self.type,self.value)
 
-    def __str__(self,children=None):
+    def __str__(self):
         return self.value
+
+    def as_native(self):
+        if self.type=='INT':
+            return self.as_int()
+        elif self.type=='FLOAT':
+            return self.as_float()
+        elif self.type=='string':
+            return self.as_str()
+        else:
+            raise ValueError('''don't recognize GTok type %s''' % self.type)
 
     def as_int(self):
         return int(self.value)
 
+    def as_float(self):
+        return float(self.value)
+
     def as_str(self):
         return eval(self.value)
-
-    def do_sample(self,x):
-        return self.as_str()
 
     def as_num(self):
         if self.type==u'INT':
@@ -429,43 +707,44 @@ class GTok(GTree):
         elif self.type==u'FLOAT':
             return float(self.value)
         else:
-            raise ValueError, 'not a num: %s' % self
+            raise GrammaParseError('not a num: %s' % self)
+
+    @staticmethod
+    def from_ltok(lt):
+        return GTok(lt.type,lt.value)
+
+    @staticmethod
+    def from_str(s):
+        return GTok('string',repr(s))
 
     @staticmethod
     def join(tok_iter):
-        return GTok('string',repr(''.join(t.as_str() for t in tok_iter)))
-
-    def is_stateful(self,x,assume_no=None):
-        return False
+        return GTok.from_str(''.join(t.as_str() for t in tok_iter))
 
     @staticmethod
     def new_empty():
-        return GTok('string',repr(''))
+        return GTok.as_str('')
 
-class GInternal(GTree):
+class GInternal(GExpr):
     '''
-        nodes with gtree children
+        nodes with GExpr children
     '''
 
     # internal nodes must have a tag, corresponding to the larktree data field
 
-    __slots__=['children']
+    __slots__='children',
     def __init__(self, children):
-        GTree.__init__(self)
+        GExpr.__init__(self)
         self.children=children
         for c in self.children:
             c.parent=self
 
-    def __str__(self,children=None):
-        return '%s(%s)' %(self.__class__.tag, ','.join(str(cpt) for cpt in children or self.children))
+    def __str__(self):
+        return '%s(%s)' %(self.__class__.tag, ','.join(str(clt) for clt in self.children))
 
     @classmethod
     def parse_larktree(cls,lt):
-        return cls([GTree.parse_larktree(cpt) for cpt in lt.children])
-    
-    def copy(self):
-        cls=self.__class__
-        return cls([c.copy() for c in self.children])
+        return cls([GExpr.parse_larktree(clt) for clt in lt.children])
 
     def flat_simple_children(self):
         cls=self.__class__
@@ -478,55 +757,196 @@ class GInternal(GTree):
                 children.append(c)
         return children
 
+class GCode(GExpr):
+    '''
+       code expression, e.g. for dynamic alternation weights, ternary expressions, and dynamic repetition
+    '''
+    __slots__='expr','meta'
+    def __init__(self, expr, meta=None):
+        self.expr=expr
+        self.meta=GExprMetadata.DEFAULT.copy() if meta==None else meta
+
+    def invoke(self, x):
+        locs=dict(x.params.__dict__, **x.state.__dict__)
+        return eval(self.expr, globals(), locs)
+
+    def __str__(self):
+        return '`%s`' % self.expr
+
+    def __add__(self,other):
+        if isinstance(other,numbers.Number):
+            return GCode('(%s)+%f' % (self.expr, other))
+        return GCode('(%s)+(%s)' % (self.expr, other.expr))
+
+    def get_meta(self):
+        return self.meta
+
+    def copy(self):
+        return GCode(self.expr, self.meta.copy())
+
+class GTern(GInternal):
+    tag='tern'
+
+    __slots__='code',
+    def __init__(self, code, children):
+        GInternal.__init__(self,children)
+        self.code=code
+
+    def get_code(self):
+        return [self.code]
+
+    def get_meta(self):
+        return self.code.meta
+
+    def compute_case(self,x):
+        return self.code.invoke(x)
+ 
+    def __str__(self):
+        return '%s ? %s : %s' % (self.code, self.children[0], self.children[1])
+
+    def simplify(self):
+        return GTern(self.code, [c.simplify() for c in self.children])
+
+    @classmethod
+    def parse_larktree(cls,lt):
+        code=GCode(lt.children[0].children[0][1:-1])
+        return cls(code,[GExpr.parse_larktree(clt) for clt in lt.children[1:]])
+
+    def copy(self):
+        return GTern(self.code, [c.copy() for c in self.children])
+
+class defaultdict(dict):
+    __slots__='default_func',
+    def __init__(self,default_func):
+        self.default_func=default_func
+
+    def __missing__(self, key):
+        return self.default_func(key)
+
 class GAlt(GInternal):
     tag='alt'
 
-    def do_sample(self,x):
-        return x.sample(x.random.choice(self.children))
+    __slots__='weights','dynamic','nweights'
+    def __init__(self, weights, children):
+        GInternal.__init__(self,children)
+        self.dynamic=any(w for w in weights if isinstance(w,GCode))
 
-    def __str__(self,children=None):
-        s='|'.join(str(cgt) for cgt in children or self.children)
-        if self.parent!=None and isinstance(self.parent, (GCat, GRep)):
+        if self.dynamic:
+            self.weights=weights
+        else:
+            self.weights=weights
+            w=np.array(weights)
+            self.nweights=w/w.sum()
+
+    def get_code(self):
+        return [w for w in self.weights if isinstance(w,GCode)]
+
+    def get_meta(self):
+        return reduce(lambda a,b:a|b, (w.meta for w in self.weights if isinstance(w,GCode)), GExprMetadata(uses_random=True))
+
+    def compute_weights(self,x):
+        '''
+            dynamic weights are computed using the SamplerInterface variable
+            every time an alternation is invoked.
+        '''
+        if self.dynamic:
+            w=np.array([w.invoke(x) if isinstance(w,GCode) else w for w in self.weights])
+            return w/w.sum()
+        return self.nweights
+ 
+    def __str__(self):
+        weights=[]
+        for w in self.weights:
+            if isinstance(w,GCode):
+                weights.append('`%s` ' % w.expr)
+            elif w==1:
+                weights.append('')
+            else:
+                weights.append(str(w)+' ')
+        s='|'.join('%s%s' % (w,c) for w,c in zip(weights, self.children))
+
+        if self.parent!=None: #and isinstance(self.parent, (GCat, GRep)):
             return '(%s)' % s
         return s
 
-    def is_stateful(self,x,assume_no=None):
-        return any(c.is_stateful(x,assume_no) for c in self.children)
-
     def simplify(self):
-        children=self.flat_simple_children()
+        if self.dynamic:
+            return self.simplify_dynamic()
+        return self.simplify_nondynamic()
 
-        # dedupe (and sort) by string representation
-        children=[v for k,v in sorted(dict( (str(c),c) for c in children).items())]
-        #haveit=set()
-        #l=[]
-        #for c in children:
-        #    s=str(c)
-        #    if not s in haveit:
-        #        l.append(c)
-        #        haveit.add(s)
-        #children=l
+    def simplify_dynamic(self):
+        '''
+        complicated normalizing factors could make the result less simple..
 
+            `f1` (`g1` a | `g2` b) | `f2` (`g3` c | `g4` d)
+
+            `f1*g1/(g1+g2)` a | `f1*g2/(g1+g2)` b | `f2*g3/(g3+g4)` c | `f2*g4/(g3+g4)` d
+
+        '''
+        return self.copy()
+
+    def simplify_nondynamic(self):
+        weights=[]
+        children=[]
+
+        for w,c in zip(self.weights, self.children):
+            c=c.simplify()
+            if isinstance(c,GAlt) and not c.dynamic:
+                t=sum(c.weights)
+                weights.extend([float(w*cw)/t for cw in c.weights])
+                children.extend(c.children)
+            else:
+                weights.append(w)
+                children.append(c)
         if len(children)==0:
             return GTok.new_empty()
         if len(children)==1:
-            return self.children[0].simplify()
-        return GAlt(children)
+            return children[0]
+
+        # dedupe (and sort) by string representation
+        nchildren=[]
+        nweights=[]
+        for sc, tups in groupby(sorted( (str(c), c, w) for w,c in zip(weights, children) ), key=lambda tup:tup[0]):
+            tups=list(tups)
+            nweights.append(sum(tup[2] for tup in tups))
+            nchildren.append(tups[0][1])
+
+        if len(nchildren)==0:
+            return GTok.new_empty()
+        if len(nchildren)==1:
+            return nchildren[0]
+        return GAlt(nweights,nchildren)
+
+    @classmethod
+    def parse_larktree(cls,lt):
+        weights=[]
+        children=[]
+        for clt in lt.children:
+            if clt.data=='number':
+                weights.append(GTok.from_ltok(clt.children[0]).as_num())
+                continue
+            if clt.data=='code':
+                weights.append(GCode(clt.children[0][1:-1]))
+                continue
+            if len(weights)<=len(children):
+                weights.append(1)
+            children.append(GExpr.parse_larktree(clt))
+        return cls(weights,children)
+
+    def copy(self):
+        return GAlt(self.weights, [c.copy() for c in self.children])
 
 class GCat(GInternal):
     tag='cat'
 
-    def do_sample(self,x):
-        return ''.join(x.sample(cgt) for cgt in self.children)
-
-    def __str__(self,children=None):
-        s='.'.join(str(cgt) for cgt in children or self.children)
+    def __str__(self):
+        s='.'.join(str(cge) for cge in self.children)
         if self.parent!=None and isinstance(self.parent, GRep):
             return '(%s)' % s
         return s
 
-    def is_stateful(self,x,assume_no=None):
-        return any(c.is_stateful(x,assume_no) for c in self.children)
+    def copy(self):
+        return GCat([c.copy() for c in self.children])
 
     def simplify(self):
         children=self.flat_simple_children()
@@ -548,7 +968,7 @@ class GCat(GInternal):
 class GRep(GInternal):
     tag='rep'
 
-    __slots__=['rgen', 'lo', 'hi', 'dist']
+    __slots__='rgen', 'lo', 'hi', 'dist'
 
     def __init__(self,children,lo,hi,rgen,dist):
         GInternal.__init__(self,children)
@@ -557,15 +977,19 @@ class GRep(GInternal):
         self.rgen=rgen
         self.dist=dist
 
+    def get_code(self):
+        if isinstance(self.dist, GCode):
+            return [self.dist]
+        return []
+
+    def get_meta(self):
+        if isinstance(self.dist, GCode):
+            return self.dist.meta
+        return GExprMetadata.DEFAULT_RANDOM
+
     @property
     def child(self):
         return self.children[0]
-
-    def do_sample(self,x):
-        return ''.join(x.sample(self.child) for _ in xrange(self.rgen(x)))
-
-    def is_stateful(self,x,assume_no=None):
-        return self.child.is_stateful(x,assume_no)
 
     def copy(self):
         return GRep([self.child.copy()],self.lo,self.hi,self.rgen,self.dist)
@@ -573,19 +997,28 @@ class GRep(GInternal):
     def simplify(self):
         return GRep([self.child.simplify()],self.lo,self.hi,self.rgen,self.dist)
 
-    def __str__(self,children=None):
-        child=children[0] if children else self.child
+    def intargs(self):
+        if self.lo==self.hi:
+            return '%d' % (self.lo)
+        lo='' if self.lo==0 else '%s' % (self.lo)
+        return '%s,%d' % (lo,self.hi)
+
+    def __str__(self):
+        child=self.child
         if self.dist=='unif':
-            return '%s{%d,%d}' % (child, self.lo,self.hi)
-        return '%s{%d,%d,%s}' % (child, self.lo,self.hi,self.dist)
+            return '%s{%s}' % (child, self.intargs())
+        elif isinstance(self.dist, GCode):
+            return '%s{%s,%s}' % (child, self.intargs(),self.dist)
+        return '%s{%s,%s}' % (child, self.intargs(),self.dist)
 
     @classmethod
     def parse_larktree(cls,lt):
-        child=GTree.parse_larktree(lt.children[0])
-        args=[GTree.parse_larktree(c) for c in lt.children[1].children[:]]
+        child=GExpr.parse_larktree(lt.children[0])
+        args=[GExpr.parse_larktree(c) for c in lt.children[1].children[:]]
+        # figure out the distribution.. if not a GCode or a GFunc, assume uniform
         a=args[-1]
-        if (not isinstance(a,GTok)) and isinstance(a,GFunc):
-            dist=str(a)
+        if isinstance(a,GFunc):
+            dist=a
             fname=a.fname
             fargs=[x.as_num() for x in a.fargs]
             if fname==u'geom':
@@ -599,651 +1032,1113 @@ class GRep(GInternal):
             elif fname=='choose':
                 g=lambda x:x.random.choice(fargs)
             else:
-                raise ValueError, 'no dist %s' % (fname)
+                raise GrammaParseError('no dist %s' % (fname))
 
             f=lambda lo,hi:lambda x:min(hi,max(lo,g(x)))
-            args.pop()
+            del args[-2:]
+        elif isinstance(a, GCode):
+            dist=a
+            f=lambda lo,hi:lambda x:min(hi,max(lo,a.invoke(x)))
+            del args[-2:]
         else:
             dist='unif'
             f=lambda lo,hi:lambda x:x.random.randint(lo,hi+1)
 
+        #print('lenargs=%d' % len(args))
+
+        # parse bounds
         if len(args)==0:
+            # {`dynamic`}
             lo=0
             hi=2**32
         elif len(args)==1:
-            lo=hi=args.pop(0).as_int()
+            # {2} or {2,`dynamic`}.. where the latter is pretty stupid
+            lo=hi=args[0].as_int()
+        elif len(args)==2:
+            # {0,,`dynamic`}
+            if(str(args[1])==','):
+                lo=args[0].as_int()
+                hi=2**32
+            else:
+                # {,2} or {,2,`dynamic`}
+                if str(args[0])!=',':
+                    raise GrammaParseError('expected comma in repetition arg "%s"' % lt)
+                lo=0
+                hi=args[1].as_int()
+        elif len(args)==3:
+            # {2,3} or {2,3,`dynamic`}
+            lo=args[0].as_int()
+            hi=args[2].as_int()
         else:
-            lo=args.pop(0).as_int()
-            hi=args.pop(0).as_int()
+            raise GrammaParseError('failed to parse repetition arg "%s"' % lt)
 
         rgen=f(lo,hi)
-        #print('lo=%d hi=%d' % (lo,hi))
+        # print(lt)
+        #print('lo=%d hi=%d\n\n' % (lo,hi))
         return GRep([child],lo,hi,rgen,dist)
 
-class GRange(GTree):
+class GRange(GExpr):
     tag='range'
 
-    __slots__=['lo','hi']
+    __slots__='lo','hi'
     def __init__(self,lo,hi):
-        GTree.__init__(self)
+        GExpr.__init__(self)
         self.lo=lo
         self.hi=hi
+
+    def get_meta(self):
+        return GExprMetadata.DEFAULT_RANDOM
 
     def copy(self):
         return GRange(self.lo,self.hi)
 
     def simplify(self):
         if self.hi-self.lo==1:
-            return GTok('string', repr(chr(self.lo)))
+            return GTok.from_str(chr(self.lo))
         return self.copy()
 
-    def is_stateful(self,x,assume_no=None):
-        return False
-
-    def do_sample(self,x):
-        return chr(x.random.randint(self.lo,self.hi+1))
-
-    def __str__(self,children=None):
+    def __str__(self):
         return "['%s' .. '%s']" % (chr(self.lo), chr(self.hi))
 
     @classmethod
     def parse_larktree(cls,lt):
-        lo=ord(GTree.parse_larktree(lt.children[0]).as_str())
-        hi=ord(GTree.parse_larktree(lt.children[1]).as_str())
+        lo=ord(GExpr.parse_larktree(lt.children[0]).as_str())
+        hi=ord(GExpr.parse_larktree(lt.children[1]).as_str())
         return GRange(lo,hi)
 
 class GFunc(GInternal):
     tag='func'
 
-    __slots__=['fname']
-    def __init__(self, fname, fargs):
+    __slots__='fname', 'gf'
+    def __init__(self, fname, fargs, gf=None):
         GInternal.__init__(self,fargs)
         self.fname=fname
+        # set in finalize_gexpr
+        self.gf=gf
+
+    def get_meta(self):
+        return self.gf.meta
 
     def copy(self):
-        return GFunc(self.fname,[c.copy() for c in self.fargs])
+        return GFunc(self.fname,[c.copy() for c in self.fargs], self.gf)
 
     def simplify(self):
-        return GFunc(self.fname,[c.simplify() for c in self.fargs])
+        return GFunc(self.fname,[c.simplify() for c in self.fargs], self.gf)
 
     @property
     def fargs(self):
         return self.children
 
-    def do_sample(self,x):
-        return x.funcdefs[self.fname](x,*self.fargs)
-    
-    def __str__(self,children=None):
-        return '%s(%s)' % (self.fname, ','.join(str(a) for a in children or self.fargs))
+    def __str__(self):
+        return '%s(%s)' % (self.fname, ','.join(str(a) for a in self.children or self.fargs))
 
     @classmethod
     def parse_larktree(cls,lt):
         fname=lt.children[0].value
 
         if len(lt.children)>1:
-            fargs=[GTree.parse_larktree(c) for c in lt.children[1].children]
+            fargs=[GExpr.parse_larktree(c) for c in lt.children[1].children]
         else:
             fargs=[]
 
         return GFunc(fname,fargs)
 
-    def is_stateful(self,x,assume_no=None):
-        # functions can recurse too
-        if assume_no==None:
-            assume_no=set()
-        if self.fname in assume_no:
-            return False
-        #XXX function and rule collision
-        assume_no.add(self.fname)
-        return x.funcdefs[self.fname].stateful or any(c.is_stateful(x,assume_no) for c in self.fargs)
-
-class GRule(GTree):
-    'this is a _reference_ to a rule.. the rule definition is part of the Gramma class'
+class GRule(GExpr):
+    '''
+        this is a _reference_ to a rule.. the rule definition is part of the
+        GrammaGrammar class
+    '''
 
     tag='rule'
 
-    __slots__=['rname']
-    def __init__(self,rname):
-        GTree.__init__(self)
+    __slots__='rname','rhs'
+    def __init__(self,rname,rhs=None):
+        GExpr.__init__(self)
         self.rname=rname
+        self.rhs=rhs
 
     def copy(self):
-        return GRule(self.rname)
+        return GRule(self.rname, self.rhs)
 
-    def do_sample(self,x):
-        return x.sample(x.ruledefs[self.rname])
-
-    def isrule(self,rname):
+    def is_rule(self, rname=None):
+        if rname==None:
+            return True
         return self.rname==rname
 
-    def __str__(self,children=None):
+    def __str__(self):
         return self.rname
 
     @classmethod
     def parse_larktree(cls,lt):
         return GRule(lt.children[0].value)
 
-    def is_stateful(self,x,assume_no=None):
-        if assume_no==None:
-            assume_no=set()
-        if self.rname in assume_no:
-            return False
-        assume_no.add(self.rname)
-        return x.ruledefs[self.rname].is_stateful(x,assume_no)
+for cls in GTern, GAlt, GCat, GRep, GFunc,   GRange, GRule:
+    GExpr.tag2cls[cls.tag]=cls
 
-for cls in GAlt, GCat, GRep, GFunc,   GRange, GRule:
-    GTree.tag2cls[cls.tag]=cls
+class GrammaState(object):
+    def __init__(self):
+        self._cache={}
 
+    def save(self,n,slot):
+        self._cache[slot]=copy.deepcopy(getattr(self,n))
 
+    def load(self,n,slot):
+        setattr(self,n,copy.deepcopy(self._cache[slot]))
 
-class RichSample(GTree):
-    '''
-        The complete evaluation record produced during GTree sampling,
-        including entropy at each node.
+class GrammaRandom(object):
 
-        Convenience methods for correlating the resulting string sample with
-        the grammatical origin are also available.
+    __slots__='r','_cache'
+    def __init__(self,seed=None):
+        self.r=np.random.RandomState(seed)
+        self._cache={}
 
-    '''
-    def __init__(self,ogt,parent=None):
-        self.ogt=ogt
+    def seed(self,v):
+        self.r.seed(v)
 
-        # the RichSample hierarchy constructed during the sample
-        self.parent=parent
-        self.children=[]
+    def set_cached_state(self,slot,val):
+        self._cache[slot]=val
 
-        self.s=None
-
-        # the random state when ogt was sampled to produce s
-        self.inrand=None
-
-        # the random state on completion of the ogt sample
-        self.outrand=None
-
-
-        # the offset of s from the start of the root's s
-        self.off=None
-
-    def visit(self,f):
-        f(self)
-        for c in self.children:
-            c.visit(f)
-
-    def leaves(self):
-        l=[]
-        def f(n):
-            if len(n.children)==0:
-                l.append(n)
-        self.visit(f)
-        return l
-
-    def genwalk(self):
-        yield self
-        for c in self.children:
-            for n in c.genwalk():
-                yield n
-
-    def gen_rule_nodes(self, rname):
-        for n in self.genwalk():
-            if n.ogt.isrule(rname):
-                yield n
-
-    def compute_offsets(self,off=0):
-        self.off=off
-        for c in self.children:
-            c.compute_offsets(off)
-            off+=len(c.s)
-
-    def __str__(self):
-        # display inrand information about repeat or not.. in particular, expand rules that have inrands
-        return self.ogt.__str__(self.children)
-
-    def do_sample(self,x):
-        if x.using_default_random:
-            # using the original distribution with default random
-            #print('default %s' % self.ogt)
-            return self.ogt.do_sample(x) 
-        else:
-            if self.inrand==None:
-                x.using_default_random=True
-                #print('enable default_random with %s and sampler %s' % (self.ogt, x))
-                res=self.do_sample(x)
-                x.using_default_random=False
-                x.random.set_state(self.outrand)
-                return res
-            else:
-                #print('repeating %s, should get children %s' % (self.ogt, self.children))
-                x.random.set_state(self.inrand)
-                return self.ogt.do_sample(ReplacingSampler(x,self.children)) # when ogt calls x.sample, it will get self.children in order
-
-    def needs_sampling(self,x,assume_no=None):
+    def load(self,slot):
         '''
-            RichSample nodes need to be resampled if either they are stateful
-            or they use any random.. e.g. inrand==None
+            set this random number generator state to the cached value 'slot'
         '''
-        if self.inrand==None:
-            return True
-        if isinstance(self.ogt,(GTok,GRange)):
-            return False
-        if isinstance(self.ogt,GFunc):
-            if assume_no==None:
-                assume_no=set()
-            if self.ogt.fname in assume_no:
-                return False
-            #XXX function and rule collision
-            assume_no.add(self.ogt.fname)
-            return x.funcdefs[self.ogt.fname].stateful or any(c.needs_sampling(x,assume_no) for c in self.children)
-        if isinstance(self.ogt,GRule):
-            if assume_no==None:
-                assume_no=set()
-            if self.ogt.rname in assume_no:
-                return False
-            assume_no.add(self.ogt.rname)
-            return any(c.needs_sampling(x,assume_no) for c in self.children)
-        return any(c.needs_sampling(x,assume_no) for c in self.children)
+        st=self._cache.get(slot)
+        self.r.set_state(st)
 
-    def to_gtree(self,x,assume_constant=None):
+    def save(self,slot):
         '''
-            create on ordinary gtree that can be resampled again..
-
-            XXX: parent attributes haven't been set
+            store the current random number generator state to 'slot'
         '''
+        self._cache[slot]=self.r.get_state()
 
-        if self.inrand==None:
-            return self.ogt.copy()
+    def get_state(self):
+        return self.r.get_state()
+    def set_state(self,st):
+        self.r.set_state(st)
 
-        if not self.needs_sampling(x,assume_constant):
-            return GTok('string', repr(self.s))
+    def choice(self,l,p=None):
+        return self.r.choice(l,p=p)
 
-        if isinstance(self.ogt,GCat):
-            return GCat([c.to_gtree(x,assume_constant) for c in self.children])
-        if isinstance(self.ogt,GAlt):
-            return self.children[0].to_gtree(x,assume_constant)
-        if isinstance(self.ogt,GRange):
-            x.random.set_state(self.inrand)
-            c=self.ogt.do_sample(x)
-            return GTok('string',repr(c))
-        if isinstance(self.ogt,GRule):
-            return self.children[0].to_gtree(x,assume_constant)
-        if isinstance(self.ogt,GRep):
-            if len(self.children)==0:
-                return GTok.new_empty()
-            if len(self.children)==1:
-                return self.children[0].to_gtree(x,assume_constant)
-            return GCat([c.to_gtree(x,assume_constant) for c in self.children])
+    def randint(self,low,high):
+        return self.r.randint(low,high)
 
-        if isinstance(self.ogt,GFunc):
-            # we need any entropy drawn in the func to remain the same
-            # maybe by wrapping it while unwrapping children??
-            # we don't even know how the func will sample its arguments..
-            # possibly multiple times..  The wrapper would look exactly like
-            # the ReplacingSampler above. How do we add that the to Gramma syntax?
-            #
-            #   replace(f(a,b,c), randstate, alt_samples))
-            #     maybe
-            #   replace(f, a,b,c,  randstate,  alt_samples))
-            #   elements should represent random variables.. so writing
-            #   f(a,b,c) as the argument to replace is wrong.  We are really passing the function named 'f'
-            if self.needs_sampling(x,assume_constant):
-                return GFunc('replace', [self.ogt, GRule('randstate###')] + [c.to_gtree(x,assume_constant) for c in self.children])
-            else:
-                return GTok('string',repr(self.s))
-        raise GParseError, '''can't convert %s''' % self.ogt
+    def rand(self):
+        return self.r.rand()
 
-       
+    def geometric(self,p):
+        return self.r.geometric(p)
+
+    def f(self,*l,**kw):
+        print(l,kw)
 
 
-class Sampler(object):
-    __slots__=['base']
-    def __init__(self,base):
-        object.__setattr__(self,'base',base)
-
-    def __getattr__(self,a):
-        return getattr(self.base,a)
-
-    def __setattr__(self,a,v):
-        setattr(self.base,a,v)
-
-    def reset(self):
-        self.base.reset()
-
-    def sample(self,gt):
-        return gt.do_sample(self)
-
-class ReplacingSampler(Sampler):
-    def __init__(self,base, children):
-        Sampler.__init__(self,base)
-        # instance attribute, do not set at base
-        object.__setattr__(self,'chit',iter(children))
-
-    def sample(self,gt):
-        s=self.chit.next().do_sample(self.base)
-        return s
-
-class RichSampler(Sampler):
-    def __init__(self,base):
-        Sampler.__init__(self,base)
-
-    def sample(self,gt):
-        'build a RichSample while sampling'
-        p=self.stack[-1]
-        r=RichSample(gt,p)
-        p.children.append(r)
-
-        self.stack.append(r)
-        r.inrand=self.random.get_state()
-        r.s=gt.do_sample(self)
-        r.outrand=self.random.get_state()
-        self.stack.pop()
-
-        return r.s
-
-    def reset(self):
-        Sampler.reset(self)
-
-        self.root=RichSample('root')
-        self.stack=[self.root]
-
-    def build(self,randstate=None):
-        'returns a RichSample'
-
-        if randstate==None:
-            self.random.set_state(randstate)
-        self.reset()
-        self.sample(self.ruledefs['start'])
-        r=self.root.children[0]
-        r.compute_offsets()
-        return r
-
-class GFuncAnalyzeVisitor(ast.NodeVisitor):
+class SamplerInterface(namedtuple('SamplerInterface','random state params')):
     '''
-        A python AST node visitor for @gfunc decorated methods of a Gramma
-        child class.
-
-        This is used by Gramma.analyze_gfuncs, don't use directly.
+        constructed by GrammaSampler and passed to generators for access to
+        random and state.
     '''
-    import __builtin__
-    allowed_globals=['struct','True','False','None'] + [x for x in dir(__builtin__) if x.islower()]
 
-    def __init__(self,extra_allowed_ids=None):
+    def __new__(cls,sampler):
+        return super(SamplerInterface,cls).__new__(cls,sampler.random,sampler.state,sampler.params)
+
+class GrammaSampler(object):
+    '''
+
+        grammars provide grules, gfuncs, and the reset_state for its gfuncs.
+
+        samplers mediate the GExpr requests and responses.
+
+        the context manages state and executes the stack machine to generate
+        samples.
+
+    '''
+    __slots__='grammar', 'transformers', 'sideeffects', 'state', 'random', 'stack', 'params', 'x'
+    def __init__(self,grammar=None, **params):
+        self.grammar=grammar
+        self.transformers=[]
+        self.sideeffects=[]
+        self.random=GrammaRandom()
+        self.state=GrammaState()
+        self.params=type('Params',(),{})
+
+        self.add_sideeffects(*self.grammar.sideeffects)
+
+
+    def add_sideeffects(self,*sideeffects):
+        for sideeffect in sideeffects:
+            if inspect.isclass(sideeffect):
+                sideeffect=sideeffect()
+            self.sideeffects.append(sideeffect)
+
+    def add_transformers(self,*transformers):
+        for transformer in transformers:
+            if inspect.isclass(transformer):
+                transformer=transformer()
+            self.transformers.append(transformer)
+
+    def update_statecache(self, **kw):
+        '''keywords are of the form slot=value'''
+        self.state._cache.update(kw)
+
+    def get_statecache(self):
+        return self.state._cache
+
+    def update_cache(self, cachecfg):
+        self.state._cache.update(cachecfg.statecache)
+        self.random._cache.update(cachecfg.randcache)
+
+    def update_params(self, **kw):
+        for k,v in kw.items():
+            setattr(self.params,k,v)
+
+    def reset_state(self):
+        self.grammar.reset_state(self.state)
+
+        for sideeffect in self.sideeffects:
+            sideeffect.reset_state(self.state)
+
+        self.x=SamplerInterface(self)
         self.stack=[]
-        # id of the parser (first argument of gfunc)
-        self.parser_id=None
-        # other argument ids
-        self.allowed_ids=set(GFuncAnalyzeVisitor.allowed_globals)
-        if extra_allowed_ids!=None:
-            self.allowed_ids.update(extra_allowed_ids)
+
+    def sample(self,ge=None):
+        if ge==None:
+            ge=self.grammar.ruledefs['start']
+
+        if isinstance(ge,string_types):
+            ge=self.grammar.parse(ge)
+
+        self.reset_state()
+
+        a=ge
+        while True:
+            #assert(isinstance(a,GExpr))
+
+            for transformer in self.transformers:
+                a=transformer.transform(self.x,a)
+
+            sideeffect_top=[sideeffect.push(self.x,a) for sideeffect in self.sideeffects]
+            compiled_top=self.grammar.compile(a)(self.x)
+            # wrapped top
+            wtop=(sideeffect_top,compiled_top) 
+
+            self.stack.append(wtop)
+
+            a=next(compiled_top)
+
+            while isinstance(a,string_types):
+                #pop
+                for sideeffect,w in zip(self.sideeffects,wtop[0]):
+                    sideeffect.pop(self.x,w,a)
+
+                self.stack.pop()
+
+                if len(self.stack)==0:
+                    return a
+
+                wtop=self.stack[-1]
+                a=wtop[1].send(a)
+
+
+def get_reset_states(cls,method_name='reset_state'):
+    m=pysa.get_method(cls,method_name)
+    if m==None:
+        return set()
+    state_id=pysa.ast_argname(m.args.args[1])
+    return set([n[1:] for n in pysa.get_defs(m) if n[0]==state_id])
+
+
+class SideEffect(object):
+    '''
+        Base class for sampler sideeffects
+    '''
+    __slots__=()
+
+    def get_reset_states(self):
+        return get_reset_states(self.__class__)
+
+    def reset_state(self,state):
+        '''
+        called before the stack machine starts
+        '''
+        pass
+
+    def push(self,x,ge):
+        '''
+        when an expression is compiled to a coroutine, the stack machine
+        pushes.  the return value is pushed at the same position in the stack,
+        made available to pop later.
+        '''
+        return None
+
+    def pop(self,x,w,s):
+        '''
+        when a coroutine complete, returning a string, s, it is popped.
+        w is the value returned by the corresponding push.
+        '''
+        pass
+
+
+class Transformer(object):
+    '''
+        an operation to perform on gexprs before being compiled in the sampler.
+    '''
+    __slots__=()
+    def transform(self, x, ge):
+        '''
+        x is the SamplerInterface, ge is the incoming GExpr
+
+        must return a gexpr.
+
+        note: cache results!
+        '''
+        return ge
+
+class GrammaGrammarException(Exception):
+    pass
+
+def ast_attr_path(x):
+    p=[x]
+    while isinstance(p[0].value,ast.Attribute):
+        p.insert(0,p[0].value)
+    return p
+
+
+class GFuncAnalyzer(pysa.VariableAccesses):
+    allowed_globals=['struct','True','False','None'] + [x for x in dir(__builtin__) if x.islower()]
+    def __init__(self,target_class,gf,reset_states,param_ids=None,allowed_global_ids=None):
+        pysa.VariableAccesses.__init__(self)
+        self.target_class=target_class
+        self.reset_states=reset_states
+
+        self.allowed_ids=set(GFuncAnalyzer.allowed_globals)
+        if allowed_global_ids!=None:
+            self.allowed_ids.update(allowed_global_ids)
+        self.param_ids=[] if param_ids==None else param_ids
         self.uses_random=False
-        self.calls_sample=False
-        self.statevars=set()
+        self.samples=False
+        self.has_terminal_yield=False
 
-    def is_parser_id(self,n):
-        if isinstance(n,ast.Name) and n.id==self.parser_id:
-            return True
-        return isinstance(n,ast.Attribute) and self.is_parser_id(n.value)
+        self.statevar_defs=set()
+        self.statevar_uses=set()
 
-    def visit_parser_id(self,x,attrs=None):
-        if isinstance(x,ast.Name):
-            nm=x.id
-            if attrs!=None:
-                nm+=attrs
-            raise ValueError('Direct parser access (%s) on line %d!!' % (nm, x.lineno))
+        s=inspect.getsource(gf.f)
+        s=textwrap.dedent(s)
+        gf_ast=ast.parse(s).body[0]
 
-        elif isinstance(x,ast.Attribute):
-            while isinstance(x.value,ast.Attribute):
-                x=x.value
-            attr=x.attr
-            if attr=='random':
+        self.fname=gf_ast.name
+
+        if len(gf_ast.args.defaults)>0:
+            self._raise('''gfuncs mustn't use default argument values''')
+        if gf_ast.args.kwarg!=None:
+            self._raise('''gfuncs mustn't take keyword arguments''')
+
+        fargs=[pysa.NamePath(a) for a in gf_ast.args.args]
+        self.iface_id=fargs[0]
+        self.extra_args=set(a.s for a in fargs[1:])
+
+        self.allowed_ids.update(a.s for a in fargs)
+
+        self.run(gf_ast)
+
+        # .. and annotate GFuncWrap objects with state and rand metadata
+        gf.meta.statevar_defs.update(self.statevar_defs)
+        gf.meta.statevar_uses.update(self.statevar_uses)
+        gf.meta.uses_random=self.uses_random
+        gf.meta.samples=self.samples
+
+        if not self.has_terminal_yield:
+            self._raise('''doesn't yield a value''')
+
+        #astpretty.pprint(gf_ast)
+        #print(gf.meta)
+
+    def is_iface_id(self,n):
+        'n is a NamePath'
+        return n[0].s==self.iface_id
+
+    def _raise(self,msg):
+        if hasattr(self,'stack') and len(self.stack)>0:
+            raise GrammaGrammarException('''in line %d of gfunc %s of class %s: %s''' % (self.stack[-1].lineno, self.fname, self.target_class.__name__, msg))
+        raise GrammaGrammarException('''gfunc %s of class %s: %s''' % (self.fname, self.target_class.__name__, msg))
+
+    def defs(self, n, v):
+        if self.is_iface_id(n):
+            if n[1].s=='state':
+                self.statevar_defs.add(n[2].s)
+            elif n[1].s=='random' or n[1].s=='params':
+                self._raise('forbidden access to SamplerInterface %s' % n[1:])
+            else:
+                self._raise('unexpected SamplerInterface field "%s", only "random", "state", and "params" are accessible' % n[1:].s)
+        else:
+            self.allowed_ids.add(n.s)
+
+    def uses(self, n):
+        if n.s in self.allowed_ids:
+            return
+        if self.is_iface_id(n):
+            if n[1].s=='state':
+                nn=n[2:]
+                for s in self.reset_states:
+                    if nn.begins(s):
+                        self.statevar_uses.add(n[2].s)
+                        break
+                else:
+                    self._raise('%s used without being initialized in any reset_state or explicitly allowed in allowed_global_ids or param_ids' % n.s)
+            elif n[1].s=='params':
+                if n[2]=='[]':
+                    self._raise('params is not indexed, define ids with the param_ids argument of GrammaGrammar and set with update_params method of GrammaSampler')
+                if not n[2] in self.param_ids:
+                    self._raise('param "%s" not declared by grammar' % n[2].s)
+            elif n[1].s=='random':
+                self._raise('direct use of random object?')
+            else:
+                self._raise('unexpected SamplerInterface field "%s", only "random", "state", and "params" are accessible' % n[1:].s)
+        else:
+            #astpretty.pprint(self.stack[-2])
+            self._raise('forbidden access to variable "%s"' % n.s)
+
+    def mods(self, n, v):
+        self.uses(n)
+        self.defs(n,v)
+
+    def calls(self, n, v):
+        if self.is_iface_id(n):
+            if n[1].s=='state':
+                self.mods(n,v)
+            elif n[1].s=='random':
                 self.uses_random=True
-            elif attr=='sample':
-                self.calls_sample=True
             else:
-                self.statevars.add(attr)
-            #print('%s.%s' % (x.value.id,x.attr))
+                self._raise('forbidden all to variable "%s"' % n.s)
+
+    def lambdas(self, l):
+        pass
+
+    def visit_Yield(self, y):
+        self.visit(y.value)
+
+        if any(n for n in self.stack[:-1] if isinstance(n,(ast.GeneratorExp,ast.ListComp))):
+            self._raise('yield in a generator expression or list comprehension')
+
+        p=self.stack[-2]
+        if isinstance(p,ast.Call):
+            if not y in p.args:
+                self._raise('failed to analyze yield expression')
+        elif isinstance(p,ast.BinOp):
+            if p.left!=y and p.right!=y:
+                self._raise('failed to analyze yield expression')
         else:
-            raise ValueError('parser_id not Attribute or Name? %s, %s' % (x,self.stack))
+            if p.value!=y:
+                self._raise('failed to analyze yield expression')
 
-    def visit(self,node):
-        self.stack.append(node)
-        ast.NodeVisitor.visit(self,node)
-        self.stack.pop()
-
-    def visit_AugAssign(self, ass):
-        self.visit(ass.value)
-        if self.is_parser_id(ass.target):
-            self.visit_parser_id(ass.target)
-
-    def visit_Assign(self, ass):
-        self.visit(ass.value)
-        for a in ass.targets:
-            if self.is_parser_id(a):
-                self.visit_parser_id(a)
-            else:
-                self.allowed_ids.add(a.id)
-
-    def visit_Attribute(self,a):
-        if self.is_parser_id(a):
-            self.visit_parser_id(a)
+        if isinstance(p,ast.Expr):
+            self.has_terminal_yield=True
         else:
-            self.generic_visit(a)
-
-    def visit_Name(self,n):
-        if n.id==self.parser_id:
-            self.visit_parser_id(n)
-        elif not n.id in self.allowed_ids:
-            raise ValueError('accessing unknown value %s on line %d' % (n.id, n.lineno))
-
-        # done
-    def visit_FunctionDef(self,f):
-        if len(self.stack)==1:
-            al=f.args.args
-            self.parser_id=al[0].id
-            # XXX prevent args with default values?
-            self.allowed_ids.update(a.id for a in al)
-
-            # recurse into body of f
-            for item in f.body:
-                self.visit(item)
-        # don't descend!
+            self.samples=True
+            if not isinstance(y.value, ast.Name) or not y.value.id in self.extra_args:
+                self._raise('gfuncs can only sample from their arguments')
 
 
+class GCodeAnalyzer(pysa.VariableAccesses):
+    def __init__(self, grammar, code):
+        self.grammar=grammar
+        self.allowed_ids=set(GFuncAnalyzer.allowed_globals) | set(self.grammar.allowed_global_ids) | set(self.grammar.param_ids)
+        code.meta=GExprMetadata.DEFAULT.copy()
+        self.code=code
+        code_ast=ast.parse(code.expr).body[0]
 
-class Gramma:
+        self.run(code_ast)
+
+    def _raise(self,msg):
+        raise GrammaGrammarException('''in gcode %s parsed by class %s: %s''' % (self.code, self.grammar.__class__.__name__, msg))
+
+    def defs(self, n, v):
+        self._raise('gcode cannot modify state')
+    mods=defs
+
+    def uses(self, n):
+        if n.s in self.allowed_ids:
+            return
+
+        for s in self.grammar.reset_states:
+            if n.begins(s):
+                self.code.meta.statevar_uses.add(n[0].s)
+                break
+        else:
+            self._raise('%s used without being initialized in any reset_state or explicitly allowed in allowed_global_ids or param_ids' % n.s)
+
+
+def analyzer_use_first_arg(ge):
+    ge.gf.meta.statevar_uses.add(ge.fargs[0].as_str())
+
+def analyzer_def_first_arg(ge):
+    ge.gf.meta.statevar_defs.add(ge.fargs[0].as_str())
+
+class GrammaGrammar(object):
     '''
-        A gramma parsetree represents a distribution on strings.
+        The class defining functions and state management for a gramma and
+        extensions.
 
-        A gramma language definition file defines a set of trees, vis a vis, the rules.
+        e.g. 
+         g=GrammaGrammar('start:="a"|"b";')
+         sampler=GrammaSampler(g)
 
-        x=Gramma(language_definition)
-
-        For any tree, gt, defined by a gramma language definition, x.sample(gt)
-        samples a single string.
-
-
-        The methods of Gramma (and subclasses) are invoked recursively by
-        sample with parse tree children and expect a string result.
+         while True:
+             print(sampler.sample())
     '''
 
-    parser = lark.Lark(gramma_grammar, parser='earley', lexer='standard')
+    ruledef_parser = lark.Lark(gramma_grammar, parser='earley', lexer='standard', start='start')
+    expr_parser = lark.Lark(gramma_grammar, parser='earley', lexer='standard', start='tern')
 
-    def __init__(self, gramma_text):
-        lt=self.parser.parse(gramma_text)
+    __slots__='sideeffects', 'ruledefs', 'funcdefs', 'reset_states', 'allowed_global_ids', 'param_ids'
 
-        self.ruledefs={}
-        for ruledef in lt.children:
-            rname=ruledef.children[0].value
-            rvalue=GTree.parse_larktree(ruledef.children[1])
-            self.ruledefs[rname]=rvalue
+    def __init__(self, gramma_expr_str, sideeffects=None, param_ids=None, allowed_global_ids=None):
+        '''
+            gramma_expr_str - defines the grammar, including a start rule.
+
+            sideeffects - a list of SideEffect objects or classes which the
+            grammar, GFunc implementations or GCode expressions, require.
+
+            param_ids - a list of param names that will be ignored by the GFunc
+            and GCode analyzers.
+
+            allowed_global_ids - a list of global variable identifiers ignored
+            by GFunc and GCode analyzers.
+        '''
+        if sideeffects==None:
+            sideeffects=[]
+
+        # instantiate sideeffect classes
+        self.sideeffects=[sideeffect() if inspect.isclass(sideeffect) else sideeffect for sideeffect in sideeffects]
+
+        # analyze sideeffect state variable access
+        reset_states=set()
+        for se in self.sideeffects:
+            reset_states|=se.get_reset_states()
+
+        # analyze reset_state
+        reset_states|=self.get_reset_states()
+
+        cls=self.__class__
+        allowed_global_ids=[] if allowed_global_ids==None else allowed_global_ids
+        param_ids=[] if param_ids==None else param_ids
 
         self.funcdefs={}
-        for n,f in inspect.getmembers(self,predicate=inspect.ismethod):
-            if hasattr(f,'is_gfunc'):
-                self.funcdefs[f.fname]=f.__func__
+        for n,gf in inspect.getmembers(self,predicate=lambda x:isinstance(x,GFuncWrap)):
+            # make a grammar-local copy of gf
+            gf=gf.copy()
 
-        self.default_random=np.random.RandomState()
-        self.temp_random=np.random.RandomState()
-        self.using_default_random=False
+            if gf.analyzer==None:
+                GFuncAnalyzer(cls,gf,reset_states,param_ids=param_ids, allowed_global_ids=allowed_global_ids)
 
-    @property
-    def random(self):
-        #print('getting random, default=%s' % self.using_default_random)
-        if self.using_default_random:
-            return self.default_random
-        else:
-            return self.temp_random
+            self.funcdefs[gf.fname]=gf
 
-    def reset(self):
-        self.d=0
+        # record metadata
+        self.reset_states=reset_states
+        self.allowed_global_ids=allowed_global_ids
+        self.param_ids=param_ids
 
-    def simple_sample(self,gt):
-        return gt.do_sample(self)
-    
-    def generate(self,startrule=None):
-        '''
-            yield random_state, string
-        '''
-        x=Sampler(self)
-        if startrule==None:
-            startrule=x.ruledefs['start']
-        while True:
-            st=x.random.get_state()
-            x.reset()
-            yield st, x.sample(startrule) 
+        self.ruledefs={}
+        self.add_rules(gramma_expr_str)
 
-    def build_richsample(self,randstate=None):
-        'build a RichSample object'
-        return RichSampler(self).build(randstate)
-
-    def rsample(self,gt):
-        'do the resample - sample replacement'
-        r=self.stack[-1].next()
-        if r.inrand!=None:
-            self.random.set_state(r.inrand)
-
-            self.stack.append(iter(r.children))
-            res=self.simple_sample(r.gt)
-            self.stack.pop()
-        else:
-            self.random.seed()
-            self.sample=self.simple_sample
-            res=self.simple_sample(r.gt)
-            self.sample=self.rsample
-        return res
-
-    def gen_resamples(self,r):
-        'assume inrand has been cleared for resampler nodes that should be stochastic'
-        startrule=self.ruledefs['start']
-        self.sample=self.rsample
-        while True:
-            self.reset()
-            self.stack=[iter([r])]
-            yield self.sample(startrule)
+    def add_rules(self, ruledef_str):
+        lt=GrammaGrammar.ruledef_parser.parse(ruledef_str)
+        for ruledef in lt.children:
+            self.ruledefs[ruledef.children[0].value]=GExpr.parse_larktree(ruledef.children[1])
+        for ge in self.ruledefs.values():
+            self.finalize_gexpr(ge)
 
 
+    def get_reset_states(self):
+        return get_reset_states(self.__class__)
+
+    def reset_state(self,state):
+        pass
 
     @gfunc
-    def rlim(self,c,n,o):
+    def save_rand(x,slot):
+        x.random.save(slot.as_str())
+        yield ''
+
+    @gfunc(uses_random=True)
+    def load_rand(x,slot):
+        x.random.load(slot.as_str())
+        yield ''
+
+    @gfunc(uses_random=True)
+    def reseed_rand(x):
+        x.random.seed(None)
+        yield ''
+
+
+    @gfunc(analyzer=analyzer_use_first_arg)
+    def save(x,n,slot):
+        x.state.save(n.as_str(),slot.as_str())
+        yield ''
+
+    @gfunc(analyzer=analyzer_def_first_arg)
+    def load(x,n,slot):
+        x.state.load(n.as_str(),slot.as_str())
+        yield ''
+
+    @gfunc(fname='def',analyzer=analyzer_def_first_arg)
+    def def_(x,n,v):
+        if isinstance(v,GTok):
+            v=v.as_native()
+        elif isinstance(v,GCode):
+            v=v.invoke(x)
+        setattr(x.state,n.as_str(), v)
+        yield ''
+
+
+    def finalize_gexpr(self, ge):
         '''
-            recursion limit - if recursively invoked to a depth < n times,
-                sample c, else sample o
-
-            e.g. 
-
-                R :=  rlim("a" . R, 3, "");
-
-                produces "aaa" 
-            
-        '''
-        self.d+=1
-        n=n.as_int()
-        res=self.sample(c if self.d<=n else o)
-        self.d-=1
-        return res
-
-
-    @staticmethod
-    def analyze_gfuncs(GrammaChildClass,extra_allowed_ids=None):
-        '''
-            Enumerate @gfunc decorated methods of GrammaChildClass in order to
-            infer state spaces.
-
-            methods tagged with "auto=False" will be skipped.. you're on your own.
+            grammar dependent finalization of a gexpr:
+                1) compute meta for GCode nodes
+                2) lookup GFuncs
+                3) lookup rules
 
         '''
-        s=inspect.getsource(GrammaChildClass)
-        classdef=ast.parse(s).body[0]
-        def isgfuncdec(y):
-            if isinstance(y,ast.Name) and y.id=='gfunc':
-                return True
-            return isinstance(y,ast.Call) and y.func.id=='gfunc'
-    
-        gfuncs=[x for x in classdef.body if isinstance(x,ast.FunctionDef) and any(isgfuncdec(y) for y in x.decorator_list)]
-        for g in gfuncs:
-            analyzer=GFuncAnalyzeVisitor(extra_allowed_ids)
-            analyzer.visit(g)
-            print('gfunc %s %s%s statvars={%s}' %(g.name, 'uses_random ' if analyzer.uses_random else '', 'calls_sample ' if analyzer.calls_sample else '', ','.join(sorted(analyzer.statevars))))
+        if isinstance(ge,GFunc):
+            if ge.gf!=None:
+                # already finalized
+                return
+            gf=self.funcdefs.get(ge.fname,None)
+            if gf==None:
+                raise GrammaGrammarException('no gfunc named %s available to %s' % (ge.fname,self.__class__.__name__))
+            ge.gf=gf
+            if gf.analyzer!=None:
+                ge.gf=ge.gf.copy()
+                gf.analyzer(ge)
+
+        elif isinstance(ge,GRule):
+            if ge.rhs!=None:
+                # already finalized
+                return
+            rhs=self.ruledefs.get(ge.rname,None)
+            if rhs==None:
+                raise GrammaGrammarException('no rule named %s available to %s' % (ge.rname,self.__class__.__name__))
+            ge.rhs=rhs
+
+        elif isinstance(ge,GCode):
+            GCodeAnalyzer(self, ge)
+
+        # dynamic elements keep their code outside of the expr tree
+        for code in ge.get_code():
+            GCodeAnalyzer(self, code)
+
+        if isinstance(ge, GInternal):
+            for c in ge.children:
+                self.finalize_gexpr(c)
+        return ge
+
+    def parse(self, gramma_expr_str):
+        ''' gramma expression -> GExpr'''
+        ge=GExpr.parse_larktree(GrammaGrammar.expr_parser.parse(gramma_expr_str))
+        self.finalize_gexpr(ge)
+        return ge
+
+    def compile(self, ge):
+        if isinstance(ge,GTok):
+            def g(x):
+                yield ge.as_str()
+        elif isinstance(ge,GTern):
+            def g(x):
+                s=yield (ge.children[0] if ge.compute_case(x) else ge.children[1])
+                yield s
+        elif isinstance(ge,GAlt):
+            if ge.dynamic:
+                def g(x):
+                    s=yield x.random.choice(ge.children,p=ge.compute_weights(x))
+                    yield s
+            else:
+                def g(x):
+                    s=yield x.random.choice(ge.children,p=ge.nweights)
+                    yield s
+        elif isinstance(ge,GCat):
+            def g(x):
+                s=''
+                for cge in ge.children:
+                    s+=yield cge
+                yield s
+        elif isinstance(ge,GRep):
+            def g(x):
+                s=''
+                n=ge.rgen(x)
+                while n>0:
+                    s+=yield(ge.child)
+                    n-=1
+                yield s
+        elif isinstance(ge, GRange):
+            def g(x):
+                yield chr(x.random.randint(ge.lo,ge.hi+1))
+        elif isinstance(ge,GRule):
+            rhs=ge.rhs
+            def g(x):
+                s=yield(rhs)
+                yield s
+        elif isinstance(ge, GFunc):
+            def g(x,gf=ge.gf,fargs=ge.fargs):
+                return gf(x,*fargs)
+        else:
+            raise GrammaGrammarException('unrecognized expression: (%s) %s' % (type(ge), ge))
+        return g
 
 
-class Example(Gramma):
-    g1=r'''
-        start := words . " " . ['1'..'9'] . digit{geom(5)};
+class CacheConfig(object):
+    __slots__='randcache','statecache'
 
-        digit := ['0' .. '9'];
 
-        words := ( "stink" | "stank" );
+    def __init__(self):
+        self.randcache={}
+        self.statecache={}
+
+    def new_state(self, val):
+        n='_s%d' % len(self.statecache)
+        self.statecache[n]=val
+        return n
+
+    def new_randstate(self, val):
+        n='_r%d' % len(self.randcache)
+        self.randcache[n]=val
+        return n
+
+class TraceNode(object):
     '''
+        a node of the tracetree
 
-    g2=r'''
-        start := x;
-        x := "a" | "b" . x;
+        Tracer populates each TraceNode w/ incoming and outgoing rand and state
+        values.
+        - __when__
+            - __it's_saved_to__
+
+        - if a node samples
+            - n.children
+        - if a node uses_random,
+            - on enter
+                - n.inrand
+            - before sampling child
+                - child.inrand
+            - after sampling child
+                - child.outrand
+            - on return
+                - n.outrand
+        - if a node uses state:
+            - on enter
+                - n.instate
+            - after sampling child
+                - child.outstate
+        - if a node defs state:
+            - before sampling child
+                - child.instate
+            - on return
+                - n.outstate
+
+        When resampling, we can "replay" different combinations of the above
+        inputs to a node.
+
+        - rand and other state can be set beforehand
+            - random state can be set 
+                load_rand('r').load('var','var0').e
+        - (sub)samples
+            - for all but gfuncs,
+
     '''
+    __slots__='ge','parent','children','s','inrand','outrand','instate','outstate'
+    def __init__(self,ge):
+        self.ge=ge
+        self.parent=None
+        self.children=[]
+        self.s=None
+        self.inrand=None
+        self.outrand=None
+        self.instate=None
+        self.outstate=None
+
+    def add_child(self,ge):
+        c=TraceNode(ge)
+        c.parent=self
+        self.children.append(c)
+        return c
+
+    def dump(self,indent=0,out=sys.stdout):
+        print('%s%s -> "%s"' % ('  '*indent, self.ge, self.s),file=out)
+        for c in self.children:
+            c.dump(indent+1,out)
+
+    def inbounds(self,i,j):
+        '[i,j) contained in [0,len(self.s))?'
+        return 0<=i and j<=len(self.s)
+
+    def child_containing(self, i,j=None, d=0):
+        if j==None or j < i+1:
+            j=i+1
+
+        #print('%s[%d,%d) %s' % (' '*d, i,j,self.ge))
+
+        if isinstance(self.ge, (GRule,GTern,GAlt)):
+            return self.children[0].child_containing(i,j,d+1)
+
+        # don't descend into GFuncs
+        if isinstance(self.ge, (GCat, GRep)):
+            # i         v
+            #   aaaa  bbbb   cccc
+            #    
+            o=0
+            for c in self.children:
+                x=c.child_containing(i-o,j-o,d+1)
+                if x!=None:
+                    return x
+                o+=len(c.s)
+            if self.inbounds(i,j):
+                return self
+            return None
+
+        if isinstance(self.ge,(GTok, GFunc, GRange)):
+            return self if self.inbounds(i,j) else None
+
+        raise GrammaParseError('unknown expression (%s)%s' % (type(self.ge), self.ge))
 
 
-    def __init__(x):
-        Gramma.__init__(x,Example.g1)
+    def first(self, pred):
+        for n in self.gennodes():
+            if pred(n):
+                return n
+        return None
 
-def test_example():
-    g=Example()
-    it=g.generate()
-    for i in xrange(10):
-        print(it.next()[1])
+    def first_rule(self,rname):
+        return self.first(lambda n:n.ge.is_rule(rname))
 
-def test_parser():
-    global t
-    parser = Lark(gramma_grammar, parser='earley', lexer='standard')
-    #    start := ( "a" | "b" ) . ['\xaa'..'\xbb'];
-    g1=r'''
-        start :=  digits{1}
-                | digits{.2}
-                | digits{3,.4}
-                | digits{5,6}
-                | digits{7,8,.9}
-        ;
+    def last(self, pred):
+        for n in self.gennodesr():
+            if pred(n):
+                return n
+        return None
 
-        digits := ['1' .. '9'];
+    def gennodes(self):
+        yield self
+        for c in self.children:
+            for cc in c.gennodes():
+                yield cc
 
-    '''
-    g2=r'''
-        start := x{0,1,g(10)};
+    def gennodesr(self):
+        'reverse node generator'
+        for c in reversed(self.children):
+            for cc in c.gennodesr():
+                yield cc
+        yield self
 
-        x := x;
-    '''
-    t=parser.parse(g2)
+    def depth(self,pred=lambda x:True):
+        '''
+            # of ancestors that satisfy pred
+        '''
+        n=self.parent
+        d=0
+        while n!=None:
+            if pred(n):
+                d+=1
+            n=n.parent
+        return d
 
-    print(t)
+    def resample_mostly(self,grammar,pred, factor=10):
+        '''
+            like resample, but non-resampled nodes aren't definitized, they're
+            just biased toward their previous decision.
+
+            factor is how much more likely the previous selection should be at
+            each alternation and ternary.
+
+            Even with a factor of 0, this resample is useful for preserving the
+            tracetree structure for future resample operations.
+        '''
+        cachecfg=CacheConfig()
+
+        def recurse(t):
+            ''' 
+                return resampled, gexpr
+                    where resampled is True if a subexpression will be resampled
+            '''
+            if pred(t):
+                outrand=t.last(lambda n:n.ge.get_meta().uses_random)
+                if outrand!=None:
+                    return True, t.ge.copy()
+
+            ## mostly definitize ##
+            ge=t.ge
+            if isinstance(ge,(GAlt,GTern)):
+                tc=t.children[0]
+                b,tcc=recurse(tc)
+                cmap=defaultdict(lambda c:(1,c))
+                cmap[tc.ge]=(factor,tcc)
+
+                weights,children=zip(*[cmap[c] for c in ge.children])
+                return b,GAlt(weights,children)
+            elif isinstance(ge,GRule):
+                return recurse(t.children[0])
+            elif isinstance(ge,(GCat,GRep)):
+                l=[recurse(c) for c in t.children]
+                return any(r for (r,ge) in l), GCat([ge for (r,ge) in l])
+            elif isinstance(ge,GRange):
+                return False, GTok.from_str(t.s)
+            elif isinstance(ge,GTok):
+                return False, ge.copy()
+            elif isinstance(ge,GFunc):
+                l=[recurse(c) for c in t.children]
+                if not any(r for (r,ge) in l):
+                    # preserve the function call
+                    return False, GFunc(ge.fname,[arg[1] for arg in l],ge.gf)
+                fargmap={}
+                for i,c in enumerate(t.children):
+                    fargmap.setdefault(c.ge,[]).append(i)
+                args=[]
+                for a in t.ge.fargs:
+                    ta=fargmap.get(a,[])
+                    if len(ta)>1:
+                        log.warning('argument sampled multiple times in %s(..,%s,..): %s, resampling original expression' % (ge.fname,a,ta))
+                        #log.warning(str(fargmap))
+                        args.append(a.copy())
+                    elif len(ta)==0:
+                        # this argument wasn't sampled.. use a copy of the
+                        # original
+                        args.append(a.copy())
+                    else:
+                        # use the computed recursion on the tracenode child
+                        args.append(l[ta[0]][1])
+                return True, GFunc(ge.fname,args,ge.gf)
+            else:
+                raise ValueError('unknown GExpr node type: %s' % type(ge))
+
+        b,ge=recurse(self)
+        return ge.simplify(), cachecfg
 
 
-if __name__ == '__main__':
-    #test_parser()
-    #test_example()
-    import gen_greatview
-    #Gramma.analyze_gfuncs(Gramma)
-    Gramma.analyze_gfuncs(gen_greatview.Greatview)
+    def resample(self,grammar,pred):
+        '''
+            computes ge, a GExpr that resamples only the nodes satisfying pred.
 
-    #print(Gramma('start:=("a"|"b"){1,100,geom(8)};').generate().next()[1])
+            computes cfg, a CacheConfig populated with any extra random and
+            state values needed by ge.
+
+            return ge,cfg
+        '''
+
+        cachecfg=CacheConfig()
+
+        def recurse(t):
+            ''' 
+                return resampled, gexpr
+                    where resampled is True if a subexpression will be resampled
+            '''
+            if pred(t):
+                outrand=t.last(lambda n:n.ge.get_meta().uses_random)
+                if outrand!=None:
+                    ## resample ##
+                    #slot=cachecfg.new_randstate(outrand.outrand)
+                    #return GCat([grammar.parse('reseed_rand()'),t.ge.copy(),grammar.parse("load_rand('"+slot+"')")])
+                    # assume "fresh" incoming random and no need to resume outgoing random
+                    return True, t.ge.copy()
+                    #return True, GCat([GTok.from_str('>>>>>>>'),t.ge.copy(),GTok.from_str('<<<<<<<<')])
+
+            ## definitize ##
+            ge=t.ge
+            if isinstance(ge,GTern):
+                return recurse(t.children[0])
+            elif isinstance(ge,GAlt):
+                return recurse(t.children[0])
+            elif isinstance(ge,GRule):
+                return recurse(t.children[0])
+            elif isinstance(ge,(GCat,GRep)):
+                l=[recurse(c) for c in t.children]
+                return any(r for (r,ge) in l), GCat([ge for (r,ge) in l])
+            elif isinstance(ge,GRange):
+                return False, GTok.from_str(t.s)
+            elif isinstance(ge,GTok):
+                return False, ge.copy()
+            elif isinstance(ge,GFunc):
+                l=[recurse(c) for c in t.children]
+                if not any(r for (r,ge) in l):
+                    return False, GTok.from_str(t.s)
+                fargmap={}
+                for i,c in enumerate(t.children):
+                    fargmap.setdefault(c.ge,[]).append(i)
+                args=[]
+                for a in t.ge.fargs:
+                    ta=fargmap.get(a,[])
+                    if len(ta)>1:
+                        log.warning('argument sampled multiple times in %s(..,%s,..): %s, resampling original expression' % (ge.fname,a,ta))
+                        #log.warning(str(fargmap))
+                        args.append(a.copy())
+                    elif len(ta)==0:
+                        # this argument wasn't sampled.. use a copy of the
+                        # original
+                        args.append(a.copy())
+                    else:
+                        # use the computed recursion on the tracenode child
+                        args.append(l[ta[0]][1])
+                return True, GFunc(ge.fname,args,ge.gf)
+            else:
+                raise ValueError('unknown GExpr node type: %s' % type(ge))
+
+        b,ge=recurse(self)
+        return ge.simplify(), cachecfg
 
 
+class DepthTracker(SideEffect):
+    __slots__='pred','varname','initial_value'
+
+    def __init__(self,pred=None, varname='depth', initial_value=0):
+        if pred==None:
+            pred=lambda ge:True
+        self.pred=pred
+        self.varname=varname
+        self.initial_value=initial_value
+
+    def get_reset_states(self):
+        return set([pysa.NamePath(self.varname)])
+
+    def reset_state(self,state):
+        setattr(state, self.varname, self.initial_value)
+
+    def push(self,x,ge):
+        if self.pred(ge):
+            setattr(x.state, self.varname, getattr(x.state, self.varname)+1)
+            return True
+        return False
+
+    def pop(self,x,w,s):
+        if w:
+            setattr(x.state, self.varname, getattr(x.state, self.varname)-1)
+
+class Tracer(SideEffect):
+    __slots__='tt','tracetree'
+
+    def reset_state(self,state):
+        self.tracetree=None
+
+    def push(self,x,ge):
+        if self.tracetree==None:
+            self.tt=self.tracetree=TraceNode(ge)
+        else:
+            self.tt=self.tt.add_child(ge)
+        m=ge.get_meta()
+        if m.uses_random:
+            self.tt.inrand=x.random.r.get_state()
+        if m.statevar_uses:
+            self.tt.instate=type('',(),{})()
+            for varname in m.statevar_uses:
+                setattr(self.tt.instate, varname, copy.deepcopy(getattr(x.state,varname)))
+        return None
+
+    def pop(self,x,w,s):
+        m=self.tt.ge.get_meta()
+
+        self.tt.s=s
+        if m.uses_random:
+            self.tt.outrand=x.random.r.get_state()
+        if m.statevar_defs:
+            self.tt.outstate=type('',(),{})()
+            for varname in m.statevar_defs:
+                setattr(self.tt.outstate, varname, copy.deepcopy(getattr(x.state,varname)))
+
+        self.tt=self.tt.parent
 
 # vim: ts=4 sw=4
-
-
