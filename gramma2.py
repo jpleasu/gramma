@@ -649,6 +649,14 @@ class GExpr(object):
         return self.copy()
 
 
+    def dump_meta(ge,out=sys.stdout,indent=0):
+        'recursive meta dumper'
+        print((' '*indent) + '%s[%s]' % (ge,ge.get_meta()),file=out)
+    
+        if isinstance(ge,GInternal):
+            for c in ge.children:
+                c.dump_meta(out,indent+1)
+
     def as_num(self):
         raise GrammaParseError('''only tokens (literal numbers) have an as_num method''')
 
