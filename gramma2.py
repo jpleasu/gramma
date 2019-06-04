@@ -770,6 +770,9 @@ class GCode(GExpr):
             return GCode('(%s)+%f' % (self.expr, other))
         return GCode('(%s)+(%s)' % (self.expr, other.expr))
 
+    def get_meta(self):
+        return self.meta
+
     def copy(self):
         return GCode(self.expr, self.meta.copy())
 
@@ -1199,6 +1202,11 @@ class GrammaRandom(object):
             store the current random number generator state to 'slot'
         '''
         self._cache[slot]=self.r.get_state()
+
+    def get_state(self):
+        return self.r.get_state()
+    def set_state(self,st):
+        self.r.set_state(st)
 
     def choice(self,l,p=None):
         return self.r.choice(l,p=p)
@@ -1703,6 +1711,10 @@ class GrammaGrammar(object):
                 raise GrammaGrammarException('no rule named %s available to %s' % (ge.rname,self.__class__.__name__))
             ge.rhs=rhs
 
+        elif isinstance(ge,GCode):
+            GCodeAnalyzer(self, ge)
+
+        # dynamic elements keep their code outside of the expr tree
         for code in ge.get_code():
             GCodeAnalyzer(self, code)
 
