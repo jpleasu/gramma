@@ -1305,32 +1305,37 @@ class GrammaSampler(object):
         self.reset_state()
 
         a=ge
+        stack=self.stack
+        transformers=self.transformers
+        sideeffects=self.sideeffects
+        grammar_compile=self.grammar.compile
+        x=self.x
         while True:
             #assert(isinstance(a,GExpr))
 
-            for transformer in self.transformers:
-                a=transformer.transform(self.x,a)
+            for transformer in transformers:
+                a=transformer.transform(x,a)
 
-            sideeffect_top=[sideeffect.push(self.x,a) for sideeffect in self.sideeffects]
-            compiled_top=self.grammar.compile(a)(self.x)
+            sideeffect_top=[sideeffect.push(x,a) for sideeffect in sideeffects]
+            compiled_top=grammar_compile(a)(x)
             # wrapped top
             wtop=(sideeffect_top,compiled_top) 
 
-            self.stack.append(wtop)
+            stack.append(wtop)
 
             a=next(compiled_top)
 
             while isinstance(a,string_types):
                 #pop
-                for sideeffect,w in zip(self.sideeffects,wtop[0]):
-                    sideeffect.pop(self.x,w,a)
+                for sideeffect,w in zip(sideeffects,wtop[0]):
+                    sideeffect.pop(x,w,a)
 
-                self.stack.pop()
+                stack.pop()
 
-                if len(self.stack)==0:
+                if len(stack)==0:
                     return a
 
-                wtop=self.stack[-1]
+                wtop=stack[-1]
                 a=wtop[1].send(a)
 
 
