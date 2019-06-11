@@ -10,7 +10,7 @@ from gramma import *
 
 
 # define a depth tracker for use later
-ruleDepthTracker=DepthTracker(lambda ge:isinstance(ge,GRule))
+ruleDepthTracker=RuleDepthTracker()
 
 # we can use a weighted alternation to control recursion depth
 g=GrammaGrammar('start :=  (3 "" | 10 "a".start );')

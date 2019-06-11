@@ -563,7 +563,7 @@ gramma_grammar = r"""
 
     number: INT|FLOAT
 
-    range : "[" CHAR  ".." CHAR "]"
+    range : "[" CHAR  (".." CHAR)? (COMMA CHAR  (".." CHAR)? )* "]"
 
     NAME : /[a-zA-Z_][a-zA-Z_0-9]*/
 
@@ -1074,31 +1074,52 @@ class GRep(GInternal):
 class GRange(GExpr):
     tag='range'
 
-    __slots__='lo','hi'
-    def __init__(self,lo,hi):
+    __slots__='chars',
+    def __init__(self,chars):
         GExpr.__init__(self)
-        self.lo=lo
-        self.hi=hi
+        self.chars=chars
 
     def get_meta(self):
         return GExprMetadata.DEFAULT_RANDOM
 
     def copy(self):
-        return GRange(self.lo,self.hi)
+        return GRange(self.chars)
 
     def simplify(self):
-        if self.hi-self.lo==1:
-            return GTok.from_str(chr(self.lo))
+        if len(self.chars)==1:
+            return GTok.from_str(self.chars[0])
         return self.copy()
 
     def __str__(self):
-        return "['%s' .. '%s']" % (chr(self.lo), chr(self.hi))
+        if len(self.chars)==0:
+            return "''"
+        chars=sorted([ord(c) for c in self.chars])
+        cur=[chars[0], chars[0]]
+        l=[cur]
+        i=1
+        for c in chars[1:]:
+            if c==cur[1]+1:
+                cur[1]+=1
+            else:
+                cur=[c,c]
+                l.append(cur)
+        return '[%s]' % (','.join("'%s' .. '%s'" % (chr(c0),chr(c1)) for c0,c1 in l ))
 
     @classmethod
     def parse_larktree(cls,lt):
-        lo=ord(GExpr.parse_larktree(lt.children[0]).as_str())
-        hi=ord(GExpr.parse_larktree(lt.children[1]).as_str())
-        return GRange(lo,hi)
+        it=iter(lt.children)
+        try:
+            chars=[eval(next(it).value)]
+            while True:
+                tok=next(it)
+                if tok.type=='COMMA':
+                    chars.append(eval(next(it).value))
+                else: # tok.type=='CHAR'
+                    c1=eval(tok.value)
+                    chars.extend([chr(c) for c in range(ord(chars[-1])+1, ord(c1)+1)])
+        except StopIteration:
+            pass
+        return GRange(chars)
 
 class GFunc(GInternal):
     tag='func'
@@ -1743,52 +1764,6 @@ class GrammaGrammar(object):
         self.finalize_gexpr(ge)
         return ge
 
-    def compile0(self, ge):
-        if isinstance(ge,GTok):
-            def g(x):
-                yield ge.as_str()
-        elif isinstance(ge,GTern):
-            def g(x):
-                s=yield (ge.children[0] if ge.compute_case(x) else ge.children[1])
-                yield s
-        elif isinstance(ge,GAlt):
-            if ge.dynamic:
-                def g(x):
-                    s=yield x.random.choice(ge.children,p=ge.compute_weights(x))
-                    yield s
-            else:
-                def g(x):
-                    s=yield x.random.choice(ge.children,p=ge.nweights)
-                    yield s
-        elif isinstance(ge,GCat):
-            def g(x):
-                s=''
-                for cge in ge.children:
-                    s+=yield cge
-                yield s
-        elif isinstance(ge,GRep):
-            def g(x):
-                s=''
-                n=ge.rgen(x)
-                while n>0:
-                    s+=yield(ge.child)
-                    n-=1
-                yield s
-        elif isinstance(ge, GRange):
-            def g(x):
-                yield chr(x.random.randint(ge.lo,ge.hi+1))
-        elif isinstance(ge,GRule):
-            rhs=ge.rhs
-            def g(x):
-                s=yield(rhs)
-                yield s
-        elif isinstance(ge, GFunc):
-            def g(x,gf=ge.gf,fargs=ge.fargs):
-                return gf(x,*fargs)
-        else:
-            raise GrammaGrammarException('unrecognized expression: (%s) %s' % (type(ge), ge))
-        return g
-
     def _init_compilemap(self):
         self._compilemap={}
         for t in [GTok,GTern,GAlt,GCat,GRep,GRange,GRule,GFunc]:
@@ -1829,8 +1804,11 @@ class GrammaGrammar(object):
             yield s
         return g
     def compile_GRange(self,ge):
+        n=len(ge.chars)
+        chars=ge.chars
         def g(x):
-            yield chr(x.random.randint(ge.lo,ge.hi+1))
+            # faster than random.choice for flat p
+            yield chars[x.random.randint(0,n)]
         return g
     def compile_GRule(self,ge):
         rhs=ge.rhs
@@ -2186,7 +2164,7 @@ class TraceNode(object):
 
 
 
-class DepthTracker(SideEffect):
+class GeneralDepthTracker(SideEffect):
     __slots__='pred','varname','initial_value'
 
     def __init__(self,pred=None, varname='depth', initial_value=0):
@@ -2211,6 +2189,31 @@ class DepthTracker(SideEffect):
     def pop(self,x,w,s):
         if w:
             setattr(x.state, self.varname, getattr(x.state, self.varname)-1)
+
+class DepthTracker(SideEffect):
+    def reset_state(self,state):
+        state.depth=0
+
+    def push(self,x,ge):
+        x.state.depth+=1
+        return True
+
+    def pop(self,x,w,s):
+        x.state.depth-=1
+
+class RuleDepthTracker(SideEffect):
+    def reset_state(self,state):
+        state.depth=0
+
+    def push(self,x,ge):
+        if isinstance(ge,GRule):
+            x.state.depth+=1
+            return True
+        return False
+
+    def pop(self,x,w,s):
+        if w:
+            x.state.depth-=1
 
 class Tracer(SideEffect):
     __slots__='tt','tracetree'
@@ -2244,5 +2247,18 @@ class Tracer(SideEffect):
                 setattr(self.tt.outstate, varname, copy.deepcopy(getattr(x.state,varname)))
 
         self.tt=self.tt.parent
+
+class TracingSampler(GrammaSampler):
+    __slots__='tracer',
+    def __init__(self,grammar=None, **params):
+        GrammaSampler.__init__(self,grammar,**params)
+        self.tracer=Tracer()
+        self.add_sideeffects(self.tracer)
+
+    def sample_tracetree(self,ge=None,randstate=None):
+        if randstate!=None:
+            self.random.set_state(randstate)
+        self.sample(ge)
+        return tracer.tracetree
 
 # vim: ts=4 sw=4

@@ -30,7 +30,7 @@ class LeftAltTransformer(Transformer):
                 return nge
         return ge
 
-    altDepthTracker=DepthTracker(varname='altdepth', pred=lambda ge:isinstance(ge,GAlt))
+    altDepthTracker=GeneralDepthTracker(varname='altdepth', pred=lambda ge:isinstance(ge,GAlt))
 
 g=VarietyGrammar()
 sampler=GrammaSampler(g)

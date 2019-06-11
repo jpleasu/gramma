@@ -43,6 +43,8 @@ class VarietyGrammar(GrammaGrammar):
 
         digit := ['0' .. '9'];
 
+        weirddigits := ['0','2'..'5','7','9'];
+
         words := (`1000*(depth>20)` "*" | " ").
                  ( .75 "dog" | .25 "cat" ).
                  (" f=".f()." a=".(`a`?"1":"0")." ff=".ff()){1,4};
