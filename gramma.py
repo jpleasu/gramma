@@ -249,20 +249,9 @@ r'''
 
 
     TODO:
-        - analyze grammar to identify recursions.. insert parameters to
-          alternations to help control depth.
-        - examples
-            - resample: sample, pick an "interesting" node, resample..
-                - identify failing nodes by parsing compile error line
-                  references.
-                - AFL
-                - hypothesis testing
-                - function fitting
-                - novelty search
-
-            - regression: parameterize alternations w/ independent variables,
-              compute dependent variable.
-
+        - learn gramma grammar w/ weights from ANTLR parse trees.
+        - general "find recursions" in gramma grammar to alternations to help
+          control depth.
         - finish TraceNode.resample
             - when a gfunc is resampled, we should ensure it gets the same
               state as it would have in the original execution.
@@ -406,7 +395,7 @@ import inspect,ast
 
 from itertools import islice,groupby
 
-from collections import namedtuple
+from collections import deque
 
 from functools import wraps
 
@@ -670,11 +659,15 @@ class GExpr(object):
         raise GrammaParseError('''only tokens (literal strings) have an as_str method''')
 
 class GTok(GExpr):
-    __slots__='type','value'
+    _typemap={'CHAR':'string'}
+    __slots__='type','value','s'
     def __init__(self,type,value):
         GExpr.__init__(self)
-        self.type=type
+        #self.type='string' if type=='CHAR' else type
+        self.type=GTok._typemap.get(type,type)
         self.value=value
+        if self.type=='string':
+            self.s=eval(self.value)
 
     def copy(self):
         return GTok(self.type,self.value)
@@ -699,7 +692,7 @@ class GTok(GExpr):
         return float(self.value)
 
     def as_str(self):
-        return eval(self.value)
+        return self.s
 
     def as_num(self):
         if self.type==u'INT':
@@ -761,14 +754,15 @@ class GCode(GExpr):
     '''
        code expression, e.g. for dynamic alternation weights, ternary expressions, and dynamic repetition
     '''
-    __slots__='expr','meta'
+    __slots__='expr','compiled','meta'
     def __init__(self, expr, meta=None):
         self.expr=expr
+        self.compiled=compile(expr,'<GCode>','eval')
         self.meta=GExprMetadata.DEFAULT.copy() if meta==None else meta
 
     def invoke(self, x):
         locs=dict(x.params.__dict__, **x.state.__dict__)
-        return eval(self.expr, globals(), locs)
+        return eval(self.compiled, globals(), locs)
 
     def __str__(self):
         return '`%s`' % self.expr
@@ -1232,14 +1226,15 @@ class GrammaRandom(object):
         print(l,kw)
 
 
-class SamplerInterface(namedtuple('SamplerInterface','random state params')):
+class SamplerInterface(object):
     '''
         constructed by GrammaSampler and passed to generators for access to
         random and state.
     '''
+    __slots__='random','state','params'
 
-    def __new__(cls,sampler):
-        return super(SamplerInterface,cls).__new__(cls,sampler.random,sampler.state,sampler.params)
+    def __init__(self,sampler):
+        self.random,self.state,self.params=sampler.random,sampler.state,sampler.params
 
 class GrammaSampler(object):
     '''
@@ -1298,7 +1293,7 @@ class GrammaSampler(object):
             sideeffect.reset_state(self.state)
 
         self.x=SamplerInterface(self)
-        self.stack=[]
+        self.stack=deque()
 
     def sample(self,ge=None):
         if ge==None:
@@ -1526,7 +1521,11 @@ class GFuncAnalyzer(pysa.VariableAccesses):
         elif isinstance(p,ast.BinOp):
             if p.left!=y and p.right!=y:
                 self._raise('failed to analyze yield expression')
+        elif isinstance(p,ast.Compare):
+            if p.left!=y and not y in p.comparators:
+                self._raise('failed to analyze yield expression')
         else:
+            #astpretty.pprint(p)
             if p.value!=y:
                 self._raise('failed to analyze yield expression')
 
@@ -1604,6 +1603,8 @@ class GrammaGrammar(object):
             allowed_global_ids - a list of global variable identifiers ignored
             by GFunc and GCode analyzers.
         '''
+        self._init_compilemap()
+
         if sideeffects==None:
             sideeffects=[]
 
@@ -1737,7 +1738,7 @@ class GrammaGrammar(object):
         self.finalize_gexpr(ge)
         return ge
 
-    def compile(self, ge):
+    def compile0(self, ge):
         if isinstance(ge,GTok):
             def g(x):
                 yield ge.as_str()
@@ -1782,6 +1783,62 @@ class GrammaGrammar(object):
         else:
             raise GrammaGrammarException('unrecognized expression: (%s) %s' % (type(ge), ge))
         return g
+
+    def _init_compilemap(self):
+        self._compilemap={}
+        for t in [GTok,GTern,GAlt,GCat,GRep,GRange,GRule,GFunc]:
+            self._compilemap[t]=getattr(self,'compile_'+t.__name__)
+    def compile_GTok(self,ge):
+        def g(x):
+            yield ge.s
+        return g
+    def compile_GTern(self,ge):
+        def g(x):
+            s=yield (ge.children[0] if ge.compute_case(x) else ge.children[1])
+            yield s
+        return g
+    def compile_GAlt(self,ge):
+        if ge.dynamic:
+            def g(x):
+                s=yield x.random.choice(ge.children,p=ge.compute_weights(x))
+                yield s
+        else:
+            def g(x):
+                s=yield x.random.choice(ge.children,p=ge.nweights)
+                yield s
+        return g
+    def compile_GCat(self,ge):
+        def g(x):
+            s=''
+            for cge in ge.children:
+                s+=yield cge
+            yield s
+        return g
+    def compile_GRep(self,ge):
+        def g(x):
+            s=''
+            n=ge.rgen(x)
+            while n>0:
+                s+=yield(ge.child)
+                n-=1
+            yield s
+        return g
+    def compile_GRange(self,ge):
+        def g(x):
+            yield chr(x.random.randint(ge.lo,ge.hi+1))
+        return g
+    def compile_GRule(self,ge):
+        rhs=ge.rhs
+        def g(x):
+            s=yield(rhs)
+            yield s
+        return g
+    def compile_GFunc(self,ge):
+        def g(x,gf=ge.gf,fargs=ge.fargs):
+            return gf(x,*fargs)
+        return g
+    def compile(self,ge):
+        return self._compilemap[ge.__class__](ge)
 
 
 class CacheConfig(object):
@@ -2027,7 +2084,7 @@ class TraceNode(object):
         # statevar should be correct
         # these are the statevars defed by defintinitized elements.. e.g. that
         # won't be available unless they're explicitly provided
-        statevar_defs=set()
+        modified_statevars=set()
 
         def recurse(t):
             ''' 
@@ -2037,18 +2094,18 @@ class TraceNode(object):
             meta=t.ge.get_meta()
 
             if pred(t):
-                if statevar_defs.isdisjoint(meta.statevar_uses):
+                if modified_statevars.isdisjoint(meta.statevar_uses):
                     for v in meta.statevar_defs:
-                        statevar_defs.discard(v)
+                        modified_statevars.discard(v)
                     return True, t.ge.copy()
                 l=[]
-                for varname in statevar_defs&meta.statevar_uses:
+                for varname in modified_statevars&meta.statevar_uses:
                     slot=cachecfg.new_state(getattr(t.instate,varname))
                     l.append(grammar.parse('''load('%s','%s')''' % (varname,slot) ) )
 
                 l.append(t.ge.copy())
                 for v in meta.statevar_defs:
-                    statevar_defs.discard(v)
+                    modified_statevars.discard(v)
 
                 return True,GCat(l)
 
@@ -2057,9 +2114,9 @@ class TraceNode(object):
                 #return GCat([grammar.parse('reseed_rand()'),t.ge.copy(),grammar.parse("load_rand('"+slot+"')")])
                 #return True, GCat([GTok.from_str('>>>>>>>'),t.ge.copy(),GTok.from_str('<<<<<<<<')])
 
-            statevar_defs0=statevar_defs.copy()
+            modified_statevars0=modified_statevars.copy()
             for v in meta.statevar_defs:
-                statevar_defs.add(v)
+                modified_statevars.add(v)
 
             ## definitize ##
             ge=t.ge
@@ -2106,11 +2163,11 @@ class TraceNode(object):
                 # AND we might use rand in combination with samples, it's messy
                 # to recreate..
                 #   load_rand('gf_inrand').gf(arg1.load_rand('arg1_outrand'), ...).reseed_rand()
-                if statevar_defs0.isdisjoint(meta.statevar_uses):
+                if modified_statevars0.isdisjoint(meta.statevar_uses):
                     return True, newgf
 
                 l=[]
-                for varname in statevar_defs0&meta.statevar_uses:
+                for varname in modified_statevars0&meta.statevar_uses:
                     slot=cachecfg.new_state(getattr(t.instate,varname))
                     l.append(grammar.parse('''load('%s','%s')''' % (varname,slot) ) )
                 l.append(newgf)
@@ -2121,6 +2178,7 @@ class TraceNode(object):
 
         b,ge=recurse(self)
         return ge.simplify(), cachecfg
+
 
 
 class DepthTracker(SideEffect):
