@@ -1588,7 +1588,7 @@ class GrammaGrammar(object):
     ruledef_parser = lark.Lark(gramma_grammar, parser='earley', lexer='standard', start='start')
     expr_parser = lark.Lark(gramma_grammar, parser='earley', lexer='standard', start='tern')
 
-    __slots__='sideeffects', 'ruledefs', 'funcdefs', 'reset_states', 'allowed_global_ids', 'param_ids'
+    __slots__='sideeffects', 'ruledefs', 'funcdefs', 'reset_states', 'allowed_global_ids', 'param_ids','_compilemap'
 
     def __init__(self, gramma_expr_str, sideeffects=None, param_ids=None, allowed_global_ids=None):
         '''
