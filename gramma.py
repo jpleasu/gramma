@@ -1323,41 +1323,45 @@ class GrammaSampler(object):
         if isinstance(ge,string_types):
             ge=self.grammar.parse(ge)
 
-        self.reset_state()
 
+        transformers=self.transformers
+        transforms=[transformer.transform for transformer in transformers]
+        sideeffects=self.sideeffects
+        sideeffect_pushes=[sideeffect.push for sideeffect in sideeffects]
+        sideeffect_pops=[sideeffect.pop for sideeffect in sideeffects]
+        grammar_compile=self.grammar.compile
+
+        self.reset_state()
         a=ge
         stack=self.stack
-        transformers=self.transformers
-        sideeffects=self.sideeffects
-        grammar_compile=self.grammar.compile
+        stack_append=stack.append
+        stack_pop=stack.pop
         x=self.x
         while True:
             #assert(isinstance(a,GExpr))
 
-            for transformer in transformers:
-                a=transformer.transform(x,a)
+            for transform in transforms:
+                a=transform(x,a)
 
-            sideeffect_top=[sideeffect.push(x,a) for sideeffect in sideeffects]
+            sideeffect_top=[push(x,a) for push in sideeffect_pushes]
             compiled_top=grammar_compile(a)(x)
             # wrapped top
-            wtop=(sideeffect_top,compiled_top) 
-
-            stack.append(wtop)
+            stack_append((sideeffect_top,compiled_top))
 
             a=next(compiled_top)
 
             while isinstance(a,string_types):
                 #pop
-                for sideeffect,w in zip(sideeffects,wtop[0]):
-                    sideeffect.pop(x,w,a)
+                for pop,w in zip(sideeffect_pops,sideeffect_top):
+                    pop(x,w,a)
 
-                stack.pop()
+                stack_pop()
 
                 if len(stack)==0:
                     return a
 
-                wtop=stack[-1]
-                a=wtop[1].send(a)
+                sideeffect_top,compiled_top=stack[-1]
+                a=compiled_top.send(a)
 
 
 def get_reset_states(cls,method_name='reset_state'):
