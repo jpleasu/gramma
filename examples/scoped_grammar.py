@@ -3,6 +3,11 @@
 
     demonstrate scoped variable declaraions
 
+    TODO: demonstrate a sideeffect that manages the pushing and popping of
+    variable scopes based on rule context.. e.g. in this case, every block
+    should get a new context on entry, and drop it on exit -- no need for
+    explicit "push" and "pop" gexprs.
+
 '''
 from __future__ import absolute_import, division, print_function
 from builtins import super

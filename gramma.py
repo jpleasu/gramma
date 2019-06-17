@@ -249,83 +249,46 @@ r'''
 
 
     TODO:
+        - consider seq and cyc operators
+            - e.g.
+                ge=seq(ge1,ge2,...,geN)
+                sample(ge) -> sample(ge1)
+                sample(ge) -> sample(ge2)
+                ...
+                sample(ge) -> sample(geN)
+                ...
+                sample(ge) -> sample(geN)
+
+                ge=cyc(ge1,ge2,...,geN)
+                sample(ge) -> sample(ge1)
+                sample(ge) -> sample(ge2)
+                ...
+                sample(ge) -> sample(geN)
+                sample(ge) -> sample(ge1)
+                sample(ge) -> sample(ge2)
+                ...
+                sample(ge) -> sample(geN)
+            - this would allow for "replay" expressions:
+                gf(seq(ge1,ge2))
+            - if we name the state variable, e.g. seq('seq1',ge1,ge2,...), and
+              reset to 0, this is a simple gfunc.. to make it automatic:
+                - add gfunc decorator paramater 'reset_state'
+                    @gfunc(reset_state=cyc_reset_state)
+                    def cyc(x,sv_name,*l):
+                        i=getattr(x.state,sv_name)
+                - update finalize_gexpr
+                    - disable analyzer if gfunc has reset_state
+                - update either GrammaSampler.sample or GrammaSampler.reset_state
+                    - call the resets for gfuncs that have'm
+            
+
         - learn gramma grammar w/ weights from ANTLR parse trees.
         - general "find recursions" in gramma grammar to alternations to help
           control depth.
-        - finish TraceNode.resample
-            - when a gfunc is resampled, we should ensure it gets the same
-              state as it would have in the original execution.
-
-            - low level api allows decisions at each node:
-                - on enter, use saved random, current random
-                - on enter, use saved state or current state for each statevar
-                - "definitize" - shorthand for use saved random and use saved
-                  state
-                - behavior might depend on child's behavior.. e.g. in the
-                  simple resample case, a gfunc with a reampled child must be
-                  executed again, meaning it might need to load the original
-                  state first.
-
-            - if we assume a new incoming random, we don't need to reseed random..
-              and if the only users of random that follow are also being resampled,
-              we don't need to reload previous random.
-            - if we resample from a statevar using node, we will need to
-              provide the state.. do we assume that successive resample nodes
-              use the corresponding, possibly new, state, or are they all
-              resumed w/ the state they were run with previously?
-                - first off, drop any resample nodes that are children of other
-                  resample nodes.. they won't exist in the new world!
-                - it seems sane that distinct stateful nodes should resume with
-                  the state they had last time.
-
-        - stacked state
-            - finish scoping exampling
-            - to create scoped state, so that a statevar exists only at the
-              depth it's scoped for, e.g.
-
-                r := scoped(definevar(id) . "blah". (r . "blah" . usevar()){2,10} );
-
-             where the GrammaGramma child class contains:
-
-                def reset_state(state):
-                    state.stk=[]
-                    state.stktop=None
-
-                @gfunc
-                def scoped(x,child):
-                    stk=x.state.stk
-                    if len(stk)>0:
-                        # inherit parent scopes values
-                        stk.append(set(stk[-1]))
-                    else:
-                        stk.append(set())
-                    x.state.stktop=stk[-1]
-                    res = yield(child)
-                    stk.pop()
-                    x.state.stktop=stk[-1]
-                    yield res
-
-                @gfunc
-                def definevar(x,id):
-                    id=yield id
-                    x.state.stktop.add(id)
-                    yield id
-
-                @gfunc
-                def usevar(x):
-                    yield random.choice(x.state.stktop)
-
-            - we could also use a sideeffect to manage the stack, then just
-              depend on the stack sideeffect and use it in gfuncs.
-                def push(self,x,ge):
-                    if is_our_node_type(ge):
-                        x.state.stk.push..
-                        return True
-                    return False
-
-                def pop(self,x,w,s):
-                    if w:
-                        x.state.stk.pop...
+        - resampling
+            - resampling is tree rewriting, from tracetree -> gexpr
+            - the goal is to produce a distribution "around" the original
+              tracetree's sample.
 
         - analyze_reset_state could attempt to guess the type of a state
           variable by finding the right hand side of assignments to it in
