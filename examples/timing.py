@@ -23,8 +23,10 @@ def demo_timing1():
     n=2500
     #n=10000
     t0=perf_counter()
-    for i in xrange(n):
-        s=sampler.sample()
+    #for i in xrange(n):
+    #    s=sampler.sample()
+    for s in islice(sampler.gensamples(),n):
+        pass
     t1=perf_counter()
     print('avg=%f' % ((t1-t0)/n))
 
@@ -47,3 +49,4 @@ def demo_profile():
 if __name__=='__main__':
     #print(timeit.timeit("demo_timing2()", setup="from __main__ import init,demo_timing2;init()"))
     demo_timing1()
+    #demo_profile()

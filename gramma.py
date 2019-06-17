@@ -327,10 +327,10 @@ r'''
                     if w:
                         x.state.stk.pop...
 
-        - get_reset_states could attempt to guess the type of a state variable
-          by finding the right hand side of assignments to it in reset_state.
-          E.g.  set/dict/list.  That way, method access can be interpreted
-          correctly.
+        - analyze_reset_state could attempt to guess the type of a state
+          variable by finding the right hand side of assignments to it in
+          reset_state.  E.g.  set/dict/list.  That way, method access can be
+          interpreted correctly.
 
         - analysis in GrammaGrammar constructor.
             - analyze GCode in parser, so that all calls to "parse" benefit
@@ -350,8 +350,9 @@ if sys.version_info < (3,0):
     #from builtins import (bytes, str, open, super, range,zip, round, input, int, pow, object)
     
     # builtins' object fucks up slots
-    from builtins import (bytes, str, open, super, range,zip, round, input, int, pow)
-    # builtins str also fucks up isinstance(x,str).. use six.string_types
+    # builtins str also fucks up isinstance(x,str).. need use six.string_types
+    from builtins import (bytes, open, super, range,zip, round, input, int, pow)
+
 
     import __builtin__
 
@@ -1231,7 +1232,10 @@ class GrammaRandom(object):
     def set_state(self,st):
         self.r.set_state(st)
 
-    def choice(self,l,p=None):
+    def choice(self,l):
+        return l[self.r.randint(0,len(l))]
+
+    def pchoice(self,l,p):
         return self.r.choice(l,p=p)
 
     def randint(self,low,high):
@@ -1268,7 +1272,7 @@ class GrammaSampler(object):
         samples.
 
     '''
-    __slots__='grammar', 'transformers', 'sideeffects', 'state', 'random', 'stack', 'params', 'x'
+    __slots__='grammar', 'transformers', 'sideeffects', 'state', 'random', 'params'
     def __init__(self,grammar=None, **params):
         self.grammar=grammar
         self.transformers=[]
@@ -1307,16 +1311,10 @@ class GrammaSampler(object):
         for k,v in kw.items():
             setattr(self.params,k,v)
 
-    def reset_state(self):
-        self.grammar.reset_state(self.state)
-
-        for sideeffect in self.sideeffects:
-            sideeffect.reset_state(self.state)
-
-        self.x=SamplerInterface(self)
-        self.stack=deque()
-
     def sample(self,ge=None):
+        return next(self.gensamples(ge))
+
+    def gensamples(self,ge=None):
         if ge==None:
             ge=self.grammar.ruledefs['start']
 
@@ -1324,6 +1322,7 @@ class GrammaSampler(object):
             ge=self.grammar.parse(ge)
 
 
+        # do dot operations for loop once
         transformers=self.transformers
         transforms=[transformer.transform for transformer in transformers]
         sideeffects=self.sideeffects
@@ -1331,40 +1330,55 @@ class GrammaSampler(object):
         sideeffect_pops=[sideeffect.pop for sideeffect in sideeffects]
         grammar_compile=self.grammar.compile
 
-        self.reset_state()
-        a=ge
-        stack=self.stack
+
+        # construct state
+        x=SamplerInterface(self)
+        stack=deque()
+
         stack_append=stack.append
         stack_pop=stack.pop
-        x=self.x
+
         while True:
-            #assert(isinstance(a,GExpr))
-
-            for transform in transforms:
-                a=transform(x,a)
-
-            sideeffect_top=[push(x,a) for push in sideeffect_pushes]
-            compiled_top=grammar_compile(a)(x)
-            # wrapped top
-            stack_append((sideeffect_top,compiled_top))
-
-            a=next(compiled_top)
-
-            while isinstance(a,string_types):
-                #pop
-                for pop,w in zip(sideeffect_pops,sideeffect_top):
-                    pop(x,w,a)
-
-                stack_pop()
-
-                if len(stack)==0:
-                    return a
-
-                sideeffect_top,compiled_top=stack[-1]
-                a=compiled_top.send(a)
+            # reset state
+            self.grammar.reset_state(x.state)
+            for sideeffect in sideeffects:
+                sideeffect.reset_state(x.state)
 
 
-def get_reset_states(cls,method_name='reset_state'):
+            a=ge
+
+            stillgoing=True
+            while stillgoing:
+                #assert(isinstance(a,GExpr))
+
+                for transform in transforms:
+                    a=transform(x,a)
+
+                sideeffect_top=[push(x,a) for push in sideeffect_pushes]
+                compiled_top=grammar_compile(a)(x)
+                # wrapped top
+                stack_append((sideeffect_top,compiled_top))
+
+                a=next(compiled_top)
+
+                #while isinstance(a,string_types):
+                while a.__class__==str:
+                    #pop
+                    for pop,w in zip(sideeffect_pops,sideeffect_top):
+                        pop(x,w,a)
+
+                    stack_pop()
+
+                    if len(stack)==0:
+                        yield a
+                        stillgoing=False
+                        break
+
+                    sideeffect_top,compiled_top=stack[-1]
+                    a=compiled_top.send(a)
+
+
+def analyze_reset_state(cls,method_name='reset_state'):
     m=pysa.get_method(cls,method_name)
     if m==None:
         return set()
@@ -1379,7 +1393,7 @@ class SideEffect(object):
     __slots__=()
 
     def get_reset_states(self):
-        return get_reset_states(self.__class__)
+        return analyze_reset_state(self.__class__)
 
     def reset_state(self,state):
         '''
@@ -1680,7 +1694,7 @@ class GrammaGrammar(object):
 
 
     def get_reset_states(self):
-        return get_reset_states(self.__class__)
+        return analyze_reset_state(self.__class__)
 
     def reset_state(self,state):
         pass
@@ -1756,6 +1770,7 @@ class GrammaGrammar(object):
         # dynamic elements keep their code outside of the expr tree
         for code in ge.get_code():
             GCodeAnalyzer(self, code)
+            # equiv. self.finalize_gexpr(code)
 
         if isinstance(ge, GInternal):
             for c in ge.children:
@@ -1784,11 +1799,11 @@ class GrammaGrammar(object):
     def compile_GAlt(self,ge):
         if ge.dynamic:
             def g(x):
-                s=yield x.random.choice(ge.children,p=ge.compute_weights(x))
+                s=yield x.random.pchoice(ge.children,p=ge.compute_weights(x))
                 yield s
         else:
             def g(x):
-                s=yield x.random.choice(ge.children,p=ge.nweights)
+                s=yield x.random.pchoice(ge.children,p=ge.nweights)
                 yield s
         return g
     def compile_GCat(self,ge):
@@ -1811,7 +1826,6 @@ class GrammaGrammar(object):
         n=len(ge.chars)
         chars=ge.chars
         def g(x):
-            # faster than random.choice for flat p
             yield chars[x.random.randint(0,n)]
         return g
     def compile_GRule(self,ge):
