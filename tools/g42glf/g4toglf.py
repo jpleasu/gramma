@@ -1,4 +1,4 @@
-#!/usr/bin/env python2
+#!/usr/bin/env python3
 '''
 - emits "neg" gfunc for negated character ranges.
 - emits "`maxrep`" upper range value for unbounded iterations
@@ -10,14 +10,16 @@ TODO
 '''
 from __future__ import absolute_import, division, print_function
 
-import sys
+import os, sys
 
 import antlr4
 from antlr4.tree.Tree import RuleNode, ErrorNode, TerminalNode
 
-from antlr4parser.ANTLRv4LexerPythonTarget import ANTLRv4LexerPythonTarget as ANTLRv4Lexer
-from antlr4parser.ANTLRv4Parser import ANTLRv4Parser 
-#from antlr4parser.ANTLRv4ParserVisitor import ANTLRv4ParserVisitor
+sys.path.append(os.path.join(os.path.dirname(__file__), 'antlr4parser'))
+
+from ANTLRv4LexerPythonTarget import ANTLRv4LexerPythonTarget as ANTLRv4Lexer
+from ANTLRv4Parser import ANTLRv4Parser 
+#from ANTLRv4ParserVisitor import ANTLRv4ParserVisitor
 
 from builtins import super
 
@@ -35,7 +37,7 @@ def gchar(c):
   'unicode char -> gramma char'
   u8=c.encode('utf8')
   if len(u8)==1:
-    return repr(u8)
+    return repr(u8)[1:] # drop the b in b'x'
   return repr(c)
 
 class TransformingVisitor(antlr4.ParseTreeVisitor):
@@ -73,6 +75,9 @@ class TransformingVisitor(antlr4.ParseTreeVisitor):
         return '(%s){0,1}' % (self.visit(alt.elementOptions()))
       return '(%s){0,1}.%s' % (self.visit(alt.elementOptions()),s)
     return s
+
+  def visitCharacterRange(self, r):
+    return '[' + self.do_range(r) + ']'
 
   def do_range(self,r):
     s=r.getText()

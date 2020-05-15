@@ -2,7 +2,7 @@ setup
 ======
   - download the antlr4 complete jar
 
-    wget https://www.antlr.org/download/antlr-4.7.2-complete.jar
+    wget https://www.antlr.org/download/antlr-4.8-complete.jar
 
   - get python runtimes
 
@@ -11,40 +11,16 @@ setup
     (pip3 install antlr4-python3-runtime)
 
 
+  - run setup.sh
 
-  - get grammars
-
-    git clone https://github.com/antlr/grammars-v4
-
-  - build the parser and nest it in a working python module
-
-    java -jar antlr-4.7.2-complete.jar -Dlanguage=Python2 -Xexact-output-dir  -o antlr4parser -package antlr4parser ./grammars-v4/antlr4/ANTLRv4Lexer.g4 
-    java -jar antlr-4.7.2-complete.jar -Dlanguage=Python2 -Xexact-output-dir  -o antlr4parser -package antlr4parser ./grammars-v4/antlr4/ANTLRv4LexerPythonTarget.g4 
-    java -jar antlr-4.7.2-complete.jar -Dlanguage=Python2 -Xexact-output-dir  -o antlr4parser -package antlr4parser -visitor ./grammars-v4/antlr4/ANTLRv4Parser.g4 
-
-    touch antlr4parser/__init__.py
-    cp grammars-v4/antlr4/LexerAdaptor.py antlr4parser/
-
-  - use the parser
-
-      import antlr4
-      from antlr4parser.ANTLRv4LexerPythonTarget import ANTLRv4LexerPythonTarget as ANTLRv4Lexer
-      from antlr4parser.ANTLRv4Parser import ANTLRv4Parser 
-
-      lexer = ANTLRv4Lexer(antlr4.FileStream('grammars-v4/antlr4/examples/Hello.g4'))
-      stream = antlr4.CommonTokenStream(lexer)
-      parser = ANTLRv4Parser(stream)
-      tree = parser.grammarSpec()
-
-
-usage
-=====
+converting to a glf file
+========================
 - e.g. for json
-  ./g4toglf.py grammars-v4/json/JSON.g4
+  ./g4toglf.py grammars-v4/json/JSON.g4 2> JSON.glf
 
 - ANTLR grammars are for parsing, not generation of strings, so certain constructs need tweaking.
   - in ANTLR, X* will recognize any sequence of X's... to generate, we need a distribution on the number of repetitions.
-    g4toglf puts a placeholder "_MAX_REP" in place of either a distribution or upperbound.
+    g4toglf puts a parameter `maxrep` in place of either a distribution or upperbound.
   - negated ranges are output as PARSEME_RANGE(~....) since we typically don't want to generate an arbitrary value
     outside the specified range.
   - recursion is unchecked, so if the resulting grammar hangs, identify alternations where the recursive route is
