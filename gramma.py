@@ -714,6 +714,8 @@ class GInternal(GExpr):
                 children.append(c)
         return children
 
+gcode_globals=globals()
+
 class GCode(GExpr):
     '''
        code expression, e.g. for dynamic alternation weights, ternary expressions, and dynamic repetition
@@ -726,7 +728,7 @@ class GCode(GExpr):
 
     def invoke(self, x):
         locs=dict(x.params.__dict__, **x.state.__dict__)
-        return eval(self.compiled, globals(), locs)
+        return eval(self.compiled, gcode_globals, locs)
 
     def __str__(self):
         return '`%s`' % self.expr

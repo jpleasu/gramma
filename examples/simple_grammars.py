@@ -31,9 +31,24 @@ class ArithmeticGrammar(GrammaGrammar):
 
 
 
+import traceback
+
+# "global" means the globals in the gramma module, e.g. vars(gramma)
+# unless we change gcode_globals to point here, as follows:
+import gramma
+gramma.gcode_globals=globals()
+
+
+# now these will be visible in gcode
+def g_func():
+    for line in traceback.format_stack():
+        print(line)
+    return 8
+g_allowed='g_allowed'
+
 class VarietyGrammar(GrammaGrammar):
     '''
-         a grammar that uses a varietry of gramma's features
+         a grammar that uses a variety of gramma's features
     '''
 
     G=r'''
@@ -54,7 +69,7 @@ class VarietyGrammar(GrammaGrammar):
     
 
     def __init__(self):
-        GrammaGrammar.__init__(self, self.G, sideeffects=[DepthTracker],allowed_global_ids=['g_allowed'])
+        GrammaGrammar.__init__(self, self.G, sideeffects=[DepthTracker],allowed_global_ids='g_allowed g_func'.split(), param_ids='maxrep'.split())
 
     def reset_state(self,state):
         super().reset_state(state)
@@ -74,8 +89,8 @@ class VarietyGrammar(GrammaGrammar):
 
 
     @gfunc()
-    def g(x):
-        yield 'g_return' + g_allowed
+    def use_global(x):
+        yield 'use_global_return ' + g_allowed
 
     @staticmethod
     def punt(ge):
@@ -96,7 +111,7 @@ class VarietyGrammar(GrammaGrammar):
 
 
 if __name__=='__main__':
-    print(GrammaSampler(VarietyGrammar()).sample())
+    print(GrammaSampler(VarietyGrammar(),maxrep=100).sample())
 
 
 # vim: ts=4 sw=4
