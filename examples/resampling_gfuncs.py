@@ -1,4 +1,4 @@
-#!/usr/bin/env python
+#!/usr/bin/env python3
 '''
     demo resampling when more complicated gfuncs are present
 '''

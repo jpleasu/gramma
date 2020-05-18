@@ -1,4 +1,4 @@
-#!/usr/bin/env python
+#!/usr/bin/env python3
 '''
     demo resampling with a bias to the previous sample
 '''

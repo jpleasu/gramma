@@ -1,4 +1,4 @@
-#!/usr/bin/env python
+#!/usr/bin/env python3
 '''
 
     demonstrate use of the Tracer to generate a tracetree

@@ -1,4 +1,4 @@
-#!/usr/bin/env python
+#!/usr/bin/env python3
 '''
 
     a mathematically silly example that demonstrates resampling for optimization.

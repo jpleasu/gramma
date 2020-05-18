@@ -1,4 +1,4 @@
-#!/usr/bin/env python
+#!/usr/bin/env python3
 '''
 
     demonstrate some of the checking that gramma does to ensure that gfuncs are
