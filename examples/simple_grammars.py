@@ -54,6 +54,10 @@ class VarietyGrammar(GrammaGrammar):
     G=r'''
         start := recurs;
 
+        yyy:='a'{,`g_func()`};
+
+        xxx:='a'{1,`g_func()`};
+
         recurs := 10 ".".recurs | words . " " . ['1'..'9'] . digit{1,15,geom(5)};
 
         digit := ['0' .. '9'];

@@ -66,6 +66,12 @@ r'''
         x{1,5,geom(3)}
             - same as above, but reject n outside of the interval [1,5]
 
+        - furthermore, bounds can be replaced with gcode to compute at runtime,
+          e.g.
+
+          x{1,`maxrep`}
+            - generate x between 1 and eval(`maxrep`) times
+
      function call (gfuncs) - as defined in a GrammaGrammar subclass
         f(x)
 
@@ -505,8 +511,8 @@ gramma_grammar = r"""
 
     ?rep: atom ( "{" rep_args "}" )?
 
-    rep_args : INT? (COMMA INT?)? (COMMA (func|code))?
-            | func | code
+    rep_args : (INT|code)? (COMMA (INT|code)?)? (COMMA func)?
+            | func
 
     ?atom : string
          | rule
@@ -802,7 +808,7 @@ class GAlt(GInternal):
         return [w for w in self.weights if isinstance(w,GCode)]
 
     def get_meta(self):
-        return reduce(lambda a,b:a|b, (w.meta for w in self.weights if isinstance(w,GCode)), GExprMetadata(uses_random=True))
+        return reduce(lambda a,b:a|b, (w.meta for w in self.get_code()), GExprMetadata(uses_random=True))
 
     def compute_weights(self,x):
         '''
@@ -866,7 +872,7 @@ class GAlt(GInternal):
         # dedupe (and sort) by string representation
         nchildren=[]
         nweights=[]
-        for sc, tups in groupby(sorted( (str(c), c, w) for w,c in zip(weights, children) ), key=lambda tup:tup[0]):
+        for sc, tups in groupby(sorted( ((str(c), c, w) for w,c in zip(weights, children)), key=lambda tup:tup[0]), key=lambda tup:tup[0]):
             tups=list(tups)
             nweights.append(sum(tup[2] for tup in tups))
             nchildren.append(tups[0][1])
@@ -938,14 +944,10 @@ class GRep(GInternal):
         self.dist=dist
 
     def get_code(self):
-        if isinstance(self.dist, GCode):
-            return [self.dist]
-        return []
+        return [c for c in [self.lo,self.hi,self.dist] if isinstance(c,GCode)]
 
     def get_meta(self):
-        if isinstance(self.dist, GCode):
-            return self.dist.meta
-        return GExprMetadata.DEFAULT_RANDOM
+        return reduce(lambda a,b:a|b, (c.meta for c in self.get_code()), GExprMetadata(uses_random=True))
 
     @property
     def child(self):
@@ -957,22 +959,38 @@ class GRep(GInternal):
     def simplify(self):
         return GRep([self.child.simplify()],self.lo,self.hi,self.rgen,self.dist)
 
-    def intargs(self):
+    def range_args(self):
         if self.lo==self.hi:
-            return '%d' % (self.lo)
-        lo='' if self.lo==0 else '%s' % (self.lo)
-        return '%s,%d' % (lo,self.hi)
+            if self.lo==None:
+                return ','
+            return '%s' % (self.lo)
+        lo='' if self.lo==None else '%s' % (self.lo)
+        hi='' if self.hi==None else '%s' % (self.hi)
+        return '%s,%s' % (lo,self.hi)
 
     def __str__(self):
         child=self.child
         if self.dist=='unif':
-            return '%s{%s}' % (child, self.intargs())
+            return '%s{%s}' % (child, self.range_args())
         elif isinstance(self.dist, GCode):
-            return '%s{%s,%s}' % (child, self.intargs(),self.dist)
-        return '%s{%s,%s}' % (child, self.intargs(),self.dist)
+            return '%s{%s,%s}' % (child, self.range_args(),self.dist)
+        return '%s{%s,%s}' % (child, self.range_args(),self.dist)
 
     @classmethod
     def parse_larktree(cls,lt):
+        '''
+            {,}     - uniform, integer size bounds
+            {#}     - exactly #
+            {d}     - sample from distribution d
+            {,d}    - " " " "
+            {,#}    - uniform with upper bound, lower bound is 0
+            {#,}    - uniform with lower bound, no upper bound
+            {#,#}   - uniform with lower and upper bounds
+            {#,d}   - sample from distribution d, reject if below lower bound
+            {,#,d}  - sample from distribution d, reject if above upper bound
+            {#,#,d} - sample from distribution d, reject if out of bounds
+
+        '''
         child=GExpr.parse_larktree(lt.children[0])
         args=[GExpr.parse_larktree(c) for c in lt.children[1].children[:]]
         # figure out the distribution.. if not a GCode or a GFunc, assume uniform
@@ -994,47 +1012,96 @@ class GRep(GInternal):
             else:
                 raise GrammaParseError('no dist %s' % (fname))
 
-            f=lambda lo,hi:lambda x:min(hi,max(lo,g(x)))
-            del args[-2:]
-        elif isinstance(a, GCode):
-            dist=a
-            f=lambda lo,hi:lambda x:min(hi,max(lo,a.invoke(x)))
             del args[-2:]
         else:
             dist='unif'
-            f=lambda lo,hi:lambda x:x.random.randint(lo,hi+1)
+            g=None
 
-        #print('lenargs=%d' % len(args))
-
-        # parse bounds
+        # parse bounds to lo and hi, each is either None, GTok integer, or GCode
         if len(args)==0:
             # {`dynamic`}
-            lo=0
-            hi=2**32
+            lo=None
+            hi=None
         elif len(args)==1:
             # {2} or {2,`dynamic`}.. where the latter is pretty stupid
-            lo=hi=args[0].as_int()
+            lo=hi=args[0]
         elif len(args)==2:
             # {0,,`dynamic`}
             if(str(args[1])==','):
                 lo=args[0].as_int()
-                hi=2**32
+                hi=None
             else:
                 # {,2} or {,2,`dynamic`}
                 if str(args[0])!=',':
                     raise GrammaParseError('expected comma in repetition arg "%s"' % lt)
-                lo=0
-                hi=args[1].as_int()
+                lo=None
+                hi=args[1]
         elif len(args)==3:
             # {2,3} or {2,3,`dynamic`}
-            lo=args[0].as_int()
-            hi=args[2].as_int()
+            lo=args[0]
+            hi=args[2]
         else:
             raise GrammaParseError('failed to parse repetition arg "%s"' % lt)
 
-        rgen=f(lo,hi)
-        # print(lt)
-        #print('lo=%d hi=%d\n\n' % (lo,hi))
+
+        if hi==None:
+            if lo==None:
+                if g==None:
+                    rgen=lambda x:x.random.randint(0,2**32)
+                else:
+                    rgen=g
+            else:
+                if isinstance(lo,GCode):
+                    if g==None:
+                        rgen=lambda x:x.random.randint(lo.invoke(x),2**32)
+                    else:
+                        rgen=lambda x:max(lo.invoke(x),g(x))
+                else:
+                    lo=lo.as_int()
+                    if g==None:
+                        rgen=lambda x:x.random.randint(lo,2**32)
+                    else:
+                        rgen=lambda x:max(lo,g(x))
+        else:
+            if isinstance(hi,GCode):
+                if lo==None:
+                    if g==None:
+                        rgen=lambda x:x.random.randint(0,1+hi.invoke(x))
+                    else:
+                        rgen=lambda x:min(g(x),hi.invoke(x))
+                else:
+                    if isinstance(lo,GCode):
+                        if g==None:
+                            rgen=lambda x:x.random.randint(lo.invoke(x),1+hi.invoke(x))
+                        else:
+                            rgen=lambda x:max(lo.invoke(x),min(g(x),hi.invoke(x)))
+                    else:
+                        lo=lo.as_int()
+                        if g==None:
+                            rgen=lambda x:x.random.randint(lo,1+hi.invoke(x))
+                        else:
+                            rgen=lambda x:max(lo,min(g(x),hi.invoke(x)))
+            else:
+                hi=hi.as_int()
+                hip1=1+hi
+                if lo==None:
+                    if g==None:
+                        rgen=lambda x:x.random.randint(0,hip1)
+                    else:
+                        rgen=lambda x:min(g(x),hi)
+                else:
+                    if isinstance(lo,GCode):
+                        if g==None:
+                            rgen=lambda x:x.random.randint(lo.invoke(x),hip1)
+                        else:
+                            rgen=lambda x:max(lo.invoke(x),min(g(x),hi))
+                    else:
+                        lo=lo.as_int()
+                        if g==None:
+                            rgen=lambda x:x.random.randint(lo,hip1)
+                        else:
+                            rgen=lambda x:max(lo,min(g(x),hi))
+
         return GRep([child],lo,hi,rgen,dist)
 
 class GRange(GExpr):
@@ -1245,7 +1312,7 @@ class GrammaSampler(object):
         self.random=GrammaRandom()
         self.state=GrammaState()
         self.params=type('Params',(),{})
-
+        self.update_params(**params)
         self.add_sideeffects(*self.grammar.sideeffects)
 
 

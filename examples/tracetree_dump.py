@@ -71,4 +71,3 @@ while n!=None:
 #print(n.ge)
 
 
-

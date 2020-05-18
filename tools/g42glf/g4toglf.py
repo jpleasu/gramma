@@ -148,9 +148,9 @@ class TransformingVisitor(antlr4.ParseTreeVisitor):
     s=s.getText()
     ## suffix can be lazy, e.g. "*?".. we don't care.
     if s[0]=='*':
-      return '{0,,`maxrep`}'
+      return '{0,`maxrep`}'
     elif s[0]=='+':
-      return '{1,,`maxrep`}'
+      return '{1,`maxrep`}'
     elif s[0]=='?':
       return '{0,1}'
     else:

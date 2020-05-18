@@ -41,10 +41,11 @@ if __name__=='__main__':
   g=SMTLIBv2()
   sampler=GrammaSampler(g)
   sampler.update_params(maxrep=3, sortrec=.01, exprrec=.01, termrec=.001)
-  while True:
-    s=sampler.sample()
-    if len(s)>100:
-      break
+  s=sampler.sample()
+  #while True:
+  #  s=sampler.sample()
+  #  if len(s)>100:
+  #    break
   sys.stdout.buffer.write(s.encode('utf8','ignore'))
   print()
 
