@@ -87,8 +87,9 @@ def mkmeth(pred):
 class Timeleft:
     def __init__(self, seconds):
         self.done=datetime.now()+timedelta(seconds=seconds)
-    def __nonzero__(self):
+    def __bool__(self):
         return datetime.now()<=self.done
+    __nonzero__=__bool__
     def over(self):
         return datetime.now()-self.done
 

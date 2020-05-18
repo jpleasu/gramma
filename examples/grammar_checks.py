@@ -142,11 +142,11 @@ def got_expected(Grammar,s,got,expect):
 got_expected(AnalyzeMeGrammar4, 'uses', ','.join(sorted(g.funcdefs['f'].meta.statevar_uses)),'mod,obj1,obj3,subscript_mod,subscript_mod2,subscript_use,used')
 got_expected(AnalyzeMeGrammar4, 'defs', ','.join(sorted(g.funcdefs['f'].meta.statevar_defs)),'assigned,mod,obj1,obj2,obj3,subscript_def,subscript_mod,subscript_mod2')
 
-class AnalyzeMeGrammar5(GStub):
-    @gfunc
-    def f(x):
-        yield ''.join([(yield 'e%d') for e in range(3)])
-eval_grammar(AnalyzeMeGrammar5, 'yield in a generator expression or list comprehension')
+#class AnalyzeMeGrammar5(GStub):
+#    @gfunc
+#    def f(x):
+#        yield ''.join([(yield 'e%d') for e in range(3)])
+#eval_grammar(AnalyzeMeGrammar5, 'yield in a generator expression or list comprehension')
 
 class AnalyzeMeGrammar5a(GStub):
     @gfunc
