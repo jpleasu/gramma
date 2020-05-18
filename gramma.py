@@ -377,7 +377,7 @@ except ImportError:
 
 import pysa
 
-logging.basicConfig(format='%(asctime)-15s.%(msecs)d [%(name)s]: %(message)s', datefmt="%Y-%m-%d %H:%M:%S", level=logging.DEBUG)
+logging.basicConfig(format='%(asctime)-15s.%(msecs)d [%(name)s]: %(message)s', datefmt="%Y-%m-%d %H:%M:%S", level=logging.INFO)
 log=logging.getLogger('gramma')
 
 class GExprMetadata(object):
