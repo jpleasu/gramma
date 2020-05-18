@@ -8,7 +8,7 @@ import random
 class Greatview(GrammaGrammar):
     def __init__(x, gvglf_path):
         with open(gvglf_path) as infile:
-            GrammaGrammar.__init__(x,infile.read(), sideeffects=[DepthTracker(lambda ge:isinstance(ge,GRule) and ge.rname=='nesting')])
+            GrammaGrammar.__init__(x,infile.read(), sideeffects=[GeneralDepthTracker(lambda ge:isinstance(ge,GRule) and ge.rname=='nesting')])
    
     def reset_state(self,state):
         super().reset_state(state)

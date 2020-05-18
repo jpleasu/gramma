@@ -7,7 +7,7 @@ from gramma import *
 class Cml(GrammaGrammar):
     def __init__(x, path):
         with open(path) as infile:
-            GrammaGrammar.__init__(x,infile.read(), sideeffects=[DepthTracker(lambda ge:isinstance(ge,GRule) and ge.rname=='element')])
+            GrammaGrammar.__init__(x,infile.read(), sideeffects=[GeneralDepthTracker(lambda ge:isinstance(ge,GRule) and ge.rname=='element')])
 
     @gfunc
     def size(x,child):
