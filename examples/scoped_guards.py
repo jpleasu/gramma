@@ -63,9 +63,6 @@ class GuardedRules(GrammaGrammar):
     def __init__(self):
         GrammaGrammar.__init__(self, self.G, sideeffects=[Scoping()])
 
-    def reset_state(self,state):
-        super().reset_state(state)
-
     @gfunc
     def set(x, n):
         setattr(x.state.scope,n.as_str(),True)

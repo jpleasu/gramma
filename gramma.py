@@ -1544,8 +1544,6 @@ class GFuncAnalyzer(pysa.VariableAccesses):
             self.allowed_ids.add(n.s)
 
     def uses(self, n):
-        if n.s in self.allowed_ids:
-            return
         if self.is_iface_id(n):
             if n[1].s=='state':
                 nn=n[2:]
@@ -1565,6 +1563,10 @@ class GFuncAnalyzer(pysa.VariableAccesses):
             else:
                 self._raise('unexpected SamplerInterface field "%s", only "random", "state", and "params" are accessible' % n[1:].s)
         else:
+            for p in n.prefixes:
+                if p.s in self.allowed_ids:
+                    return
+
             #astpretty.pprint(self.stack[-2])
             self._raise('forbidden access to variable "%s"' % n.s)
 
@@ -1631,8 +1633,9 @@ class GCodeAnalyzer(pysa.VariableAccesses):
     mods=defs
 
     def uses(self, n):
-        if n.s in self.allowed_ids:
-            return
+        for p in n.prefixes:
+            if p.s in self.allowed_ids:
+                return
 
         for s in self.grammar.reset_states:
             if n.begins(s):

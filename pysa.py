@@ -104,7 +104,16 @@ class NamePath(object):
         return self.s
 
     def begins(self, n):
-        return (len(n) <= len(self)) and self[:len(n)]==n
+        if isinstance(n, NamePath):
+            return (len(n) <= len(self)) and self[:len(n)]==n
+        elif isinstance(n, str):
+            return any(p.s==n for p in self.prefixes)
+        raise ValueError('NamePath.begins applies to NamePath objects or strings')
+
+    @property
+    def prefixes(self):
+        for i in range(len(self.path)):
+            yield NamePath(self.path[:i+1])
 
 def detup(x):
     return x.elts if isinstance(x,ast.Tuple) else [x]
@@ -146,6 +155,12 @@ class VariableAccesses(ast.NodeVisitor):
     def visit_AugAssign(self,aug):
         self.visit(aug.value)
         self.mods(NamePath(aug.target), aug)
+
+    def visit_For(self,forf):
+        for x in detup(forf.target):
+            self.defs(NamePath(x), forf)
+        for e in forf.body:
+            super().visit(e)
 
     def visit_Name(self,name):
         i=next(i for i in reversed(range(len(self.stack)-1)) if not isinstance(self.stack[i], (ast.Attribute, ast.Subscript)))

@@ -40,3 +40,17 @@ assert(sampler.sample()=='7')
 sampler.update_params(x=3)
 assert(sampler.sample()=='3')
 
+
+# using a parameter to bias an alternation
+g=GrammaGrammar('''
+    start:= "a" | `x` "b";
+''',param_ids=['x'])
+sampler=GrammaSampler(g)
+sampler.update_params(x=.01)
+
+from collections import Counter
+c=Counter()
+for i in range(1000):
+  c[sampler.sample()]+=1
+print(c)
+
