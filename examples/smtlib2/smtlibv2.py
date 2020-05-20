@@ -3,6 +3,7 @@
 from gramma import *
 
 from collections import Counter
+import os
 
 
 class RuleVisitDumper(SideEffect):
@@ -16,6 +17,21 @@ class RuleVisitDumper(SideEffect):
     return False
 
 class StackWatcher(SideEffect):
+  '''
+    A gramma sideeffect that dumps a count of GRules occuring in each stack.
+
+    It's used to identify rules that recurse too often.  E.g.
+
+      when sampling from the grammar with a StackWatcher sideeffect attached:
+        a:=['0'..'9'];
+        r:=a|r;
+
+      we would see the count of "r" skyrocket.  To control the size of sampled
+      strings, we might limit its selection:
+        a:=['0'..'9'];
+        r:=a|.01 r;
+
+  '''
   def reset_state(self,state):
     state.stk=[]
   
@@ -33,7 +49,8 @@ class StackWatcher(SideEffect):
 
 class SMTLIBv2(GrammaGrammar):
   def __init__(self):
-    with open('SMTLIBv2.glf') as infile:
+    
+    with open(os.path.join(os.path.dirname(__file__), 'SMTLIBv2.glf')) as infile:
       #GrammaGrammar.__init__(self,infile.read(), param_ids='maxrep sortrec exprrec termrec'.split(), sideeffects=[StackWatcher()])
       GrammaGrammar.__init__(self,infile.read(), param_ids='maxrep sortrec exprrec termrec'.split())
 
@@ -42,10 +59,6 @@ if __name__=='__main__':
   sampler=GrammaSampler(g)
   sampler.update_params(maxrep=3, sortrec=.01, exprrec=.01, termrec=.001)
   s=sampler.sample()
-  #while True:
-  #  s=sampler.sample()
-  #  if len(s)>100:
-  #    break
   sys.stdout.buffer.write(s.encode('utf8','ignore'))
   print()
 
