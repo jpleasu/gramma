@@ -190,7 +190,6 @@ for performing the operations presented below.
   resampled node occurs.  e.g. the following generates arrows, "---->"
   with length (minus 1) distributed geometrically.
 ```
-
         r:= "-".r | ">";
 
     To resample the "r" node that's three deep in the trace tree of
@@ -224,11 +223,11 @@ grammars using gfuncs really need them.
 so Gramma can't tell what parts of the string sampled from a gfunc are from
 what child.
 
-##TraceNode.resample
+## TraceNode.resample
 When a child node of a gfunc is resampled, Gramma tries to match previously
 sampled arguments with gexpr children of the original call, so that a new
 call can be constructed with appropriately sampled/definitized arguments.
-
+```
     e.g. suppose we have
 
         choose(X,Y,Z)
@@ -256,9 +255,9 @@ call can be constructed with appropriately sampled/definitized arguments.
 
     If we resample X and Y, then it's possible that Z is sampled, since the
     1st arg might choose differently.
-
+```
 If an argument is sampled more than once by a gfunc, that's a different story.
-    
+```    
     suppose we have
 
         bigger("a"{0,5})
@@ -274,5 +273,4 @@ If an argument is sampled more than once by a gfunc, that's a different story.
     Suppose we resample the longer "a"{0,5} sample. Without replaying the
     previous sample, there's no way reproduce the function's behavior.  In
     this case, we therefore resample the entire argument.
-
-
+```
