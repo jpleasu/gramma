@@ -132,5 +132,5 @@ def spam():
       traceback.print_exc()
       break
 
-spam()
-#withtrace()
+#spam()
+withtrace()

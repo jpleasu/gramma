@@ -1,3 +1,6 @@
+# see http://smtlib.cs.uiowa.edu/language.shtml
+
+
 Comment := Semicolon." generic comment\n" ;
 ParOpen := '(' ;
 ParClose := ')' ;
@@ -136,7 +139,8 @@ simpleSymbol := predefSymbol|UndefinedSymbol ;
 quotedSymbol := QuotedSymbol ;
 predefSymbol := PS_Not|PS_Bool|PS_ContinuedExecution|PS_Error|PS_False|PS_ImmediateExit|PS_Incomplete|PS_Logic|PS_Memout|PS_Sat|PS_Success|PS_Theory|PS_True|PS_Unknown|PS_Unsupported|PS_Unsat ;
 predefKeyword := PK_AllStatistics|PK_AssertionStackLevels|PK_Authors|PK_Category|PK_Chainable|PK_Definition|PK_DiagnosticOutputChannel|PK_ErrorBehaviour|PK_Extension|PK_Funs|PK_FunsDescription|PK_GlobalDeclarations|PK_InteractiveMode|PK_Language|PK_LeftAssoc|PK_License|PK_Named|PK_Name|PK_Notes|PK_Pattern|PK_PrintSuccess|PK_ProduceAssertions|PK_ProduceAssignments|PK_ProduceModels|PK_ProduceProofs|PK_ProduceUnsatAssumptions|PK_ProduceUnsatCores|PK_RandomSeed|PK_ReasonUnknown|PK_RegularOutputChannel|PK_ReproducibleResourceLimit|PK_RightAssoc|PK_SmtLibVersion|PK_Sorts|PK_SortsDescription|PK_Source|PK_Status|PK_Theories|PK_Values|PK_Verbosity|PK_Version ;
-symbol := ' ' . (simpleSymbol|quotedSymbol) . ' ' ;
+#symbol := ' ' . (simpleSymbol|quotedSymbol) . ' ' ;
+symbol := ' ' . simpleSymbol . ' ' ;
 numeral := Numeral ;
 decimal := Decimal ;
 hexadecimal := HexDecimal ;
@@ -149,8 +153,10 @@ index := numeral|symbol ;
 identifier := symbol|ParOpen.GRW_Underscore.symbol.index{1,`maxrep`}.ParClose ;
 attribute_value := spec_constant|symbol|ParOpen.s_expr{0,`maxrep`}.ParClose ;
 attribute := keyword|keyword.' '.attribute_value ;
+
 #sort := identifier| `sortrec` ParOpen.identifier.sort{1,`maxrep`}.ParClose ;
-sort := 'Int ' | 'Bool ' | ParOpen.'Array '.sort.sort.ParClose ;
+#sort := 'Int ' | 'Bool ' | ParOpen.'Array '.sort.sort.ParClose ;
+sort := 'Int ' | 'Bool ';
 
 qual_identifer := identifier|ParOpen.GRW_As.identifier.sort.ParClose ;
 var_binding := ParOpen.symbol.term.ParClose ;
@@ -159,7 +165,8 @@ pattern := symbol|ParOpen.symbol.symbol{1,`maxrep`}.ParClose ;
 match_case := ParOpen.pattern.term.ParClose ;
 term :=   spec_constant
         | qual_identifer
-        | `termrec` ( ParOpen.qual_identifer.term{1,`maxrep`}.ParClose
+        | `termrec` (
+              ParOpen.qual_identifer.term{1,`maxrep`}.ParClose
             | ParOpen.GRW_Let.ParOpen.var_binding{1,`maxrep`}.ParClose.term.ParClose
             | ParOpen.GRW_Forall.ParOpen.sorted_var{1,`maxrep`}.ParClose.term.ParClose
             | ParOpen.GRW_Exists.ParOpen.sorted_var{1,`maxrep`}.ParClose.term.ParClose
@@ -188,7 +195,9 @@ cmd_checkSatAssuming := CMD_CheckSatAssuming.ParOpen.prop_literal{0,`maxrep`}.Pa
 cmd_declareConst := CMD_DeclareConst.symbol.sort ;
 cmd_declareDatatype := CMD_DeclareDatatype.symbol.datatype_dec ;
 cmd_declareDatatypes := CMD_DeclareDatatypes.ParOpen.sort_dec{1,`maxrep`}.ParClose.ParOpen.datatype_dec{1,`maxrep`}.ParClose ;
-cmd_declareFun := CMD_DeclareFun.symbol.ParOpen.sort{0,`maxrep`}.ParClose.sort ;
+#cmd_declareFun := CMD_DeclareFun.symbol.ParOpen.sort{0,`maxrep`}.ParClose.sort ;
+cmd_declareFun := declare_fun(symbol, sort{0,`maxrep`}, sort) ;
+
 cmd_declareSort := CMD_DeclareSort.symbol.numeral ;
 cmd_defineFun := CMD_DefineFun.function_def ;
 cmd_defineFunRec := CMD_DefineFunRec.function_def ;
@@ -205,14 +214,48 @@ cmd_getProof := CMD_GetProof ;
 cmd_getUnsatAssumptions := CMD_GetUnsatAssumptions ;
 cmd_getUnsatCore := CMD_GetUnsatCore ;
 cmd_getValue := CMD_GetValue.ParOpen.term{1,`maxrep`}.ParClose ;
-cmd_pop := CMD_Pop.' '.numeral ;
-cmd_push := CMD_Push.' '.numeral ;
+
+#cmd_pop := CMD_Pop.' '.numeral ;
+#cmd_push := CMD_Push.' '.numeral ;
+cmd_pop := pop(numeral) ;
+cmd_push := push(numeral) ;
+
 cmd_reset := CMD_Reset ;
 cmd_resetAssertions := CMD_ResetAssertions ;
 cmd_setInfo := CMD_SetInfo.attribute ;
 cmd_setLogic := CMD_SetLogic.symbol ;
 cmd_setOption := CMD_SetOption.option ;
-command := ParOpen.cmd_assert.ParClose|ParOpen.cmd_checkSat.ParClose|ParOpen.cmd_checkSatAssuming.ParClose|ParOpen.cmd_declareConst.ParClose|ParOpen.cmd_declareDatatype.ParClose|ParOpen.cmd_declareDatatypes.ParClose|ParOpen.cmd_declareFun.ParClose|ParOpen.cmd_declareSort.ParClose|ParOpen.cmd_defineFun.ParClose|ParOpen.cmd_defineFunRec.ParClose|ParOpen.cmd_defineFunsRec.ParClose|ParOpen.cmd_defineSort.ParClose|ParOpen.cmd_echo.ParClose|ParOpen.cmd_exit.ParClose|ParOpen.cmd_getAssertions.ParClose|ParOpen.cmd_getAssignment.ParClose|ParOpen.cmd_getInfo.ParClose|ParOpen.cmd_getModel.ParClose|ParOpen.cmd_getOption.ParClose|ParOpen.cmd_getProof.ParClose|ParOpen.cmd_getUnsatAssumptions.ParClose|ParOpen.cmd_getUnsatCore.ParClose|ParOpen.cmd_getValue.ParClose|ParOpen.cmd_pop.ParClose|ParOpen.cmd_push.ParClose|ParOpen.cmd_reset.ParClose|ParOpen.cmd_resetAssertions.ParClose|ParOpen.cmd_setInfo.ParClose|ParOpen.cmd_setLogic.ParClose|ParOpen.cmd_setOption.ParClose ;
+command := ParOpen.cmd_assert.ParClose
+          |ParOpen.cmd_checkSat.ParClose
+          |ParOpen.cmd_checkSatAssuming.ParClose
+          |ParOpen.cmd_declareConst.ParClose
+          |ParOpen.cmd_declareDatatype.ParClose
+          |ParOpen.cmd_declareDatatypes.ParClose
+          |ParOpen.cmd_declareFun.ParClose
+          |ParOpen.cmd_declareSort.ParClose
+          |ParOpen.cmd_defineFun.ParClose
+          |ParOpen.cmd_defineFunRec.ParClose
+          |ParOpen.cmd_defineFunsRec.ParClose
+          |ParOpen.cmd_defineSort.ParClose
+          |ParOpen.cmd_echo.ParClose
+          |ParOpen.cmd_exit.ParClose
+          |ParOpen.cmd_getAssertions.ParClose
+          |ParOpen.cmd_getAssignment.ParClose
+          |ParOpen.cmd_getInfo.ParClose
+          |ParOpen.cmd_getModel.ParClose
+          |ParOpen.cmd_getOption.ParClose
+          |ParOpen.cmd_getProof.ParClose
+          |ParOpen.cmd_getUnsatAssumptions.ParClose
+          |ParOpen.cmd_getUnsatCore.ParClose
+          |ParOpen.cmd_getValue.ParClose
+          |ParOpen.cmd_pop.ParClose
+          |ParOpen.cmd_push.ParClose
+          |ParOpen.cmd_reset.ParClose
+          |ParOpen.cmd_resetAssertions.ParClose
+          |ParOpen.cmd_setInfo.ParClose
+          |ParOpen.cmd_setLogic.ParClose
+          |ParOpen.cmd_setOption.ParClose ;
+
 b_value := PS_True|PS_False ;
 option := PK_DiagnosticOutputChannel.string|PK_GlobalDeclarations.b_value|PK_InteractiveMode.b_value|PK_PrintSuccess.b_value|PK_ProduceAssertions.b_value|PK_ProduceAssignments.b_value|PK_ProduceModels.b_value|PK_ProduceProofs.b_value|PK_ProduceUnsatAssumptions.b_value|PK_ProduceUnsatCores.b_value|PK_RandomSeed.numeral|PK_RegularOutputChannel.string|PK_ReproducibleResourceLimit.numeral|PK_Verbosity.numeral|attribute ;
 info_flag := PK_AllStatistics|PK_AssertionStackLevels|PK_Authors|PK_ErrorBehaviour|PK_Name|PK_ReasonUnknown|PK_Version|keyword ;
