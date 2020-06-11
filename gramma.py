@@ -1,62 +1,19 @@
 #!/usr/bin/env python3
 r'''
     TODO:
-        - consider seq and cyc operators
-            - e.g.
-                ge=seq(ge1,ge2,...,geN)
-                sample(ge) -> sample(ge1)
-                sample(ge) -> sample(ge2)
-                ...
-                sample(ge) -> sample(geN)
-                ...
-                sample(ge) -> sample(geN)
-
-                ge=cyc(ge1,ge2,...,geN)
-                sample(ge) -> sample(ge1)
-                sample(ge) -> sample(ge2)
-                ...
-                sample(ge) -> sample(geN)
-                sample(ge) -> sample(ge1)
-                sample(ge) -> sample(ge2)
-                ...
-                sample(ge) -> sample(geN)
-            - this would allow for "replay" expressions:
-                gf(seq(ge1,ge2))
-            - if we name the state variable, e.g. seq('seq1',ge1,ge2,...), and
-              reset to 0, this is a simple gfunc.. to make it automatic:
-                - add gfunc decorator paramater 'reset_state'
-                    @gfunc(reset_state=cyc_reset_state)
-                    def cyc(x,sv_name,*l):
-                        i=getattr(x.state,sv_name)
-                - update finalize_gexpr
-                    - disable analyzer if gfunc has reset_state
-                - update either GrammaSampler.sample or GrammaSampler.reset_state
-                    - call the resets for gfuncs that have'm
-            
-
-        - learn gramma grammar w/ weights from ANTLR parse trees.
-        - general "find recursions" in gramma grammar to alternations to help
-          control depth.
         - resampling
-            - resampling is tree rewriting, from tracetree -> gexpr
-            - the goal is to produce a distribution "around" the original
-              tracetree's sample.
-
+            - only ever resample with a bias-to-previous
+            - generate an "unrolled" grammar
+            - "replay" is encoded in unrolled grammar
+            - finish design for unrolling api for gexprs
+        - add "choose <id>~<expr> in <expr>" syntax
+        - tolerate non-generator gfuncs (recognize at GLF parse time)
+        - Monte Carlo with StackWatcher to estimate excessive loops / other
+          over-represented constructs.
         - analyze_reset_state could attempt to guess the type of a state
           variable by finding the right hand side of assignments to it in
           reset_state.  E.g.  set/dict/list.  That way, method access can be
           interpreted correctly.
-
-        - analysis in GrammaGrammar constructor.
-            - analyze GCode in parser, so that all calls to "parse" benefit
-              from analysis
-                - store analysis results on GExpr objects (and in grammar?)
-            - the def, load, load_rand, and reseed_rand gfuncs are special.
-                - load/def - the first string argument is the name of the state to
-                  be def'd.
-
-
-
 
 '''
 from __future__ import absolute_import, division, print_function

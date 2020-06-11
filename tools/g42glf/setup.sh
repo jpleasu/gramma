@@ -13,7 +13,5 @@ cp grammars-v4/antlr/antlr4/LexerAdaptor.py antlr4parser/
 
 echo ======
 echo remember to install runtime, e.g.
-echo \   pip2 install --user antlr4-python2-runtime
-echo \   pip3 install --user antlr4-python3-runtime
-
+echo \   pip3 install antlr4-python3-runtime
 

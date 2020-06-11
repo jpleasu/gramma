@@ -100,9 +100,24 @@ pip3 install lark-parser six future numpy
         - evaluation is left to right.
         - functions aren't allowed to "look up" the execution stack, only back.
 ```
+# creating grammars
+
+## from Antlr4 
+see [g42glf](tools/g42glf/README.md)
+
+## preventing explosion from recursion
+To identify rules that are being visited excesesively, count (and emit) rule
+hits while sampling with sideeffect - see `StackWatcher` in the [smtlibv2
+example](examples/smtlib2/smtlibv2.py).
+
+To avoid rules, you can weight alternations to avoid them anywhere in the loop
+of rule name references. You can also compute depth (with sideffect) and use a
+dynamic alternation to avoid looping references.
+
+
 # other topics
 
-## TraceTree
+## `TraceTree`
 Sampling in Gramma is a form of expression tree evaluation where each node
 can use a random number generator.  E.g. to sample from
 
@@ -155,7 +170,7 @@ where the first alternation selected "b" . r, a concatenation whose
 righthand child samples the rule r recursively.
 
 
-##Resampling
+## Resampling
 
 To produce strings similar to previous samples, we can hold fixed (or
 definitize) part of the corresponding trace tree.  By choosing to replay
@@ -218,12 +233,12 @@ like ternary operators or dynamic alternations.  Heuristics, therefore,
 which would apply to "well behaved" gfuncs are avoided, assuming that
 grammars using gfuncs really need them.
 
-## TraceNode.child_containing
+## `TraceNode.child_containing`
 .. treats gfuncs as atomic. a gfunc can modify the strings that it samples,
 so Gramma can't tell what parts of the string sampled from a gfunc are from
 what child.
 
-## TraceNode.resample
+## `TraceNode.resample`
 When a child node of a gfunc is resampled, Gramma tries to match previously
 sampled arguments with gexpr children of the original call, so that a new
 call can be constructed with appropriately sampled/definitized arguments.
