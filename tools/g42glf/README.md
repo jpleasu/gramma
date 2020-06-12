@@ -18,9 +18,18 @@ tweaking.
 - negated ranges are output as `neg(...)` since we typically
   don't want to generate an arbitrary value outside the specified range, you
   can implement a `neg` gfunc or fix it.
+- other constructs get gfunc names as well: `eof` and `any`
 - if the tokenizer skips whitespace, you need to decide where to generate
   whitespace.  e.g. add spaces to keyword literals.
 - recursion is unchecked, so if sampling the resulting grammar hangs,
   identify alternations where the recursive route is taken and make them less
   likely.
 
+
+Once you've generate a grammar that gramma can parse, you can experiment with
+```bash
+    ./tryitout.py my_new_grammar.glf
+```
+If the sample takes more than 5 seconds, every 5 seconds the StackWatcher
+sideeffect will dump a count of rules on the generation stack.  You should
+consider limiting the recursions that cause the most frequent rules.

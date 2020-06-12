@@ -41,6 +41,9 @@ def gchar(c):
   return repr(c)
 
 class TransformingVisitor(antlr4.ParseTreeVisitor):
+  def __init__(self):
+    self.rules=[]
+
   def defaultResult(self):
     return None
 
@@ -56,24 +59,32 @@ class TransformingVisitor(antlr4.ParseTreeVisitor):
     return ''.join(self.visit(c) for c in ec.getChildren())
   visitLexerElement=visitElement
 
+  def visitElementOptions(self,eo):
+    return '' # e.g. <assoc=right>
 
   def aggregateResult(self,result,childResult):
     return result + childResult
 
   def do_rule(self,lhs,rhs):
-    return ('%s := %s ;\n' % (lhs.getText(), self.visit(rhs)))
+    rulename=lhs.getText()
+    self.rules.append(rulename)
+    return ('%s := %s ;\n' % (rulename, self.visit(rhs)))
 
   def visitRuleAltList(self,alt):
-    return '|'.join(self.visit(c) for c in alt.getChildren() if not isinstance(c, TerminalNode))
+    g=(self.visit(c) for c in alt.getChildren() if not isinstance(c, TerminalNode))
+    return '|'.join(s for s in g if s!='')
     
   def visitAlternative(self, alt):
     if alt.getChildCount()==0:
       return "''"
     s='.'.join(self.visit(e) for e in alt.element())
     if alt.elementOptions()!=None:
+      toRep=self.visit(alt.elementOptions())
+      if toRep=='':
+        return ''
       if s=='':
-        return '(%s){0,1}' % (self.visit(alt.elementOptions()))
-      return '(%s){0,1}.%s' % (self.visit(alt.elementOptions()),s)
+        return '(%s){0,1}' % (toRep)
+      return '(%s){0,1}.%s' % (toRep,s)
     return s
 
   def visitCharacterRange(self, r):
@@ -187,6 +198,13 @@ class TransformingVisitor(antlr4.ParseTreeVisitor):
     else:
       return '.'.join(self.visit(e) for e in elements.lexerElement())
 
+
+  def transform(self, e):
+    s=self.visit(e)
+    if not 'start' in self.rules:
+      s+='\nstart:=%s;\n' % self.rules[0]
+    return s
+
 def gettree():
   #lexer = ANTLRv4Lexer(antlr4.FileStream('grammars-v4/antlr4/examples/Hello.g4'))
   lexer = ANTLRv4Lexer(antlr4.FileStream('grammars-v4/antlr4/examples/CPP14.g4', encoding='utf8'))
@@ -213,5 +231,5 @@ if __name__ == '__main__':
   parser = ANTLRv4Parser(stream)
   tree = parser.grammarSpec()
   dump(tree)
-  print(TransformingVisitor().visit(tree),file=sys.stderr)
+  print(TransformingVisitor().transform(tree),file=sys.stderr)
   #print(TransformingVisitor().visit(tree))
