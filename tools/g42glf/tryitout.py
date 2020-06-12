@@ -78,6 +78,11 @@ class MyGrammar(GrammaGrammar):
   def any(x):
     yield 'x'
 
+  @gfunc
+  def action(x,bodyg):
+    body=bodyg.as_str()
+    yield 'Action(%s)' % body
+
 if __name__=='__main__':
   g=MyGrammar(sys.argv[1])
   sampler=GrammaSampler(g)

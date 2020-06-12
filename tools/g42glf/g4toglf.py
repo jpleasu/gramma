@@ -41,7 +41,8 @@ def gchar(c):
   return repr(c)
 
 class TransformingVisitor(antlr4.ParseTreeVisitor):
-  def __init__(self):
+  def __init__(self, g4file):
+    self.g4file=g4file
     self.rules=[]
 
   def defaultResult(self):
@@ -51,11 +52,18 @@ class TransformingVisitor(antlr4.ParseTreeVisitor):
     return ''.join(self.visit(r) for r in gs.rules().ruleSpec())
 
   def visitChildren(self, node):
+    # "skip" nodes with one child
     if node.getChildCount()==1:
       return self.visit(node.getChild(0))
-    return '%s(%s)' % (type(node).__name__, ','.join(self.visit(c) for c in node.getChildren()))
+    print('==== unhandled Antlr node \"%s\" ====' % type(node).__name__)
+    dump(node)
+    print('----------------------------')
+    from IPython import embed; embed()
+    return 'g4toglf_fail_%s(%s)' % (type(node).__name__, ','.join(self.visit(c) for c in node.getChildren()))
 
   def visitElement(self,ec):
+    if isinstance(ec.getChild(0), ANTLRv4Parser.ActionBlockContext):
+      return '''action(%s)''' % repr(ec.getText())
     return ''.join(self.visit(c) for c in ec.getChildren())
   visitLexerElement=visitElement
 
@@ -198,38 +206,24 @@ class TransformingVisitor(antlr4.ParseTreeVisitor):
     else:
       return '.'.join(self.visit(e) for e in elements.lexerElement())
 
+  def visitLabeledAlt(self, la):
+    return self.visit(la.getChild(0)) # drop the label in  "blah # Label" -> "blah"
 
-  def transform(self, e):
-    s=self.visit(e)
-    if not 'start' in self.rules:
+  def parseAndWrite(self, out, final=False):
+    inp = antlr4.FileStream(self.g4file,encoding='utf8')
+    lexer = ANTLRv4Lexer(inp)
+    stream = antlr4.CommonTokenStream(lexer)
+    parser = ANTLRv4Parser(stream)
+    tree = parser.grammarSpec()
+    #print('file: %s' % self.g4file)
+    #dump(tree)
+    s=self.visit(tree)
+    if final and not 'start' in self.rules:
       s+='\nstart:=%s;\n' % self.rules[0]
-    return s
-
-def gettree():
-  #lexer = ANTLRv4Lexer(antlr4.FileStream('grammars-v4/antlr4/examples/Hello.g4'))
-  lexer = ANTLRv4Lexer(antlr4.FileStream('grammars-v4/antlr4/examples/CPP14.g4', encoding='utf8'))
-  stream = antlr4.CommonTokenStream(lexer)
-  parser = ANTLRv4Parser(stream)
-  return parser.grammarSpec()
-
-def do_dump():
-  tree=gettree()
-  dump(tree)
-
-def do_visit():
-  tree=gettree()
-  v=TransformingVisitor()
-  print(v.visit(tree))
-
+    out.write(s)
 
 if __name__ == '__main__':
-  #do_dump()
-  #do_visit()
-
-  lexer = ANTLRv4Lexer(antlr4.FileStream(sys.argv[1],encoding='utf8'))
-  stream = antlr4.CommonTokenStream(lexer)
-  parser = ANTLRv4Parser(stream)
-  tree = parser.grammarSpec()
-  dump(tree)
-  print(TransformingVisitor().transform(tree),file=sys.stderr)
-  #print(TransformingVisitor().visit(tree))
+  out=sys.stderr
+  for g4file in sys.argv[1:-1]:
+    TransformingVisitor(g4file).parseAndWrite(out)
+  TransformingVisitor(sys.argv[-1]).parseAndWrite(out, final=True)
