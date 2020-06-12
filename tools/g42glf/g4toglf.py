@@ -181,7 +181,11 @@ class TransformingVisitor(antlr4.ParseTreeVisitor):
 
   def visitLexerAlt(self, le):
     # XXX ignoring le.lexerCommands
-    return '.'.join(self.visit(e) for e in le.lexerElements().lexerElement())
+    elements=le.lexerElements()
+    if elements==None:
+      return "''" #  e.g. the first part of BLAH : (|'a')
+    else:
+      return '.'.join(self.visit(e) for e in elements.lexerElement())
 
 def gettree():
   #lexer = ANTLRv4Lexer(antlr4.FileStream('grammars-v4/antlr4/examples/Hello.g4'))
