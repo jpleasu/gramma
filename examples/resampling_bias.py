@@ -14,6 +14,8 @@ from simple_grammars import ArithmeticGrammar,VarietyGrammar
 
 from collections import Counter
 
+from itertools import islice
+
 def map_subs(function, sequence, *replacements):
     '''
         like map, with replacements

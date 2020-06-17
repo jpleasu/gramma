@@ -13,6 +13,9 @@ class SetStack(object):
     def add(self, item):
         self.local.add(item)
 
+    def update(self, items):
+        self.local.update(items)
+
     def __contains__(self, item):
         if item in self.local:
             return True
@@ -39,4 +42,8 @@ class DictStack(object):
 
     def __setitem__(self, key, item):
         self.local[key] = item
+
+    def update(self, items):
+        self.local.update(items)
+
 

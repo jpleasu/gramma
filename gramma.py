@@ -16,16 +16,16 @@ r"""
 
 """
 import ast
+import builtins
 import copy
 import inspect
 import logging
 import numbers
 import sys
 import textwrap
-import builtins
 from collections import deque
 from functools import reduce
-from itertools import islice, groupby
+from itertools import groupby
 
 import lark
 import numpy as np
@@ -59,7 +59,7 @@ gramma_grammar = r"""
 
     ruledef : NAME ":=" choosein ";"
 
-    ?choosein : "choose" NAME "~" tern "in" tern | tern
+    ?choosein : "choose" NAME "~" tern ("," NAME "~" tern)* "in" tern | tern
 
     ?tern :  code "?" alt ":" alt | alt 
 
@@ -117,15 +117,15 @@ gramma_grammar = r"""
 
 class LarkTransformer(object):
     """
-        a top-down transformer from lark.Tree to Gexprs that handles lexically scoped variables
+        a top-down transformer from lark.Tree to GExpr that handles lexically scoped variables
     """
 
     def __init__(self):
         self.vars = {}
 
-    def push_vars(self, var):
+    def push_vars(self, new_vars):
         self.vars = SetStack()
-        self.vars.add(var)
+        self.vars.update(new_vars)
 
     def pop_vars(self):
         self.vars = self.vars.parent
@@ -144,15 +144,16 @@ class LarkTransformer(object):
 
     def choosein(self, lt):
         # from IPython import embed; embed()
-        var = lt.children[0].value
-        dist = self.visit(lt.children[1])
 
-        # var is lexically scoped, push to vars, process child, and pop
-        self.push_vars(var)
-        child = self.visit(lt.children[2])
+        # lt.children = [var1, dist1, var2, dist2, ..., varN, distN, child]
+        i = iter(lt.children[:-1])
+        var_dists = dict((v.value, self.visit(d)) for v,d in zip(i, i))
+
+        # push new lexical scope, process child, and pop
+        self.push_vars(var_dists.keys())
+        child = self.visit(lt.children[-1])
         self.pop_vars()
-
-        return GChooseIn(var, dist, child)
+        return GChooseIn(var_dists, child)
 
     def tern(self, lt):
         code = GCode(lt.children[0].children[0][1:-1])
@@ -634,25 +635,26 @@ class GChooseIn(GInternal):
         then e2 is sampled, NAME should be treated like a string-valued rule.
 
     """
-    __slots__ = 'vname',
+    __slots__ = 'vnames',
 
-    def __init__(self, vname, dist, child):
-        GInternal.__init__(self, [dist, child])
-        self.vname = vname
+    def __init__(self, var_dists, child):
+        GInternal.__init__(self, list(var_dists.values()) + [child])
+        self.vnames = list(var_dists.keys())
 
     @property
-    def dist(self):
-        return self.children[0]
+    def dists(self):
+        return self.children[:-1]
 
     @property
     def child(self):
-        return self.children[1]
+        return self.children[-1]
 
     def copy(self):
-        return GChooseIn(self.vname, self.dist, self.child)
+        return GChooseIn(dict(zip(self.vnames, self.dists)), self.child)
 
     def __str__(self):
-        return 'choose %s~%s in %s' % (self.vname, self.dist, self.child)
+        var_dists = ', '.join('%s~%s' % (var, dist) for var, dist in zip(self.vnames, self.dists))
+        return 'choose %s in %s' % (var_dists, self.child)
 
 
 class GTern(GInternal):
@@ -1035,12 +1037,13 @@ class SamplerInterface(object):
         self.random, self.state, self.params = sampler.random, sampler.state, sampler.params
         self.vars = DictStack()
 
-    def push_vars(self, vname, value):
+    def push_vars(self, new_vars):
         self.vars = DictStack(self.vars)
-        self.vars[vname]=value
+        self.vars.update(new_vars)
 
     def pop_vars(self):
-        self.vars=self.vars.parent
+        self.vars = self.vars.parent
+
 
 class GrammaSampler(object):
     """
@@ -1593,16 +1596,20 @@ class GrammaGrammar(object):
         return g
 
     def compile_GChooseIn(self, ge):
-        vname=ge.vname
-        dist=ge.dist
-        child=ge.child
+        vnames = ge.vnames
+        dists = ge.dists
+        child = ge.child
+
         def g(x):
-            value = yield (dist)
-            x.push_vars(vname,value)
+            # sample each variable
+            values=[]
+            for dist in dists:
+                values.append((yield dist))
+            x.push_vars(dict(zip(vnames, values)))
             # execute child while vname is set
-            ss = yield (child)
+            s = (yield child)
             x.pop_vars()
-            yield ss
+            yield s
 
         return g
 
@@ -1610,6 +1617,7 @@ class GrammaGrammar(object):
         def g(x):
             s = yield (ge.children[0] if ge.compute_case(x) else ge.children[1])
             yield s
+
         return g
 
     def compile_GAlt(self, ge):

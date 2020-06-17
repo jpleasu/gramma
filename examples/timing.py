@@ -16,6 +16,8 @@ import timeit
 
 import time
 
+from itertools import islice
+
 def demo_timing1():
     g=ArithmeticGrammar()
     sampler=GrammaSampler(g)
