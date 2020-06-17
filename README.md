@@ -37,69 +37,121 @@ A typical application of Gramma in fuzzing would be as follows:
 
 # Install
 
-Gramma is pure python 3 with some dependencies.
+Gramma is pure Python 3 with some dependencies.
 
 ```
 pip3 install lark-parser six future numpy
 ```
 
 # GLF Syntax
+
+GLF, the gramma language format, is structurally the same as BNF with different syntax for the operators and 
+some extra features.  In particular, GLF permits "gcode" and "gfunc" terms which represent portions of the grammar
+implemented elsewhere, e.g. in Python.
+
+## literals - same syntax as Python strings
 ```
-    literals - same syntax as Python strings
-        'this is a string'
-        """this is a (possibly 
-            multiline) string"""
-
-    ternary operator (?:) - choice based on computed boolean
-        `depth<5` ? x : y
-        - the code term, `depth<5`, is a python expression testing the state
-          variables 'depth'.  If the computed result is True, the result is
-          x, else y.
-
-    weighted alternation (|) - weighted random choice from alternatives
-        2 x | 3.2 y | z
-        - selects on of x, y, or z with probability 2/5.3, 2.3/5.3, and 1/5.3
-          respectively.  The weight on z is implicitly 1.
-        - omitting all weights corresponds to flat random choice, e.g.
-            x | y | z
-          selects one of x,y, or z with equal likelihood.
-        - weights can also be code in backticks. For example:
-            recurs := `depth<5` recurs | "token";
-            - this sets the recurse branch weight to 1 (int(True)) if depth <5,
-              and 0 otherwise.
-
-    concatenation (.) - definite concatenation
-        x . y
-
-    repetition ({}) - random repeats
-        x{3}
-            - generate x exactly 3 times
-        x{1,3}
-            - generate a number n uniformly in [1,3] then generate x n times
-        x{geom(3)}
-            - sample a number n from a geometric distribution with mean 3, then
-              generate x n times
-        x{3,,geom(3)}
-            - same as above, but reject n less than 3
-        x{1,5,geom(3)}
-            - same as above, but reject n outside of the interval [1,5]
-
-        - furthermore, bounds can be replaced with gcode to compute at runtime,
-          e.g.
-
-          x{1,`maxrep`}
-            - generate x between 1 and eval(`maxrep`) times
-
-     function call (gfuncs) - as defined in a GrammaGrammar subclass
-        f(x)
-
-        - by inheriting the GrammaGrammar class and adding decorated functions,
-          GLF syntax can be extended.  See below.
-        - functions can be stateful, meaning they rely on information stored in
-          the SamplerInterface object.
-        - evaluation is left to right.
-        - functions aren't allowed to "look up" the execution stack, only back.
+'this is a string'
+"""this is a 
+    multiline string"""
 ```
+
+## ternary operator (`?:`) - choice based on computed boolean
+```
+`depth<5` ? x : y
+```
+The "code" term, `depth<5`, is a Python expression testing the state variables `depth`. 
+If the computed result is `True`, the result is `x`, else `y`.
+## weighted alternation (`|`) - weighted random choice from alternatives
+```
+2 x | 3.2 y | z
+```
+selects one of `x`, `y`, or `z` with probability `2/5.3`, `2.3/5.3`, and `1/5.3` respectively.  The weight 
+on `z` is implicitly `1`.
+
+Omitting all weights corresponds to flat random choice, e.g.
+```
+x | y | z
+```
+selects one of x,y, or z with equal likelihood.
+
+Weights can also be "dynamic", code written in backticks. For example:
+```
+recurs := `depth<5` recurs | "token";
+```  
+this sets the recurse branch weight to `1` if `depth <5`, and `0` otherwise (because `int(True)==1` and `int(False)==0`).
+              
+## concatenation (`.`) - definite concatenation
+```
+x . y
+```
+concatenates `x` and `y`.
+
+
+## repetition (`{`...`}`) - random repeats
+```
+x{3}
+```
+generates `x` exactly `3` times.
+  
+If `x` is non constant in the above expression, we can get `3` different things, e.g.
+```
+("a"|"b"|"c"){3}
+```
+can generate `aaa`, `aab`, `aac`, ..., `ccc`.
+
+```
+x{1,3}
+```
+generates a number `n` uniformly in the closed interval `[1,3]` then generates `x` exactly `n` times.
+
+```
+x{geom(3)}
+```
+samples a number `n` from a geometric distribution with mean `3`, then generates `x` exactly `n` times.
+
+```
+x{3,,geom(3)}
+```
+same as above, but reject `n` less than `3`.
+
+```
+x{1,5,geom(3)}
+```
+same as above, but reject `n` outside of the interval `[1,5]`.
+
+Bounds can be gcode to compute at runtime, e.g.
+```
+x{1,`maxrep`}
+```
+generates `x` between `1` and `maxrep` times, where `maxrep` is a state variable or parameter.
+
+## variables (`choose ` .. `~` .. `in` ...) - reuse of samples
+```
+choose v ~ ("a"|"b")  in  v.v.v.v
+```
+samples `v` once and uses the result `4` times. The result is either `aaaa` or `bbbb`.
+
+Multiple variables can be chosen in one statement:
+```
+choose v1~x, v2~y  in (v1.v2)
+```
+note the scoping though - if `y` contains a reference to `v1`, it will be resolved in the containing scope,
+it won't use the sample of `x`.
+
+The choose keyword can be omitted, e.g.
+```
+v1~x,v2~y in v1.v2
+```
+
+## function call (gfuncs) - defined outside of the GLF
+```
+f(x)
+```
+- in Python, inherit from the `GrammaGrammar` class and add decorated functions, see below.
+- functions can be stateful, meaning they rely on information stored in the `SamplerInterface` object.
+- evaluation is left to right.
+     
 # creating grammars
 
 ## from Antlr4 
@@ -121,7 +173,9 @@ dynamic alternation to avoid looping references.
 Sampling in Gramma is a form of expression tree evaluation where each node
 can use a random number generator.  E.g. to sample from
 
-    "a" | "b"{1,5};
+```
+"a" | "b"{1,5};
+```
 
 The head of this expression, alternation, randomly chooses between its
 children, generating either "a" or a random sample of "b"{1,5} with equal
@@ -155,6 +209,7 @@ example, a sample from
 
 could produce the trace tree
 
+```
     alt
      |
     cat
@@ -165,6 +220,7 @@ could produce the trace tree
       alt
        |
       "a"
+```
 
 where the first alternation selected "b" . r, a concatenation whose
 righthand child samples the rule r recursively.
@@ -180,47 +236,46 @@ can effectively create a template from a sample.
 The TraceNode object computed by the Tracer sideffect provides an interface
 for performing the operations presented below.
 
-- "resampling" starts with a tracetree and a node. For example, given the
-  GExpr
+- "resampling" starts with a tracetree and a node. For example, given the `GExpr`
+```
+a(b(),c(),d())
+```
+To record the random context around `c` we compute:
+```
+save_rand('r0').a(b(),c().save_rand('r1'),d())
+```
+and store `r0` and `r1`.  The random number generator on entering `c` is then reseeded on entry, and resumed with 
+`r1` after exiting `c`.
+
+```
+load_rand('r0').a(b(), reseed_rand().c().load_rand('r1'), d())
 ```
 
-        a(b(),c(),d())
-
-    To record the random context around "c" we compute:
-
-        save_rand('r0').a(b(),c().save_rand('r1'),d())
-
-    and store r0 and r1.  The random number generator on entering "c" is
-    then reseeded on entry, and resumed with r1 after exiting "c".
-
-        load_rand('r0').a(b(), reseed_rand().c().load_rand('r1'), d())
-
-    we could also choose the reseed explicitly via a load, e.g. if
-    we'd saved a random state "r2" we could use:
-
-        load_rand('r0').a(b(), load_rand(r2).c().load_rand('r1'), d())
+we could also choose the reseed explicitly via a load, e.g. if we'd saved a random state `r2` we could use:
+```
+load_rand('r0').a(b(), load_rand(r2).c().load_rand('r1'), d())
+```
+to handle recursion, we must "unroll" rules until the point where the resampled node occurs.  e.g. the 
+following generates arrows, `---->` with length (minus 1) distributed geometrically.
+```
+r:= "-".r | ">";
 ```
 
-- to handle recursion, we must "unroll" rules until the point where the
-  resampled node occurs.  e.g. the following generates arrows, "---->"
-  with length (minus 1) distributed geometrically.
+To resample the `r` node that's three deep in the trace tree of `----->`, we partially unroll the expression `r`:
+
 ```
-        r:= "-".r | ">";
-
-    To resample the "r" node that's three deep in the trace tree of
-    "----->", we partially unroll the expression "r":
-
-        "-".("-".("-".r | ">") | ">") | ">";
+"-".("-".("-".r | ">") | ">") | ">";
+```
         
-    and instrument:
-
-        save_rand('r0').("-".("-".("-"
-            .r.save_rand('r1') | ">") | ">") | ">");
-        
-    then replay with a reseed
-
-        load_rand('r0').("-".("-".("-"
-            .reseed_rand().r.load_rand('r1') | ">") | ">") | ">");
+and instrument:
+```
+save_rand('r0').("-".("-".("-"
+    .r.save_rand('r1') | ">") | ">") | ">");
+```
+then replay with a reseed
+```
+load_rand('r0').("-".("-".("-"
+    .reseed_rand().r.load_rand('r1') | ">") | ">") | ">");
 ```
 
 # Rope Aplenty
@@ -242,50 +297,49 @@ what child.
 When a child node of a gfunc is resampled, Gramma tries to match previously
 sampled arguments with gexpr children of the original call, so that a new
 call can be constructed with appropriately sampled/definitized arguments.
+
+e.g. suppose we have
 ```
-    e.g. suppose we have
-
-        choose(X,Y,Z)
-
-    where
-
-        @gfunc
-        def choose(x, a, b, c):
-            if (yield a)=='y':
-                yield (yield b)
-            else:
-                yield (yield b)
-
-    The tracetree records the sampled X and _depending on it's value_
-    either the sampled Y or the sampled Z, but not both.
-
-    If we resample (a child of) X, and suppose the original sample had
-    chosen Y. Gramma will use the definitized sample of Y in the 2nd
-    argument and the original expression for Z in the 3rd.
-
-    If we resample (a child of) Y, Y must have been sampled.. so Z was
-    not.. we will use the previous sample for X, which will again choose
-    Y.. what we use in the 3rd argument doesn't matter in this case, but
-    Gramma will use the original Z.
-
-    If we resample X and Y, then it's possible that Z is sampled, since the
-    1st arg might choose differently.
+select(X,Y,Z)
 ```
-If an argument is sampled more than once by a gfunc, that's a different story.
+
+where our grammar defines
+```python
+    @gfunc
+    def select(x, a, b, c):
+        if (yield a)=='y':
+            yield (yield b)
+        else:
+            yield (yield b)
+```
+
+The tracetree records the sampled `X` and _depending on its value_ either the sampled `Y` or the sampled `Z`, but 
+not both.
+
+If we resample (a child of) `X`, and suppose the original sample had chosen `Y`. Gramma will use the definitized sample 
+of `Y` in the 2nd argument and the original expression for `Z` in the 3rd.
+
+If we resample (a child of) `Y`, `Y` must have been sampled.. so `Z` was not.. we will use the previous sample for 
+`X`, which will again select `Y`.. what we use in the 3rd argument doesn't matter in this case, but Gramma will use
+the original Z.
+
+If we resample `X` and `Y`, then it's possible that `Z` is sampled, since the 1st arg might select differently.
+
+
+
+If an argument is sampled more than once by a gfunc, that's a different story. suppose we have
 ```    
-    suppose we have
+bigger("a"{0,5})
+```    
+where our grammar defines
+```python
+    @gfunc
+    def bigger(x, a):
+        a1=(yield a)
+        a2=(yield a)
+        yield (a1 if len(a1)>len(a2) else a2)
+```    
+Suppose we resample the longer `"a"{0,5}` sample. Without replaying the
+previous sample, there's no way to reproduce the function's behavior.  In
+this case, we therefore resample the entire argument.
 
-        bigger("a"{0,5})
-
-    where
-
-        @gfunc
-        def bigger(x, a):
-            a1=(yield a)
-            a2=(yield a)
-            yield (a1 if len(a1)>len(a2) else a2)
-
-    Suppose we resample the longer "a"{0,5} sample. Without replaying the
-    previous sample, there's no way reproduce the function's behavior.  In
-    this case, we therefore resample the entire argument.
-```
