@@ -4,13 +4,22 @@
 * [Overview](#overview)
 * [Install](#install)
 * [GLF Syntax](#glf-syntax)
+    * [literals - same syntax as Python strings](#literals---same-syntax-as-python-strings)
+    * [ternary operator (`?:`) - choice based on computed boolean](#ternary-operator----choice-based-on-computed-boolean)
+    * [weighted alternation (`|`) - weighted random choice from alternatives](#weighted-alternation----weighted-random-choice-from-alternatives)
+    * [concatenation (`.`) - definite concatenation](#concatenation----definite-concatenation)
+    * [repetition (`{`...`}`) - random repeats](#repetition----random-repeats)
+    * [variables (`choose ` .. `~` .. `in` ...) - reuse of samples](#variables-choose-----in----reuse-of-samples)
+    * [function call (gfuncs) - defined outside of the GLF](#function-call-gfuncs---defined-outside-of-the-glf)
+* [creating grammars](#creating-grammars)
+    * [from Antlr4](#from-antlr4)
+    * [preventing explosion from recursion](#preventing-explosion-from-recursion)
 * [other topics](#other-topics)
-    * [TraceTree](#tracetree)
+    * [`TraceTree`](#tracetree)
     * [Resampling](#resampling)
 * [Rope Aplenty](#rope-aplenty)
-    * [TraceNode.child_containing](#tracenodechild_containing)
-    * [TraceNode.resample](#tracenoderesample)
-
+    * [`TraceNode.child_containing`](#tracenodechild_containing)
+    * [`TraceNode.resample`](#tracenoderesample)
 
 # Description
 
