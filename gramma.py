@@ -1,11 +1,6 @@
 #!/usr/bin/env python3
 r"""
     TODO:
-        - add "choose <id>~<expr> in <expr>" syntax
-            - refactor lark parser
-                - change rule to bare_id (maybe name?)
-                    - either a rule or variable
-            - add "vars" to state object
         - resampling
             - only ever resample with a bias-to-previous
             - generate an "unrolled" grammar
@@ -20,8 +15,6 @@ r"""
           interpreted correctly.
 
 """
-from __future__ import absolute_import, division, print_function
-
 import ast
 import copy
 import inspect
@@ -29,39 +22,22 @@ import logging
 import numbers
 import sys
 import textwrap
-import time
 import builtins
 from collections import deque
 from functools import reduce
-from itertools import groupby
+from itertools import islice, groupby
 
 import lark
 import numpy as np
 from six import string_types
 
 import pysa
-from util import SetStack
+from util import SetStack, DictStack
 
 try:
     import astpretty
 except ImportError:
     pass
-
-
-def func_name(f):
-    return f.__name__
-
-
-xrange = range
-
-
-def ast_argname(a):
-    return a.arg
-
-
-def perf_counter():
-    return time.perf_counter()
-
 
 # sys.setrecursionlimit(20000)
 sys.setrecursionlimit(200000)
@@ -97,12 +73,12 @@ gramma_grammar = r"""
             | func
 
     ?atom : string
-         | rule
+         | identifier
          | func
          | range
          | "(" tern ")"
 
-    rule : NAME
+    identifier : NAME
 
     func.2 : NAME "(" func_args? ")"
 
@@ -147,11 +123,11 @@ class LarkTransformer(object):
     def __init__(self):
         self.vars = {}
 
-    def push_var(self, var):
+    def push_vars(self, var):
         self.vars = SetStack()
         self.vars.add(var)
 
-    def pop_var(self):
+    def pop_vars(self):
         self.vars = self.vars.parent
 
     def visit(self, lt):
@@ -171,10 +147,10 @@ class LarkTransformer(object):
         var = lt.children[0].value
         dist = self.visit(lt.children[1])
 
-        # var is lexically scoped, push to vars
-        self.push_var(var)
+        # var is lexically scoped, push to vars, process child, and pop
+        self.push_vars(var)
         child = self.visit(lt.children[2])
-        self.pop_var()
+        self.pop_vars()
 
         return GChooseIn(var, dist, child)
 
@@ -350,12 +326,12 @@ class LarkTransformer(object):
 
         return GFunc(fname, fargs)
 
-    def rule(self, lt):
-        rname = lt.children[0].value
-        # if there's a lexically scoped var, use its value
-        if rname in self.vars:
-            return GRule(rname, 'stubby')
-        return GRule(rname)
+    def identifier(self, lt):
+        name = lt.children[0].value
+        if name in self.vars:
+            return GVar(name)
+        else:
+            return GRule(name)
 
 
 class GExprMetadata(object):
@@ -417,7 +393,7 @@ def gfunc(*args, **kw):
     """
         GrammaGrammar function decorator.
 
-        To extend GLF, annote methods of a GrammaGrammar child class with
+        To extend GLF, annotate methods of a GrammaGrammar child class with
         @gfunc.
 
         A gfunc
@@ -461,7 +437,7 @@ def gfunc(*args, **kw):
     """
 
     def _decorate(f, **kw):
-        fname = kw.pop('fname', func_name(f))
+        fname = kw.pop('fname', f.__name__)
         analyzer = kw.pop('analyzer', None)
         return GFuncWrap(f, fname, analyzer, GExprMetadata(**kw))
 
@@ -592,9 +568,6 @@ class GInternal(GExpr):
     """
         nodes with GExpr children
     """
-
-    # internal nodes must have a tag, corresponding to the larktree data field
-
     __slots__ = 'children',
 
     def __init__(self, children):
@@ -604,7 +577,7 @@ class GInternal(GExpr):
             c.parent = self
 
     def __str__(self):
-        return '%s(%s)' % (self.__class__.tag, ','.join(str(clt) for clt in self.children))
+        return '%s(%s)' % (self.__class__.__name__, ','.join(str(clt) for clt in self.children))
 
     def flat_simple_children(self):
         cls = self.__class__
@@ -661,13 +634,11 @@ class GChooseIn(GInternal):
         then e2 is sampled, NAME should be treated like a string-valued rule.
 
     """
-    tag = 'choosein'
+    __slots__ = 'vname',
 
-    __slots__ = 'var',
-
-    def __init__(self, var, dist, child):
+    def __init__(self, vname, dist, child):
         GInternal.__init__(self, [dist, child])
-        self.var = var
+        self.vname = vname
 
     @property
     def dist(self):
@@ -678,15 +649,13 @@ class GChooseIn(GInternal):
         return self.children[1]
 
     def copy(self):
-        return GChooseIn(self.var, self.dist, self.child)
+        return GChooseIn(self.vname, self.dist, self.child)
 
     def __str__(self):
-        return 'choose %s~%s in %s' % (self.var, self.dist, self.child)
+        return 'choose %s~%s in %s' % (self.vname, self.dist, self.child)
 
 
 class GTern(GInternal):
-    tag = 'tern'
-
     __slots__ = 'code',
 
     def __init__(self, code, children):
@@ -723,8 +692,6 @@ class defaultdict(dict):
 
 
 class GAlt(GInternal):
-    tag = 'alt'
-
     __slots__ = 'weights', 'dynamic', 'nweights'
 
     def __init__(self, weights, children):
@@ -823,8 +790,6 @@ class GAlt(GInternal):
 
 
 class GCat(GInternal):
-    tag = 'cat'
-
     def __str__(self):
         s = '.'.join(str(cge) for cge in self.children)
         if self.parent is not None and isinstance(self.parent, GRep):
@@ -853,8 +818,6 @@ class GCat(GInternal):
 
 
 class GRep(GInternal):
-    tag = 'rep'
-
     __slots__ = 'rgen', 'lo', 'hi', 'dist'
 
     def __init__(self, children, lo, hi, rgen, dist):
@@ -899,8 +862,6 @@ class GRep(GInternal):
 
 
 class GRange(GExpr):
-    tag = 'range'
-
     __slots__ = 'chars',
 
     def __init__(self, chars):
@@ -935,8 +896,6 @@ class GRange(GExpr):
 
 
 class GFunc(GInternal):
-    tag = 'func'
-
     __slots__ = 'fname', 'gf'
 
     def __init__(self, fname, fargs, gf=None):
@@ -964,12 +923,8 @@ class GFunc(GInternal):
 
 class GRule(GExpr):
     """
-        this is a _reference_ to a rule.. the rule definition is part of the
-        GrammaGrammar class
+        a _reference_ to a rule.. the rule definition is part of the GrammaGrammar class
     """
-
-    tag = 'rule'
-
     __slots__ = 'rname', 'rhs'
 
     def __init__(self, rname, rhs=None):
@@ -987,6 +942,24 @@ class GRule(GExpr):
 
     def __str__(self):
         return self.rname
+
+
+class GVar(GExpr):
+    """
+        a _reference_ to a variable
+    """
+
+    __slots__ = 'vname',
+
+    def __init__(self, vname):
+        GExpr.__init__(self)
+        self.vname = vname
+
+    def copy(self):
+        return GRule(self.vname)
+
+    def __str__(self):
+        return self.vname
 
 
 class GrammaState(object):
@@ -1054,13 +1027,20 @@ class GrammaRandom(object):
 class SamplerInterface(object):
     """
         constructed by GrammaSampler and passed to generators for access to
-        random and state.
+        random, state, params, and vars.
     """
-    __slots__ = 'random', 'state', 'params'
+    __slots__ = 'random', 'state', 'params', 'vars'
 
     def __init__(self, sampler):
         self.random, self.state, self.params = sampler.random, sampler.state, sampler.params
+        self.vars = DictStack()
 
+    def push_vars(self, vname, value):
+        self.vars = DictStack(self.vars)
+        self.vars[vname]=value
+
+    def pop_vars(self):
+        self.vars=self.vars.parent
 
 class GrammaSampler(object):
     """
@@ -1423,7 +1403,8 @@ class GCodeAnalyzer(pysa.VariableAccesses):
                 break
         else:
             self._raise(
-                '%s used without being initialized in any reset_state or explicitly allowed in allowed_global_ids or param_ids' % n.s)
+                '%s used without being initialized in any reset_state '
+                'or explicitly allowed in allowed_global_ids or param_ids' % n.s)
 
 
 def analyzer_use_first_arg(ge):
@@ -1602,7 +1583,7 @@ class GrammaGrammar(object):
 
     def _init_compilemap(self):
         self._compilemap = {}
-        for t in [GTok, GChooseIn, GTern, GAlt, GCat, GRep, GRange, GRule, GFunc]:
+        for t in [GTok, GChooseIn, GTern, GAlt, GCat, GRep, GRange, GRule, GVar, GFunc]:
             self._compilemap[t] = getattr(self, 'compile_' + t.__name__)
 
     def compile_GTok(self, ge):
@@ -1612,9 +1593,15 @@ class GrammaGrammar(object):
         return g
 
     def compile_GChooseIn(self, ge):
+        vname=ge.vname
+        dist=ge.dist
+        child=ge.child
         def g(x):
-            s = yield (ge.dist)
-            ss = yield (ge.child)
+            value = yield (dist)
+            x.push_vars(vname,value)
+            # execute child while vname is set
+            ss = yield (child)
+            x.pop_vars()
             yield ss
 
         return g
@@ -1623,7 +1610,6 @@ class GrammaGrammar(object):
         def g(x):
             s = yield (ge.children[0] if ge.compute_case(x) else ge.children[1])
             yield s
-
         return g
 
     def compile_GAlt(self, ge):
@@ -1672,6 +1658,14 @@ class GrammaGrammar(object):
         def g(x):
             s = yield (rhs)
             yield s
+
+        return g
+
+    def compile_GVar(self, ge):
+        vname = ge.vname
+
+        def g(x):
+            yield x.vars[vname]
 
         return g
 

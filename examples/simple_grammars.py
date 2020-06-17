@@ -1,16 +1,32 @@
 #!/usr/bin/env python3
-'''
+"""
 
 simple grammars -- used in other examples
 
-'''
+"""
+import traceback
 
-from __future__ import absolute_import, division, print_function
-
+import gramma
 from gramma import *
 
+# "global" means the globals in the gramma module, e.g. vars(gramma)
+# unless we change gcode_globals to point here, as follows:
+
+gramma.gcode_globals = globals()
+
+
+# now these will be visible in gcode
+def g_func():
+    for line in traceback.format_stack():
+        print(line)
+    return 8
+
+
+g_allowed = 'g_allowed'
+
+
 class ArithmeticGrammar(GrammaGrammar):
-    G=r'''
+    G = r'''
         start := expr;
 
         expr := add;
@@ -27,38 +43,22 @@ class ArithmeticGrammar(GrammaGrammar):
     '''
 
     def __init__(x):
-        GrammaGrammar.__init__(x,type(x).G, sideeffects=[DepthTracker])
+        GrammaGrammar.__init__(x, type(x).G, sideeffects=[DepthTracker])
 
-
-
-import traceback
-
-# "global" means the globals in the gramma module, e.g. vars(gramma)
-# unless we change gcode_globals to point here, as follows:
-import gramma
-gramma.gcode_globals=globals()
-
-
-# now these will be visible in gcode
-def g_func():
-    for line in traceback.format_stack():
-        print(line)
-    return 8
-g_allowed='g_allowed'
 
 class VarietyGrammar(GrammaGrammar):
     '''
          a grammar that uses a variety of gramma's features
     '''
 
-    G=r'''
+    G = r'''
         start := recurs;
 
         yyy:='a'{,`g_func()`};
 
         xxx:='a'{1,`g_func()`};
 
-        recurs := 10 ".".recurs | words . " " . ['1'..'9'] . digit{1,15,geom(5)};
+        recurs := 10 ".".recurs | vars . " ". words . " " . ['1'..'9'] . digit{1,15,geom(5)};
 
         digit := ['0' .. '9'];
 
@@ -68,29 +68,28 @@ class VarietyGrammar(GrammaGrammar):
                  ( .75 "dog" | .25 "cat" ).
                  (" f=".f()." a=".(`a`?"1":"0")." ff=".ff()){1,4};
 
+        vars := choose x~('a'|'b') in x.x.x;
     '''
 
-    
-
     def __init__(self):
-        GrammaGrammar.__init__(self, self.G, sideeffects=[DepthTracker],allowed_global_ids='g_allowed g_func'.split(), param_ids='maxrep'.split())
+        GrammaGrammar.__init__(self, self.G, sideeffects=[DepthTracker], allowed_global_ids='g_allowed g_func'.split(),
+                               param_ids='maxrep'.split())
 
-    def reset_state(self,state):
+    def reset_state(self, state):
         super().reset_state(state)
-        state.a=0
-        state.x=type('_',(),{})
-        state.x.y=7
-        state.extrastate={}
+        state.a = 0
+        state.x = type('_', (), {})
+        state.x.y = 7
+        state.extrastate = {}
 
     @gfunc
     def f(x):
-        yield x.random.choice(['woof','meow'])
+        yield x.random.choice(['woof', 'meow'])
 
     @gfunc
     def ff(x):
         x.state.a ^= 1
-        yield ['bleep','bloop'][x.state.a]
-
+        yield ['bleep', 'bloop'][x.state.a]
 
     @gfunc()
     def use_global(x):
@@ -110,12 +109,11 @@ class VarietyGrammar(GrammaGrammar):
 
     @gfunc
     def hh(x):
-        x.state.extrastate=7
+        x.state.extrastate = 7
         yield ''
 
 
-if __name__=='__main__':
-    print(GrammaSampler(VarietyGrammar(),maxrep=100).sample())
-
+if __name__ == '__main__':
+    print(GrammaSampler(VarietyGrammar(), maxrep=100).sample())
 
 # vim: ts=4 sw=4

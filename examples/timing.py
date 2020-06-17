@@ -22,12 +22,12 @@ def demo_timing1():
     sampler.random.seed(0)
     n=2500
     #n=10000
-    t0=perf_counter()
+    t0=time.perf_counter()
     #for i in xrange(n):
     #    s=sampler.sample()
     for s in islice(sampler.gensamples(),n):
         pass
-    t1=perf_counter()
+    t1=time.perf_counter()
     print('avg=%f' % ((t1-t0)/n))
 
 def demo_timing2():
