@@ -59,7 +59,7 @@ gramma_grammar = r"""
 
     ruledef : NAME ":=" choosein ";"
 
-    ?choosein : "choose" NAME "~" tern ("," NAME "~" tern)* "in" tern | tern
+    ?choosein : "choose"? NAME "~" tern ("," NAME "~" tern)* "in" tern | tern
 
     ?tern :  code "?" alt ":" alt | alt 
 
@@ -629,10 +629,10 @@ class GChooseIn(GInternal):
     """
         choose <var> ~ <dist> in  <child>
 
-        when entering a choosein, the sampler samples e1 and saves the result
-        in the sampler under NAME ..
+        when entering a choosein, the sampler samples dist and saves the result
+        in the sampler under "var" ..
 
-        then e2 is sampled, NAME should be treated like a string-valued rule.
+        then child is sampled, var is treated like a string-valued rule.
 
     """
     __slots__ = 'vnames',

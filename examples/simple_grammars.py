@@ -68,7 +68,8 @@ class VarietyGrammar(GrammaGrammar):
                  ( .75 "dog" | .25 "cat" ).
                  (" f=".f()." a=".(`a`?"1":"0")." ff=".ff()){1,4};
 
-        vars := choose x~('a'|'b'), y~('c'|'d') in x.y.x.y.x.y;
+        #vars := choose x~('a'|'b'), y~('c'|'d') in x.y.x.y.x.y;
+        vars := x ~ 'a'|'b', y~ 'c'|'d' in x.y.x.y.x.y;
     '''
 
     def __init__(self):
