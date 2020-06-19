@@ -61,7 +61,7 @@ gramma_grammar = r"""
 
     ?choosein : "choose"? NAME "~" tern ("," NAME "~" tern)* "in" tern | tern
 
-    ?tern :  code "?" alt ":" alt | alt 
+    ?tern :  code "?" alt ":" alt | alt
 
     ?alt : weight? cat ("|" weight? cat)*
 
@@ -143,8 +143,6 @@ class LarkTransformer(object):
         raise GrammaParseError('''unrecognized Lark node %s during parse of glf''' % lt)
 
     def choosein(self, lt):
-        # from IPython import embed; embed()
-
         # lt.children = [var1, dist1, var2, dist2, ..., varN, distN, child]
         i = iter(lt.children[:-1])
         var_dists = dict((v.value, self.visit(d)) for v, d in zip(i, i))
@@ -349,14 +347,14 @@ class GExprMetadata(object):
         self.uses_random = uses_random
 
     def __str__(self):
-        l = []
+        pl = []
         if len(self.statevar_defs) > 0:
-            l.append('defs=%s' % ','.join(sorted(self.statevar_defs)))
+            pl.append('defs=%s' % ','.join(sorted(self.statevar_defs)))
         if len(self.statevar_uses) > 0:
-            l.append('uses=%s' % ','.join(sorted(self.statevar_uses)))
+            pl.append('uses=%s' % ','.join(sorted(self.statevar_uses)))
         if self.uses_random:
-            l.append('uses_random')
-        return ' '.join(l)
+            pl.append('uses_random')
+        return ' '.join(pl)
 
     def copy(self):
         return GExprMetadata(copy.deepcopy(self.statevar_defs), copy.deepcopy(self.statevar_uses), self.samples,
@@ -827,6 +825,7 @@ class RepDist(object):
         self.name = name
         self.args = args
 
+
 class GRep(GInternal):
     __slots__ = 'rgen', 'lo', 'hi', 'dist'
 
@@ -892,15 +891,14 @@ class GRange(GExpr):
             return "''"
         chars = sorted([ord(c) for c in self.chars])
         cur = [chars[0], chars[0]]
-        l = [cur]
-        i = 1
+        ranges = [cur]
         for c in chars[1:]:
             if c == cur[1] + 1:
                 cur[1] += 1
             else:
                 cur = [c, c]
-                l.append(cur)
-        return '[%s]' % (','.join("'%s' .. '%s'" % (chr(c0), chr(c1)) for c0, c1 in l))
+                ranges.append(cur)
+        return '[%s]' % (','.join("'%s' .. '%s'" % (chr(c0), chr(c1)) for c0, c1 in ranges))
 
 
 class GFunc(GInternal):
@@ -931,8 +929,9 @@ class GFunc(GInternal):
 
 class GRule(GExpr):
     """
-        a _reference_ to a rule.. the rule definition is part of the GrammaGrammar class
+    a _reference_ to a rule.. the rule definition is part of the GrammaGrammar class.
     """
+
     __slots__ = 'rname', 'rhs'
 
     def __init__(self, rname, rhs=None):
@@ -954,7 +953,7 @@ class GRule(GExpr):
 
 class GVar(GExpr):
     """
-        a _reference_ to a variable
+    a _reference_ to a variable.
     """
 
     __slots__ = 'vname',
@@ -971,6 +970,10 @@ class GVar(GExpr):
 
 
 class GrammaState(object):
+    """
+    volatile state for sampling, must be initialized in grammar's reset_state.
+    """
+
     def __init__(self):
         self._cache = {}
 
@@ -982,6 +985,10 @@ class GrammaState(object):
 
 
 class GrammaRandom(object):
+    """
+    randomness and stats object.
+    """
+
     __slots__ = 'r', '_cache'
 
     def __init__(self, seed=None):
@@ -996,14 +1003,14 @@ class GrammaRandom(object):
 
     def load(self, slot):
         """
-            set this random number generator state to the cached value 'slot'
+        set this random number generator state to the cached value 'slot'.
         """
         st = self._cache.get(slot)
         self.r.set_state(st)
 
     def save(self, slot):
         """
-            store the current random number generator state to 'slot'
+        store the current random number generator state to 'slot'.
         """
         self._cache[slot] = self.r.get_state()
 
@@ -1034,9 +1041,9 @@ class GrammaRandom(object):
 
 class SamplerInterface(object):
     """
-        constructed by GrammaSampler and passed to generators for access to
-        random, state, params, and vars.
+    constructed by GrammaSampler and passed to generators for access to random, state, params, and vars.
     """
+
     __slots__ = 'random', 'state', 'params', 'vars'
 
     def __init__(self, sampler):
@@ -1053,15 +1060,11 @@ class SamplerInterface(object):
 
 class GrammaSampler(object):
     """
+    grammars provide grules, gfuncs, and the reset_state for its gfuncs.
 
-        grammars provide grules, gfuncs, and the reset_state for its gfuncs.
-
-        samplers mediate the GExpr requests and responses.
-
-        the context manages state and executes the stack machine to generate
-        samples.
-
+    samplers evaluate GExprs in a stack machine.
     """
+
     __slots__ = 'grammar', 'transformers', 'sideeffects', 'state', 'random', 'params'
 
     def __init__(self, grammar=None, **params):
@@ -1087,7 +1090,7 @@ class GrammaSampler(object):
             self.transformers.append(transformer)
 
     def update_statecache(self, **kw):
-        """keywords are of the form slot=value"""
+        """keywords are of the form slot=value."""
         self.state._cache.update(kw)
 
     def get_statecache(self):
@@ -1166,6 +1169,7 @@ class GrammaSampler(object):
 
 
 def analyze_reset_state(cls, method_name='reset_state'):
+    """extract the names of variables defined in reset_state."""
     m = pysa.get_method(cls, method_name)
     if m is None:
         return set()
@@ -1175,21 +1179,22 @@ def analyze_reset_state(cls, method_name='reset_state'):
 
 class SideEffect(object):
     """
-        Base class for sampler sideeffects
+    Base class for sampler sideeffects.
     """
+
     __slots__ = ()
 
     def get_reset_states(self):
         return analyze_reset_state(self.__class__)
 
     def reset_state(self, state):
-        """
-        called before the stack machine starts
-        """
+        """initialize managed variables before execution."""
         pass
 
     def push(self, x, ge):
         """
+        Handle state machine push.
+
         when an expression is compiled to a coroutine, the stack machine
         pushes.  the return value is pushed at the same position in the stack,
         made available to pop later.
@@ -1198,16 +1203,19 @@ class SideEffect(object):
 
     def pop(self, x, w, s):
         """
-        when a coroutine complete, returning a string, s, it is popped.
-        w is the value returned by the corresponding push.
+        Handle state machine pop.
+
+        when a coroutine completes, returning a string, s, it is popped.  w is
+        the value returned by the corresponding push.
         """
         pass
 
 
 class Transformer(object):
     """
-        an operation to perform on gexprs before being compiled in the sampler.
+    transforms gexprs prior to coroutine compilation in by the sampler.
     """
+
     __slots__ = ()
 
     def transform(self, x, ge):
@@ -2135,6 +2143,6 @@ class TracingSampler(GrammaSampler):
         if randstate is not None:
             self.random.set_state(randstate)
         self.sample(ge)
-        return tracer.tracetree
+        return self.tracer.tracetree
 
 # vim: ts=4 sw=4
