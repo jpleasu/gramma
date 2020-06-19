@@ -41,7 +41,7 @@ class StackWatcher(SideEffect):
 
   def reset_state(self,state):
     state.stk=[]
-  
+
   def push(self,x,ge):
     if isinstance(ge,GRule):
       x.state.stk.append(ge.rname)
@@ -53,15 +53,15 @@ class StackWatcher(SideEffect):
         print('------------')
       return True
     return False
-  
+
   def pop(self,x,w,s):
     if w:
       del x.state.stk[-1]
 
 class MyGrammar(GrammaGrammar):
   def __init__(self, grammarfile):
-    with open(os.path.join(os.path.dirname(__file__), grammarfile)) as infile:
-      GrammaGrammar.__init__(self,infile.read(), param_ids='maxrep'.split(), sideeffects=[StackWatcher()])
+    with open(grammarfile) as infile:
+      GrammaGrammar.__init__(self,infile.read(), param_ids='maxrep'.split())
 
   def reset_state(self,state):
     pass
@@ -87,7 +87,11 @@ if __name__=='__main__':
   g=MyGrammar(sys.argv[1])
   sampler=GrammaSampler(g)
   sampler.update_params(maxrep=3)
-  s=sampler.sample()
-  sys.stdout.buffer.write(s.encode('utf8','ignore'))
-  print()
-
+  #sampler.add_sideeffects(StackWatcher())
+  try:
+    while True:
+      s=sampler.sample()
+      sys.stdout.buffer.write(s.encode('utf8','ignore'))
+      sys.stdout.flush()
+  except KeyboardInterrupt:
+    pass
