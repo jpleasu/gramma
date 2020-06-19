@@ -147,7 +147,7 @@ class LarkTransformer(object):
 
         # lt.children = [var1, dist1, var2, dist2, ..., varN, distN, child]
         i = iter(lt.children[:-1])
-        var_dists = dict((v.value, self.visit(d)) for v,d in zip(i, i))
+        var_dists = dict((v.value, self.visit(d)) for v, d in zip(i, i))
 
         # push new lexical scope, process child, and pop
         self.push_vars(var_dists.keys())
@@ -195,9 +195,9 @@ class LarkTransformer(object):
         # figure out the distribution.. if not a GCode or a GFunc, assume uniform
         a = args[-1]
         if isinstance(a, GFunc):
-            dist = a
             fname = a.fname
             fargs = [x.as_num() for x in a.fargs]
+            dist = RepDist(a.fname, fargs)
             if fname == u'geom':
                 # "a"{geom(n)} has an average of n copies of "a"
                 parm = 1 / float(fargs[0] + 1)
@@ -213,7 +213,7 @@ class LarkTransformer(object):
 
             del args[-2:]
         else:
-            dist = 'unif'
+            dist = RepDist('unif', [])
             g = None
 
         # parse bounds to lo and hi, each is either None, GTok integer, or GCode
@@ -300,6 +300,7 @@ class LarkTransformer(object):
                         else:
                             rgen = lambda x: max(lo, min(g(x), hi))
 
+        # lo and hi, are each either None, int, or GCode
         return GRep([child], lo, hi, rgen, dist)
 
     def range(self, lt):
@@ -819,6 +820,13 @@ class GCat(GInternal):
         return GCat(l)
 
 
+class RepDist(object):
+    __slots__ = 'name', 'args'
+
+    def __init__(self, name, args):
+        self.name = name
+        self.args = args
+
 class GRep(GInternal):
     __slots__ = 'rgen', 'lo', 'hi', 'dist'
 
@@ -830,7 +838,7 @@ class GRep(GInternal):
         self.dist = dist
 
     def get_code(self):
-        return [c for c in [self.lo, self.hi, self.dist] if isinstance(c, GCode)]
+        return [c for c in [self.lo, self.hi] if isinstance(c, GCode)]
 
     def get_meta(self):
         return reduce(lambda a, b: a | b, (c.meta for c in self.get_code()), GExprMetadata(uses_random=True))
@@ -856,10 +864,8 @@ class GRep(GInternal):
 
     def __str__(self):
         child = self.child
-        if self.dist == 'unif':
+        if self.dist.name == 'unif':
             return '%s{%s}' % (child, self.range_args())
-        elif isinstance(self.dist, GCode):
-            return '%s{%s,%s}' % (child, self.range_args(), self.dist)
         return '%s{%s,%s}' % (child, self.range_args(), self.dist)
 
 
@@ -1602,7 +1608,7 @@ class GrammaGrammar(object):
 
         def g(x):
             # sample each variable
-            values=[]
+            values = []
             for dist in dists:
                 values.append((yield dist))
             x.push_vars(dict(zip(vnames, values)))
