@@ -86,7 +86,15 @@ class Emitter(object):
 
 
 class CppGen(Emitter):
-    def __init__(self, glf_file, cpp_file, sampler_classname=None, fixed_methods_include=None):
+    def __init__(self, glf_file, cpp_file, sampler_classname=None, impl_include_file=None):
+        """
+        create and emit a C++ implementions of a gramma samlper.
+            glf_file                input GLF grammar file object
+            cpp_file                output file object
+            sampler_classname       C++ class name
+            impl_include_file       C++ source to include in the sampler class that implements
+                                    gfuncs, state variables, and the sideeffect API
+        """
         Emitter.__init__(self, cpp_file)
         basename = os.path.basename(glf_file.name)
         if basename.endswith('.glf'):
@@ -96,8 +104,6 @@ class CppGen(Emitter):
             if not re.search('sampler$', sampler_classname, re.IGNORECASE):
                 sampler_classname += 'Sampler'
         self.sampler_classname = sampler_classname
-        if fixed_methods_include is None:
-            fixed_methods_include = basename + '_sampler_impl.cpp'
 
         glf_source = glf_file.read()
 
@@ -114,18 +120,44 @@ class CppGen(Emitter):
 
         # extract gfunc call patterns? contexts
 
-        if not os.path.exists(fixed_methods_include):
-            with open(fixed_methods_include, 'w') as out:
+        if impl_include_file is None:
+            impl_include_file = basename + '_sampler_impl.cpp'
+        if not os.path.exists(impl_include_file):
+            with open(impl_include_file, 'w') as out:
                 impl=Emitter(out)
                 impl.emit('''\
-                        // XXX declare state variables
+                    /* === declare state variables === */
+                    
+                    // rule depth in trace tree
+                    int rule_depth;
 
-                        // XXX set state variables
-                        void reset_state() {
+                    // set state prior to each sample
+                    void reset_state() {
+                        rule_depth=0;
+                    }
+                ''')
+                with impl.indentation('#if defined(USE_SIDEEFFECT_API)', '#endif', flushleft=True):
+                    impl.emit('''\
+                        // XXX choose the type associated with each rule 
+                        using sideeffect_t=bool;
+                        
+                        // XXX return the value associated with a rule just prior to its execution
+                        sideeffect_t push(rule_t rule) {
+                            ++rule_depth;
+                            return true;
                         }
-
-                        // XXX define gfuncs
+                        
+                        // XXX handle the result immediately after rule execution
+                        void pop(const sideeffect_t &e, const string &subsample) {
+                            if(e) {
+                                --rule_depth;
+                            }
+                        }
+                        
                     ''')
+                impl.emit('''\
+                    // XXX define gfuncs
+                ''')
                 gfs = set()  # pairs, (name, # arsg)
                 for gf in self.gen_gfuncs():
                     gfs.add((gf.fname, len(gf.fargs)))
@@ -136,34 +168,51 @@ class CppGen(Emitter):
         with self.indentation(f'''\
             #include "gramma.hpp"
 
+            // generated from {glf_file.name} 
             class {sampler_classname} : public gramma::SamplerBase {{
         ''', '};'):
 
             self.emit('public:')
+
+            rules=','.join(sorted(self.ruledefs.keys()))
+
             self.emit(f'''\
-                   # include "{fixed_methods_include}"
+                    enum class rule_t {{{rules}}};
+
+                   # include "{impl_include_file}"
                ''')
 
-            self.emit('// nodes')
+            self.emit('/* === nodes=== */')
             for ge in self.ruledefs.values():
                 self.dump(ge)
 
-            self.emit('// ruledefs')
+            self.emit('/* === ruledefs=== */')
             for rname, ge in self.ruledefs.items():
                 with self.indentation(f'''\
                     // ruledef
                     string {rname}() {{
                 ''', '}'):
-                    self.emit(f'''\
-                        return {self.invoke(ge)};
-                    ''')
+                    with self.indentation('#if defined(USE_SIDEEFFECT_API)', flushleft=True):
+                        self.emit(f'''\
+                            sideeffect_t assoc_value = push(rule_t::{rname});
+                            string subsample={self.invoke(ge)};
+                            pop(assoc_value, subsample);
+                            return subsample;
+                        ''')
+                    with self.indentation('#else', '#endif', flushleft=True):
+                        self.emit(f'''
+                            return {self.invoke(ge)};
+                        ''')
         with self.indentation('#if defined(BUILDMAIN)', '#endif', flushleft=True):
             self.emit(f'''\
                 int main() {{
                     {sampler_classname} sampler;
+
                     while(true) {{
+                        sampler.reset_state();
                         std::cout << sampler.start();
                     }}
+
                     return 0;
                 }}
             ''')
