@@ -17,12 +17,12 @@
 namespace gramma {
     class SamplerBase {
     public:
-        using string = std::string;
-        using method_type = std::function<string ()>;
+        using string_t = std::string;
+        using method_t = std::function<string_t ()>;
 
         std::mt19937_64 rand;
 
-        std::deque<std::map<string,string>> vars;
+        std::deque<std::map<string_t,string_t>> vars;
 
         // arrays
         template<size_t N>
@@ -82,10 +82,10 @@ namespace gramma {
         void pop_vars() {
             vars.pop_front();
         }
-        void set_var(const string &name, const string &value) {
+        void set_var(const string_t &name, const string_t &value) {
             vars.back()[name]=value;
         }
-        string get_var(const string &name) {
+        string_t get_var(const string_t &name) {
             for(auto &m:vars) {
                 auto it = m.find(name);
                 if ( it != m.end() )

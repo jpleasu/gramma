@@ -4,14 +4,19 @@ emit C++ source for a function that generates samples from the GLF input file
 """
 import os
 import re
-import textwrap
 
 from gramma import *
 
 
-def encode_as_cpp_str(s):
-    r = '"'
-    b = s.encode('utf8')
+def encode_as_cpp(s, quote):
+    quoteord = ord(quote)
+    r = quote
+    if isinstance(s, bytes):
+        b = s
+    elif isinstance(s, int):
+        b = (s,)
+    else:
+        b = s.encode('utf8')
     for c in b:
         if c == 0:
             r += r'\0'
@@ -21,15 +26,23 @@ def encode_as_cpp_str(s):
             r += r'\r'
         elif c == 9:
             r += r'\t'
-        elif c == 34:
-            r += r'\"'
+        elif c == quoteord:
+            r += '\\' + quote
         elif c == 92:
             r += r'\\'  # two backslashes
         elif 0x20 <= c <= 0x7e:
             r += chr(c)
         else:
             r += f'\\x{c:02x}'
-    return r + '"'
+    return r + quote
+
+
+def encode_as_cpp_str(s):
+    return encode_as_cpp(s, quote='"')
+
+
+def encode_as_cpp_char(c):
+    return encode_as_cpp(ord(c), quote="'")
 
 
 class IndentationContext(object):
@@ -124,9 +137,12 @@ class CppGen(Emitter):
             impl_include_file = basename + '_sampler_impl.cpp'
         if not os.path.exists(impl_include_file):
             with open(impl_include_file, 'w') as out:
-                impl=Emitter(out)
+                impl = Emitter(out)
                 impl.emit('''\
                     /* === declare state variables === */
+                    
+                    // for g42glf generated grammars
+                    int maxrep=3;
                     
                     // rule depth in trace tree
                     int rule_depth;
@@ -136,7 +152,7 @@ class CppGen(Emitter):
                         rule_depth=0;
                     }
                 ''')
-                with impl.indentation('#if defined(USE_SIDEEFFECT_API)', '#endif', flushleft=True):
+                with impl.indentation('#if defined(USE_SIDEEFFECT_API)', '#endif', flushleft=True, level=0):
                     impl.emit('''\
                         // XXX choose the type associated with each rule 
                         using sideeffect_t=bool;
@@ -148,8 +164,8 @@ class CppGen(Emitter):
                         }
                         
                         // XXX handle the result immediately after rule execution
-                        void pop(const sideeffect_t &e, const string &subsample) {
-                            if(e) {
+                        void pop(const sideeffect_t &assoc, const string_t &subsample) {
+                            if(assoc) {
                                 --rule_depth;
                             }
                         }
@@ -174,7 +190,7 @@ class CppGen(Emitter):
 
             self.emit('public:')
 
-            rules=','.join(sorted(self.ruledefs.keys()))
+            rules = ','.join(sorted(self.ruledefs.keys()))
 
             self.emit(f'''\
                     enum class rule_t {{{rules}}};
@@ -190,12 +206,12 @@ class CppGen(Emitter):
             for rname, ge in self.ruledefs.items():
                 with self.indentation(f'''\
                     // ruledef
-                    string {rname}() {{
+                    string_t {rname}() {{
                 ''', '}'):
                     with self.indentation('#if defined(USE_SIDEEFFECT_API)', flushleft=True):
                         self.emit(f'''\
                             sideeffect_t assoc_value = push(rule_t::{rname});
-                            string subsample={self.invoke(ge)};
+                            string_t subsample={self.invoke(ge)};
                             pop(assoc_value, subsample);
                             return subsample;
                         ''')
@@ -320,7 +336,7 @@ class CppGen(Emitter):
                 )
                 with self.indentation(f'''\
                     // galt - dynamic
-                    string {gid}() {{
+                    string_t {gid}() {{
                 ''', '}'):
                     self.emit(f'''\
                         double weights[] {{{weights}}};
@@ -335,7 +351,7 @@ class CppGen(Emitter):
                 with self.indentation(f'''\
                     // galt
                     static constexpr double {gid}_weights[] {{{weights}}};
-                    string {gid}() {{
+                    string_t {gid}() {{
                 ''', '}'):
                     self.emit(f'''\
                         int i = weighted_select({gid}_weights);
@@ -346,11 +362,11 @@ class CppGen(Emitter):
         elif isinstance(ge, GCat):
             with self.indentation(f'''\
                 // gcat
-                string {gid}() {{
+                string_t {gid}() {{
             ''', '}'):
-                # "" + "" + ...  -> string {""} + "" + ...
+                # "" + "" + ...  -> string_t {""} + "" + ...
                 if len(ge.children) >= 2 and isinstance(ge.children[0], GTok) and isinstance(ge.children[1], GTok):
-                    argsum = 'string {' + self.invoke(ge.children[0]) + '} +' + '+'.join(
+                    argsum = 'string_t {' + self.invoke(ge.children[0]) + '} +' + '+'.join(
                         f'{self.invoke(c)}' for c in ge.children[1:])
                 else:
                     argsum = '+'.join(f'{self.invoke(c)}' for c in ge.children)
@@ -362,7 +378,7 @@ class CppGen(Emitter):
         elif isinstance(ge, GTern):
             with self.indentation(f'''\
                 // gtern
-                string {gid}() {{
+                string_t {gid}() {{
             ''', '}'):
                 self.emit(f'''\
                     if({self.invoke(ge.code)}) {{
@@ -374,7 +390,7 @@ class CppGen(Emitter):
         elif isinstance(ge, GChooseIn):
             with self.indentation(f'''\
                 // gchoosein
-                string {gid}() {{
+                string_t {gid}() {{
             ''', '}'):
                 self.emit(f'''\
                     push_vars();
@@ -384,26 +400,26 @@ class CppGen(Emitter):
                         set_var({encode_as_cpp_str(name)}, {self.invoke(value_dist)});
                     ''')
                 self.emit(f'''\
-                    string result = {self.invoke(ge.child)};
+                    string_t result = {self.invoke(ge.child)};
                     pop_vars();
                     return result;
                 ''')
         elif isinstance(ge, GVar):
             pass  # invoked directly
         elif isinstance(ge, GRange):
-            chars = ','.join(f"'{c}'" for c in ge.chars)
+            chars = ','.join(encode_as_cpp_char(c) for c in ge.chars)
             with self.indentation(f'''\
                 // grange
                 static constexpr char {gid}_chars[] {{{chars}}};
-                string {gid}() {{
+                string_t {gid}() {{
             ''', '}'):
                 self.emit(f'''\
-                    return string(1,uniform_selection({gid}_chars));
+                    return string_t(1,uniform_selection({gid}_chars));
                 ''')
         elif isinstance(ge, GRep):
             with self.indentation(f'''\
                 // grep
-                string {gid}() {{
+                string_t {gid}() {{
             ''', '}'):
                 self.emit(f'''\
                     int lo={self.invoke_rep_bound(ge.lo, 0)};
@@ -411,7 +427,7 @@ class CppGen(Emitter):
 
                     int n={self.invoke_rep_dist(ge.dist)};
 
-                    string s;
+                    string_t s;
                     while(n-->0) {{
                         s+={self.invoke(ge.child)};
                     }}
@@ -420,7 +436,7 @@ class CppGen(Emitter):
         else:
             with self.indentation(f'''\
                 // placeholder[{ge.__class__.__name__}]
-                string {gid}() {{
+                string_t {gid}() {{
             ''', '}'):
                 self.emit('''\
                     return "?";
