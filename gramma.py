@@ -602,7 +602,7 @@ class GCode(GExpr):
 
     def __init__(self, expr, meta=None):
         self.expr = expr
-        self.compiled = compile(expr, '<GCode>', 'eval')
+        self.compiled = None # set in finalize_gexpr
         self.meta = GExprMetadata.DEFAULT.copy() if meta is None else meta
 
     def invoke(self, x):
@@ -1579,12 +1579,13 @@ class GrammaGrammar(object):
             ge.rhs = rhs
 
         elif isinstance(ge, GCode):
+            if ge.compiled is None:
+                ge.compiled = compile(ge.expr, '<GCode>', 'eval')
             GCodeAnalyzer(self, ge)
 
         # dynamic elements keep their code outside of the expr tree
         for code in ge.get_code():
-            GCodeAnalyzer(self, code)
-            # equiv. self.finalize_gexpr(code)
+            self.finalize_gexpr(code)
 
         if isinstance(ge, GInternal):
             for c in ge.children:

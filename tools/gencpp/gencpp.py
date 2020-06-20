@@ -173,13 +173,24 @@ class CppGen(Emitter):
                     ''')
                 impl.emit('''\
                     // XXX define gfuncs
+                    
+                    // run method and return empty string.. mnemonic "execute"
+                    template<typename T>
+                    string_t e(T m) {
+                        m();
+                        return "";
+                    }
+                    
                 ''')
+                predefined_gfuncs=set('e'.split())
                 gfs = set()  # pairs, (name, # arsg)
                 for gf in self.gen_gfuncs():
                     gfs.add((gf.fname, len(gf.fargs)))
                 for fname, nargs in sorted(gfs):
-                    args = ','.join('method_type arg%d' % i for i in range(nargs))
-                    with impl.indentation(f'string {fname}({args}){{', '}'):
+                    if fname in predefined_gfuncs:
+                        continue
+                    args = ','.join('method_t arg%d' % i for i in range(nargs))
+                    with impl.indentation(f'string_t {fname}({args}){{', '}'):
                         impl.emit('return "?";')
         with self.indentation(f'''\
             #include "gramma.hpp"
@@ -258,6 +269,8 @@ class CppGen(Emitter):
             return f'[]() {{return {self.invoke(ge)};}}'
         elif isinstance(ge, GVar):
             return f'[]() {{return {self.invoke(ge)};}}'
+        elif isinstance(ge, GCode):
+            return f'[&]() {{return {self.invoke(ge)};}}'
         elif isinstance(ge, GRule):
             return f'std::bind(&{self.sampler_classname}::{ge.rname}, this)'
         else:
@@ -405,6 +418,8 @@ class CppGen(Emitter):
                     return result;
                 ''')
         elif isinstance(ge, GVar):
+            pass  # invoked directly
+        elif isinstance(ge, GCode):
             pass  # invoked directly
         elif isinstance(ge, GRange):
             chars = ','.join(encode_as_cpp_char(c) for c in ge.chars)
