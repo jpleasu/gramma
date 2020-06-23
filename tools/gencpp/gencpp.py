@@ -244,7 +244,7 @@ class CppGen(Emitter):
                 }}
             ''')
 
-    def gen_gfuncs(self, ge=None):
+    def gen_gfuncs(self, ge: GExpr = None):
         if ge is None:
             for ge in self.ruledefs.values():
                 for gf in self.gen_gfuncs(ge):
@@ -256,7 +256,7 @@ class CppGen(Emitter):
                 for gf in self.gen_gfuncs(c):
                     yield gf
 
-    def as_gfunc_arg(self, ge):
+    def as_gfunc_arg(self, ge: GExpr):
         """
         Generate a C++ callable to pass into a gfunc.
 
@@ -276,7 +276,7 @@ class CppGen(Emitter):
         else:
             return f'std::bind(&{self.sampler_classname}::{self.ident[ge]}, this)'
 
-    def invoke(self, ge):
+    def invoke(self, ge: GExpr):
         if isinstance(ge, GRule):
             return f'{ge.rname}()'
         elif isinstance(ge, GFunc):
@@ -299,7 +299,7 @@ class CppGen(Emitter):
         else:
             return str(default)
 
-    def invoke_rep_dist(self, dist):
+    def invoke_rep_dist(self, dist: RepDist):
         """
         generate C++ source to randomly sample the given RepDist.
 
@@ -324,7 +324,7 @@ class CppGen(Emitter):
         else:
             raise GrammaParseError('no dist %s' % (dist.name))
 
-    def dump(self, ge):
+    def dump(self, ge: GExpr):
         # emit children first
         if isinstance(ge, GInternal):
             for c in ge.children:
@@ -457,7 +457,7 @@ class CppGen(Emitter):
                     return "?";
                 ''')
 
-    def assign_ids(self, ge):
+    def assign_ids(self, ge: GExpr):
         # self.ident[ge] = 'f%x' % id(ge)
         self.ident[ge] = 'f%d' % len(self.ident)
 
