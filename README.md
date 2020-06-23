@@ -3,8 +3,12 @@
 * [Description](#description)
 * [Overview](#overview)
 * [Install](#install)
-* [GLF Syntax](#glf-syntax)
+* [samplers](#samplers)
+    * [Python](#python)
+* [C++](#c)
+* [GLF syntax](#glf-syntax)
     * [literals - same syntax as Python strings](#literals---same-syntax-as-python-strings)
+    * [ranges - (`[` .. `]`)  - character ranges](#ranges---------character-ranges)
     * [ternary operator (`?:`) - choice based on computed boolean](#ternary-operator----choice-based-on-computed-boolean)
     * [weighted alternation (`|`) - weighted random choice from alternatives](#weighted-alternation----weighted-random-choice-from-alternatives)
     * [concatenation (`.`) - definite concatenation](#concatenation----definite-concatenation)
@@ -25,18 +29,16 @@
 
 Gramma is a probabilistic programming language for grammar based fuzzing.
 
-
 # Overview
-Expressions in Gramma are probabilistc programs with string value.  They
+Expressions in Gramma are probabilistic programs with string value.  They
 are written in GLF, an extensible syntax for formal language description
-that resembles Backus-Naur form (BNF).
-
-GLF is extended with custom functions implemented in extensions of the base
-`GrammaGrammar` class.
+that resembles extend Backus-Naur form (EBNF).  Gramma is like a parser generator, 
+but instead of generating a parser from a grammar, Gramma generates a (parameterized) fuzzer
+from a grammar.
 
 A typical application of Gramma in fuzzing would be as follows:
 
-1. Create a grammar based on the input grammar for the application under test.
+1. Create a GLF grammar based on the input grammar for the application under test.
 2. Feed the instrumented application samples and compute a measure of interest
    for each.
 3. Tweak numerical parameters of the grammar and/or use previous samples as
@@ -52,17 +54,69 @@ Gramma is pure Python 3 with some dependencies.
 pip3 install lark-parser six future numpy
 ```
 
-# GLF Syntax
+# samplers
+GLF expressions aren't evaluated, they're _sampled_.  Instead of an execution engine, interpreter, or compiler,
+we need a _sampler_ to get a string from a GLF expression.
+
+## Python
+The Python sampler is an interpreter, built for analysis of the language itself.
+```python
+from gramma import *
+
+class ArithmeticGrammar(GrammaGrammar):
+    G = r'''
+        start := expr;
+        expr := add;
+
+        add :=  mul . '+' . mul | `min(.01,depth/30.0)` mul ;
+        mul :=  atom . '*' . atom | `min(.01,depth/30.0)` atom ;
+
+        atom :=  var | 3 int | "(" . expr . ")";
+
+        var := ['a'..'z']{1,5,geom(3)} ;
+        int := ['1'..'9'] . digit{1,8,geom(3)};
+
+        digit := ['0' .. '9'];
+    '''
+
+    def __init__(x):
+        GrammaGrammar.__init__(x, type(x).G, sideeffects=[DepthTracker])
+
+f __name__ == '__main__':
+    print(GrammaSampler(ArithmeticGrammar()).sample())
+```
+
+# C++
+C++ samplers are generated for speed.
+see [cppgen](tools/cppgen/README.md)
+
+
+# GLF syntax
 
 GLF, the gramma language format, is structurally the same as BNF with different syntax for the operators and 
-some extra features.  In particular, GLF permits "gcode" and "gfunc" terms which represent portions of the grammar
-implemented elsewhere, e.g. in Python.
+some extra features:
+- GLF permits "gcode" and "gfunc" terms which hold the place for bits of the sampler implemented elsewhere, 
+e.g. in Python or C++.
+- GLF expressions are untyped, it's up to the sampler to interpret.
 
 ## literals - same syntax as Python strings
+Literals are parsed as Python strings:
 ```
-'this is a string'
+'this is a literal'
 """this is a 
-    multiline string"""
+    multiline literal"""
+```
+
+## ranges - (`[` .. `]`)  - character ranges
+```
+['a'..'z']
+```
+samples a character uniformly from `a` to `z`, inclusive.
+
+Multiple subranges and single characters can be included in the set to be
+sampled uniformly:
+```
+['a'..'z', '0'..'9', '_']
 ```
 
 ## ternary operator (`?:`) - choice based on computed boolean

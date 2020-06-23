@@ -72,7 +72,7 @@ namespace gramma {
                 if (it != m.end())
                     return it->second;
             }
-            return ""; // raise bad grammar exception?
+            return {}; // raise bad grammar exception?
         }
     };
 } // namespace gramma

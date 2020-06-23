@@ -84,7 +84,6 @@ gramma_grammar = r"""
 
     func.2 : NAME "(" func_args? ")"
 
-
     func_args : func_arg ("," func_arg)*
 
     ?func_arg : code|alt|INT|FLOAT
@@ -93,17 +92,19 @@ gramma_grammar = r"""
 
     number: INT|FLOAT
 
-    range : "[" CHAR  (".." CHAR)? (COMMA CHAR  (".." CHAR)? )* "]"
-
+    
+    range_part : CHAR  (".." CHAR)?
+    range : "["  range_part ("," range_part )* "]"
+    
     NAME : /[a-zA-Z_][a-zA-Z_0-9]*/
 
     string : STRING|CHAR|LONG_STRING
 
     code : /`[^`]*`/
 
-    STRING : /[ubf]?r?("(?!"").*?(?<!\\)(\\\\)*?"|'(?!'').*?(?<!\\)(\\\\)*?')/i
+    STRING : /[u]?r?("(?!"").*?(?<!\\)(\\\\)*?"|'(?!'').*?(?<!\\)(\\\\)*?')/i
     CHAR.2 : /'([^\\']|\\([\nrt']|x[0-9a-fA-F]{2}|u[0-9a-fA-F]{4}))'/
-    LONG_STRING.2: /[ubf]?r?("(?:"").*?(?<!\\)(\\\\)*?"(?:"")|'''.*?(?<!\\)(\\\\)*?''')/is
+    LONG_STRING.2: /[u]?r?("(?:"").*?(?<!\\)(\\\\)*?"(?:"")|'''.*?(?<!\\)(\\\\)*?''')/is
 
     COMMENT : /#[^\n]*/
     COMMA: ","
@@ -304,19 +305,19 @@ class LarkTransformer(object):
         return GRep([child], lo, hi, rgen, dist)
 
     def range(self, lt):
-        it = iter(lt.children)
-        try:
-            chars = [eval(next(it).value)]
-            while True:
-                tok = next(it)
-                if tok.type == 'COMMA':
-                    chars.append(eval(next(it).value))
-                else:  # tok.type=='CHAR'
-                    c1 = eval(tok.value)
-                    chars.extend([chr(c) for c in range(ord(chars[-1]) + 1, ord(c1) + 1)])
-        except StopIteration:
-            pass
-        return GRange(chars)
+        # pairs = [  (base, count), (base, count), ... ]
+        # where base is ord(starting char) and count is the size of the part
+        pairs = []
+        for part in lt.children:
+            cl = part.children
+            base = ord(eval(cl[0].value))
+            if len(cl) == 1:
+                count = 1
+            else:
+                e = ord(eval(cl[1].value))
+                count = 1 + e - base
+            pairs.append((base, count))
+        return GRange(pairs)
 
     def func(self, lt):
         fname = lt.children[0].value
@@ -604,7 +605,7 @@ class GCode(GExpr):
 
     def __init__(self, expr, meta=None):
         self.expr = expr
-        self.compiled = None # set in finalize_gexpr
+        self.compiled = None  # set in finalize_gexpr
         self.meta = GExprMetadata.DEFAULT.copy() if meta is None else meta
 
     def invoke(self, x):
@@ -871,36 +872,44 @@ class GRep(GInternal):
 
 
 class GRange(GExpr):
-    __slots__ = 'chars',
+    __slots__ = 'pairs',
 
-    def __init__(self, chars):
+    def __init__(self, pairs):
+        """
+        pairs - [ (base, count), ...]
+            where base is ord(char) and count is the size of the part
+        """
         GExpr.__init__(self)
-        self.chars = chars
+        self.pairs = pairs
+
+    @property
+    def chars(self):
+        chars = []
+        for base, count in self.pairs:
+            chars.extend(chr(base + i) for i in range(count))
+        return chars
 
     def get_meta(self):
         return GExprMetadata.DEFAULT_RANDOM
 
     def copy(self):
-        return GRange(self.chars)
+        return GRange(self.pairs)
 
     def simplify(self):
-        if len(self.chars) == 1:
-            return GTok.from_str(self.chars[0])
+        if len(self.pairs) == 1 and self.pairs[0][1] == 1:
+            o = self.pairs[0][0]
+            return GTok.from_str(chr(o))
         return self.copy()
 
     def __str__(self):
-        if len(self.chars) == 0:
-            return "''"
-        chars = sorted([ord(c) for c in self.chars])
-        cur = [chars[0], chars[0]]
-        ranges = [cur]
-        for c in chars[1:]:
-            if c == cur[1] + 1:
-                cur[1] += 1
+        parts = []
+        for base, count in sorted(self.pairs):
+            if count == 1:
+                parts.append("'%s'" % chr(base))
             else:
-                cur = [c, c]
-                ranges.append(cur)
-        return '[%s]' % (','.join("'%s' .. '%s'" % (chr(c0), chr(c1)) for c0, c1 in ranges))
+                parts.append("'%s'..'%s'" % (chr(base), chr(base + count - 1)))
+
+        return '[%s]' % (','.join(parts))
 
 
 class GFunc(GInternal):
@@ -1662,18 +1671,44 @@ class GrammaGrammar(object):
             s = ''
             n = ge.rgen(x)
             while n > 0:
-                s += yield (ge.child)
+                s += yield ge.child
                 n -= 1
             yield s
 
         return g
 
-    def compile_GRange(self, ge):
-        n = len(ge.chars)
+    def compile_GRange(self, ge: GRange):
         chars = ge.chars
 
         def g(x):
-            yield chars[x.random.randint(0, n)]
+            yield x.random.choice(chars)
+
+        return g
+
+    def compile_GRange_noexpand(self, ge: GRange):
+        """
+        XXX somewhere between this and compile_GRange is a decent compromise between size and speed
+        """
+        pairs = ge.pairs
+        ind = np.arange(len(pairs))
+        w = np.array([count for base, count in pairs], dtype=float)
+        w /= w.sum()
+        fs = []
+        for base, count in pairs:
+            if count == 1:
+                fs.append(lambda x: chr(base))
+            else:
+                fs.append(lambda x: chr(base + x.random.randint(0, count)))
+
+        if len(pairs) == 1:
+            f = fs[0]
+
+            def g(x):
+                yield f(x)
+        else:
+            def g(x):
+                i = x.random.pchoice(ind, w)
+                yield fs[i](x)
 
         return g
 

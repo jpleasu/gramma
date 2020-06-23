@@ -7,6 +7,9 @@ import re
 
 from gramma import *
 
+# XXX more than this needs to change to change encoding..
+ENCODING = 'utf8'
+
 
 def encode_as_cpp(s, quote):
     quoteord = ord(quote)
@@ -16,7 +19,7 @@ def encode_as_cpp(s, quote):
     elif isinstance(s, int):
         b = (s,)
     else:
-        b = s.encode('utf8')
+        b = s.encode(ENCODING)
     for c in b:
         if c == 0:
             r += r'\0'
@@ -182,7 +185,7 @@ class CppGen(Emitter):
                     }
                     
                 ''')
-                predefined_gfuncs=set('e'.split())
+                predefined_gfuncs = set('e'.split())
                 gfs = set()  # pairs, (name, # arsg)
                 for gf in self.gen_gfuncs():
                     gfs.add((gf.fname, len(gf.fargs)))
@@ -358,7 +361,7 @@ class CppGen(Emitter):
                     ''')
                     with self.indentation('switch(i) {', '}'):
                         emit_cases()
-                    self.emit('return ""; // throw exception?')
+                    self.emit('return {}; // throw exception?')
             else:
                 weights = ','.join(str(d) for d in ge.nweights)
                 with self.indentation(f'''\
@@ -371,7 +374,7 @@ class CppGen(Emitter):
                     ''')
                     with self.indentation('switch(i) {', '}'):
                         emit_cases()
-                    self.emit('return ""; // throw exception?')
+                    self.emit('return {}; // throw exception?')
         elif isinstance(ge, GCat):
             with self.indentation(f'''\
                 // gcat
@@ -422,15 +425,27 @@ class CppGen(Emitter):
         elif isinstance(ge, GCode):
             pass  # invoked directly
         elif isinstance(ge, GRange):
-            chars = ','.join(encode_as_cpp_char(c) for c in ge.chars)
-            with self.indentation(f'''\
-                // grange
-                static constexpr char {gid}_chars[] {{{chars}}};
-                string_t {gid}() {{
-            ''', '}'):
-                self.emit(f'''\
-                    return string_t(1,uniform_selection({gid}_chars));
-                ''')
+            encoded = [c.encode(ENCODING) for c in ge.chars]
+            if any(len(c) > 1 for c in encoded):
+                chars = ','.join(encode_as_cpp_str(c) for c in ge.chars)
+                with self.indentation(f'''\
+                    // grange (unicode)
+                    static constexpr char const *{gid}_chars[] {{{chars}}};
+                    string_t {gid}() {{
+                ''', '}'):
+                    self.emit(f'''\
+                        return uniform_selection({gid}_chars);
+                    ''')
+            else:
+                chars = ','.join(encode_as_cpp_char(c) for c in ge.chars)
+                with self.indentation(f'''\
+                    // grange
+                    static constexpr char {gid}_chars[] {{{chars}}};
+                    string_t {gid}() {{
+                ''', '}'):
+                    self.emit(f'''\
+                        return string_t(1,uniform_selection({gid}_chars));
+                    ''')
         elif isinstance(ge, GRep):
             with self.indentation(f'''\
                 // grep
