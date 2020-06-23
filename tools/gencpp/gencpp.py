@@ -469,7 +469,7 @@ class CppGen(Emitter):
 if __name__ == '__main__':
     import argparse
 
-    parser = argparse.ArgumentParser(description='generate a C++ gramma from GLF')
+    parser = argparse.ArgumentParser(description='generate C++ source for a generator from GLF')
     parser.add_argument('glf', metavar='GLF_IN',
                         type=argparse.FileType('r'), help='input GLF file')
     parser.add_argument('-o', '--out', dest='cpp', metavar='CPP_OUT',

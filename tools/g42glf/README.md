@@ -6,12 +6,12 @@
 # usage
 e.g. for json
 ``` bash
-    ./g4toglf.py grammars-v4/json/JSON.g4 2> JSON.glf
+    ./g4toglf.py grammars-v4/json/JSON.g4 -o JSON.glf
 ```
 
 When you have multiple g4 files, make sure the parser comes last:
 ```bash
-    ./g4toglf.py grammars-v4/javascript/javascript/JavaScript{Lexer,Parser}.g4 2> javascript.glf
+    ./g4toglf.py grammars-v4/javascript/javascript/JavaScript{Lexer,Parser}.g4 -o javascript.glf
 ```
 
 
