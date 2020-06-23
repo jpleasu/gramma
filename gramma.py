@@ -57,8 +57,10 @@ gramma_grammar = r"""
 
     ruledefs : (ruledef|COMMENT)+
 
-    ruledef : NAME ":=" choosein ";"
+    ruledef : NAME ":=" expr ";"
 
+    ?expr : choosein
+    
     ?choosein : "choose"? NAME "~" tern ("," NAME "~" tern)* "in" tern | tern
 
     ?tern :  code "?" alt ":" alt | alt
@@ -76,7 +78,7 @@ gramma_grammar = r"""
          | identifier
          | func
          | range
-         | "(" tern ")"
+         | "(" expr ")"
 
     identifier : NAME
 
