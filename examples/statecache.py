@@ -1,30 +1,29 @@
 #!/usr/bin/env python3
-'''
+"""
 
     demonstrate state cache
 
-'''
+"""
 from __future__ import absolute_import, division, print_function
-
-import random
 
 from gramma import *
 
+
 class StateGrammar(GrammaGrammar):
-    '''
+    """
          a grammar with some state gfuncs
-    '''
+    """
 
     def __init__(self):
         GrammaGrammar.__init__(self, 'start:="";')
- 
-    def reset_state(self,state):
+
+    def reset_state(self, state):
         super().reset_state(state)
-        state.a=0
+        state.a = 0
 
     @gfunc
     def incra(x):
-        x.state.a+=1
+        x.state.a += 1
         yield ''
 
     @gfunc
@@ -32,12 +31,11 @@ class StateGrammar(GrammaGrammar):
         yield '%d' % (x.state.a)
 
 
-
-g=StateGrammar()
-sampler=GrammaSampler(g)
+g = StateGrammar()
+sampler = GrammaSampler(g)
 sampler.update_statecache(a0=13)
 
-ge=g.parse(r'''
+ge = g.parse(r'''
     "initial a=". geta().  # 0 from StateGrammar.reset_state
     "\n".
     def("a",`6+3`).        # define it to the result of the python expr 6+3.. 
@@ -57,7 +55,7 @@ ge=g.parse(r'''
 
 print('=======')
 print('sample:')
-s=sampler.sample(ge)
+s = sampler.sample(ge)
 print(s)
 print('-------')
 print('after sampling, a1=%d' % sampler.get_statecache()['a1'])
@@ -65,8 +63,5 @@ print('after sampling, a1=%d' % sampler.get_statecache()['a1'])
 print('~~~~~~~')
 print('dump of metadata for gexpr:')
 ge.dump_meta()
-
-
-
 
 # vim: ts=4 sw=4

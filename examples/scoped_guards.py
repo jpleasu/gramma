@@ -1,40 +1,41 @@
 #!/usr/bin/env python3
-'''
+"""
 
 demonstration of a grammar with scoped conditions and guarded rules
 
-'''
+"""
 
 from __future__ import absolute_import, division, print_function
 
 from gramma import *
 
-from collections import defaultdict
 
 class Defaulted(object):
     def __init__(self, default_value):
-        self._default_=default_value
+        self._default_ = default_value
 
     def __getattr__(self, name):
         return self._default_
 
-class Scoping(SideEffect):
-    def reset_state(self,state):
-        state.scope_stack=[]
-        state.scope=None
 
-    def push(self,x,ge):
-        if isinstance(ge, GRule) and ge.rname=='block':
+class Scoping(SideEffect):
+    def reset_state(self, state):
+        state.scope_stack = []
+        state.scope = None
+
+    def push(self, x, ge):
+        if isinstance(ge, GRule) and ge.rname == 'block':
             x.state.scope_stack.append(Defaulted(False))
-            x.state.scope=x.state.scope_stack[-1]
+            x.state.scope = x.state.scope_stack[-1]
             return True
         return False
 
-    def pop(self,x,w,s):
+    def pop(self, x, w, s):
         if w:
             x.state.scope_stack.pop()
-            if len(x.state.scope_stack)>0:
-                x.state.scope=x.state.scope_stack[-1]
+            if len(x.state.scope_stack) > 0:
+                x.state.scope = x.state.scope_stack[-1]
+
 
 class GuardedRules(GrammaGrammar):
     '''
@@ -51,7 +52,7 @@ class GuardedRules(GrammaGrammar):
             {cmd;init;}   <- not ok
     '''
 
-    G=r'''
+    G = r'''
         start := block;
         block := '{'. expr{1,4} . '}';
         expr :=   `not scope.initialized` 'init;' . set('initialized')
@@ -65,12 +66,13 @@ class GuardedRules(GrammaGrammar):
 
     @gfunc
     def set(x, n):
-        setattr(x.state.scope,n.as_str(),True)
+        setattr(x.state.scope, n.as_str(), True)
         yield ''
 
-if __name__=='__main__':
-    g=GuardedRules()
-    s=GrammaSampler(g)
+
+if __name__ == '__main__':
+    g = GuardedRules()
+    s = GrammaSampler(g)
     for i in range(10):
         print(s.sample())
 

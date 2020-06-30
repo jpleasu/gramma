@@ -47,9 +47,9 @@ class ArithmeticGrammar(GrammaGrammar):
 
 
 class VarietyGrammar(GrammaGrammar):
-    '''
+    """
          a grammar that uses a variety of gramma's features
-    '''
+    """
 
     G = r'''
         start := recurs;

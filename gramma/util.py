@@ -46,4 +46,13 @@ class DictStack(object):
     def update(self, items):
         self.local.update(items)
 
+class defaultdict(dict):
+    __slots__ = 'default_func',
+
+    def __init__(self, default_func):
+        self.default_func = default_func
+
+    def __missing__(self, key):
+        return self.default_func(key)
+
 

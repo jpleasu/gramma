@@ -1,57 +1,56 @@
 #!/usr/bin/env python3
-'''
+"""
 
     demonstrate scoped variable declaraions
 
-'''
+"""
 from __future__ import absolute_import, division, print_function
-from builtins import super
 
 from gramma import *
 
 
 class Defaulted(object):
     def __init__(self, default_value):
-        self._default_=default_value
+        self._default_ = default_value
 
     def __getattr__(self, name):
         return self._default_
 
+
 class Scoping(SideEffect):
-    def reset_state(self,state):
-        state.d=0
-        state.scope_stack=[]
-        state.scope=None
+    def reset_state(self, state):
+        state.d = 0
+        state.scope_stack = []
+        state.scope = None
 
-    def push(self,x,ge):
-        if isinstance(ge, GRule) and ge.rname=='block':
-            x.state.d+=1
+    def push(self, x, ge):
+        if isinstance(ge, GRule) and ge.rname == 'block':
+            x.state.d += 1
 
-            stk=x.state.scope_stack
+            stk = x.state.scope_stack
             # initalize new scope with vars and has_vars
-            sc=Defaulted(False)
-            sc.vars=[]
+            sc = Defaulted(False)
+            sc.vars = []
             # if any parent has vars, so do we
-            if len(stk)>0 and stk[-1].has_vars:
-                sc.has_vars=True
+            if len(stk) > 0 and stk[-1].has_vars:
+                sc.has_vars = True
 
             # update state
-            x.state.scope=sc
+            x.state.scope = sc
             stk.append(sc)
             return True
         return False
 
-    def pop(self,x,w,s):
+    def pop(self, x, w, s):
         if w:
             x.state.scope_stack.pop()
-            if len(x.state.scope_stack)>0:
-                x.state.scope=x.state.scope_stack[-1]
-            x.state.d-=1
+            if len(x.state.scope_stack) > 0:
+                x.state.scope = x.state.scope_stack[-1]
+            x.state.d -= 1
 
 
 class ScopedVariableGrammar(GrammaGrammar):
-
-    G=r'''
+    G = r'''
         start := "-----\n".block;
 
         # indent according to block rule depth
@@ -73,28 +72,29 @@ class ScopedVariableGrammar(GrammaGrammar):
     '''
 
     def __init__(x):
-        GrammaGrammar.__init__(x,type(x).G, sideeffects=[Scoping()])
+        GrammaGrammar.__init__(x, type(x).G, sideeffects=[Scoping()])
 
     @gfunc
-    def new(x,ge):
+    def new(x, ge):
         # generate a name with the argument
-        n=yield ge
+        n = yield ge
         # and add it to the current scope's vars list
         x.state.scope.vars.append(n)
         # and update has_vars
-        x.state.scope.has_vars=True
+        x.state.scope.has_vars = True
         yield n
 
     @gfunc
     def var(x):
         # collect all variable names from this and enclosing scopes
-        lvars=[]
+        lvars = []
         for sc in x.state.scope_stack:
             lvars.extend(sc.vars)
         # and pick one
         yield x.random.choice(lvars)
 
-sampler=GrammaSampler(ScopedVariableGrammar())
+
+sampler = GrammaSampler(ScopedVariableGrammar())
 for i in range(3):
     print(sampler.sample())
 

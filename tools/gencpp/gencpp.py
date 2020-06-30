@@ -4,6 +4,7 @@ emit C++ source for a function that generates samples from the GLF input file
 """
 import os
 import re
+import textwrap
 
 from gramma import *
 
@@ -144,7 +145,7 @@ class CppGen(Emitter):
                 impl.emit('''\
                     /* === declare state variables === */
                     
-                    // for g42glf generated grammars
+                    // for g4toglf generated grammars
                     int maxrep=3;
                     
                     // rule depth in trace tree

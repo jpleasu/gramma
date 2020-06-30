@@ -37,7 +37,7 @@ Once you've got GLF that gramma can parse, you can experiment with
 ```bash
     ./tryitout.py my_new_grammar.glf
 ```
-If the sample takes more than 5 seconds, every 5 seconds the StackWatcher
+If the sample takes more than 5 seconds, every 5 seconds the `StackWatcher`
 sideeffect will dump a count of rules on the generation stack.  You should
 consider limiting the recursions that cause the most frequent rules.
 

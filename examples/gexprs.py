@@ -1,16 +1,14 @@
 #!/usr/bin/env python3
-'''
+"""
 
     demo some of the gexpr api
 
-'''
+"""
 from __future__ import absolute_import, division, print_function
-
-import random
 
 from gramma import *
 
-g=GrammaGrammar('start:="";')
+g = GrammaGrammar('start:="";')
 
 # parsing
 print(g.parse(r'''
@@ -31,10 +29,5 @@ print(g.parse('''
 print(g.parse('''
     "a"{2}
 '''))
-
-
-
-
-
 
 # vim: ts=4 sw=4

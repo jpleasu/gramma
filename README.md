@@ -218,7 +218,7 @@ f(x)
 # creating grammars
 
 ## from Antlr4 
-see [g42glf](tools/g42glf/README.md)
+see [g4toglf](tools/g4toglf/README.md)
 
 ## preventing explosion from recursion
 To identify rules that are being visited excesesively, count (and emit) rule
