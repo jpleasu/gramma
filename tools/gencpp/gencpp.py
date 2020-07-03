@@ -376,18 +376,25 @@ class CppGen(Emitter):
                     with self.indentation('switch(i) {', '}'):
                         emit_cases()
                     self.emit('return {}; // throw exception?')
+        elif isinstance(ge, GDen):
+            with self.indentation(f'''\
+                // gden
+                string_t {gid}() {{
+            ''', '}'):
+                self.emit(f'''\
+                    string_t s = {self.invoke(ge.left)};
+                    {self.invoke(ge.right)};
+                    return s;
+                ''')
         elif isinstance(ge, GCat):
             with self.indentation(f'''\
                 // gcat
                 string_t {gid}() {{
             ''', '}'):
-                # "" + "" + ...  -> string_t {""} + "" + ...
-                if len(ge.children) >= 2 and isinstance(ge.children[0], GTok) and isinstance(ge.children[1], GTok):
-                    argsum = 'string_t {' + self.invoke(ge.children[0]) + '} +' + '+'.join(
-                        f'{self.invoke(c)}' for c in ge.children[1:])
-                else:
-                    argsum = '+'.join(f'{self.invoke(c)}' for c in ge.children)
-                self.emit(f'return {argsum};')
+                self.emit(f'string_t s={self.invoke(ge.children[0])};')
+                for c in ge.children[1:]:
+                    self.emit(f's+={self.invoke(c)};')
+                self.emit(f'return s;')
         elif isinstance(ge, GRule):
             pass  # invoked directly
         elif isinstance(ge, GFunc):

@@ -13,7 +13,7 @@ usage:
 %_sampler.cpp:%.glf
 	./gencpp.py $< -o $@
 
-%_sampler:%_sampler.cpp gramma.hpp
+%_sampler:%_sampler.cpp %_sampler_impl.cpp gramma.hpp
 	$(CXX) $(CXXFLAGS) $< -o $@
 
 .PHONY:

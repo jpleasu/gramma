@@ -6,13 +6,15 @@ r"""
             - generate an "unrolled" grammar
             - "replay" is encoded in unrolled grammar
             - finish design for unrolling api for gexprs
-        - tolerate non-generator gfuncs (recognize at GLF parse time)
+        - simplify gfuncs
+            - move gfuncs to sampler
+            - non-generator gfuncs, functions of strings, same as C++
+        - simplify state
+            - no state object, just sampler object
+            - add save_state, load_state methods of sampler
+            - move analysis out of GrammaGrammar, make it optional
         - Monte Carlo with StackWatcher to estimate excessive loops / other
           over-represented constructs.
-        - get_reset_variable_names could attempt to guess the type of a state
-          variable by finding the right hand side of assignments to it in
-          reset_state.  E.g.  set/dict/list.  That way, method access can be
-          interpreted correctly.
 
 """
 import ast
@@ -60,7 +62,9 @@ gramma_grammar = r"""
 
     ?tern :  code "?" alt ":" alt | alt
 
-    ?alt : weight? cat ("|" weight? cat)*
+    ?alt : weight? den ("|" weight? den)*
+    
+    ?den : cat ("->" cat)?
 
     ?cat : rep ("." rep)*
 
@@ -173,6 +177,9 @@ class LarkTransformer(object):
                 weights.append(1)
             children.append(self.visit(clt))
         return GAlt(weights, children)
+
+    def den(self, lt):
+        return GDen(self.visit(lt.children[0]), self.visit(lt.children[1]))
 
     def cat(self, lt):
         return GCat([self.visit(clt) for clt in lt.children])
@@ -668,6 +675,35 @@ class GAlt(GInternal):
         return GAlt(self.weights, [c.copy() for c in self.children])
 
 
+class GDen(GInternal):
+    """
+    denotations
+    """
+
+    def __init__(self, left, right):
+        GInternal.__init__(self, [left, right])
+
+    @property
+    def left(self):
+        return self.children[0]
+
+    @property
+    def right(self):
+        return self.children[1]
+
+    def __str__(self):
+        s = str(self.left) + '->' + str(self.right)
+        if self.parent is not None and isinstance(self.parent, GRep):
+            return '(%s)' % s
+        return s
+
+    def copy(self):
+        return GDen(self.left, self.right)
+
+    def simplify(self):
+        return self.copy()
+
+
 class GCat(GInternal):
     def __str__(self):
         s = '.'.join(str(cge) for cge in self.children)
@@ -702,6 +738,9 @@ class RepDist(object):
     def __init__(self, name, args):
         self.name = name
         self.args = args
+
+    def __str__(self):
+        return f"{self.name}({','.join(str(x) for x in self.args)})"
 
 
 class GRep(GInternal):
@@ -1155,7 +1194,7 @@ class GrammaGrammar(object):
 
     def _init_compilemap(self):
         self._compilemap = {}
-        for t in [GTok, GChooseIn, GTern, GAlt, GCat, GRep, GRange, GRule, GVar, GFunc]:
+        for t in [GTok, GChooseIn, GTern, GAlt, GDen, GCat, GRep, GRange, GRule, GVar, GFunc]:
             self._compilemap[t] = getattr(self, 'compile_' + t.__name__)
 
     def compile_GTok(self, ge):
@@ -1198,6 +1237,14 @@ class GrammaGrammar(object):
             def g(x):
                 s = yield x.random.pchoice(ge.children, p=ge.nweights)
                 yield s
+        return g
+
+    def compile_GDen(self, ge):
+        def g(x):
+            s = yield ge.left
+            _ = yield ge.right
+            yield s
+
         return g
 
     def compile_GCat(self, ge):

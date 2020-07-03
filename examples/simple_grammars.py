@@ -66,7 +66,7 @@ class VarietyGrammar(GrammaGrammar):
 
         words := (`1000*(depth>20)` "*" | " ").
                  ( .75 "dog" | .25 "cat" ).
-                 (" f=".f()." a=".(`a`?"1":"0")." ff=".ff()){1,4};
+                 (" f=".f()." a=".(`a`?"1":"0")." ff=".ff() -> toggle()){1,4};
 
         #vars := choose x~('a'|'b'), y~('c'|'d') in x.y.x.y.x.y;
         vars := x ~ 'a'|'b', y~ 'c'|'d' in x.y.x.y.x.y;
@@ -91,6 +91,11 @@ class VarietyGrammar(GrammaGrammar):
     def ff(x):
         x.state.a ^= 1
         yield ['bleep', 'bloop'][x.state.a]
+
+    @gfunc
+    def toggle(x):
+        x.state.a ^= 1
+        yield ''
 
     @gfunc()
     def use_global(x):

@@ -6,7 +6,8 @@ __all__=[
     # core symbols
     'GrammaGrammar', 'gfunc',
     'LarkTransformer',
-    'GExpr', 'GFunc', 'GCode', 'GInternal', 'GAlt', 'GCat', 'GRule', 'GTok', 'GRep', 'GRange', 'GTern', 'GChooseIn', 'GVar',
+    'GExpr', 'GFunc', 'GCode', 'GInternal', 'GAlt', 'GDen', 'GCat', 'GRule', 'GTok',
+        'GRep', 'GRange', 'GTern', 'GChooseIn', 'GVar',
     'RepDist',
     'CacheConfig',
     'GrammaSampler',
