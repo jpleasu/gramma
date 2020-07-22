@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 
+
 class SetStack(object):
     """
         A stack of sets, if the top doesn't have a key, check the next, ...
@@ -46,6 +47,7 @@ class DictStack(object):
     def update(self, items):
         self.local.update(items)
 
+
 class defaultdict(dict):
     __slots__ = 'default_func',
 
@@ -54,5 +56,3 @@ class defaultdict(dict):
 
     def __missing__(self, key):
         return self.default_func(key)
-
-

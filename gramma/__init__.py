@@ -1,13 +1,12 @@
-
-__all__=[
+__all__ = [
     # modules
-    'pysa', 'util',
+    'pysa', 'util', 'parser'
 
     # core symbols
-    'GrammaGrammar', 'gfunc',
+                    'GrammaGrammar', 'gfunc',
     'LarkTransformer',
     'GExpr', 'GFunc', 'GCode', 'GInternal', 'GAlt', 'GDen', 'GCat', 'GRule', 'GTok',
-        'GRep', 'GRange', 'GTern', 'GChooseIn', 'GVar',
+    'GRep', 'GRange', 'GTern', 'GChooseIn', 'GVar',
     'RepDist',
     'CacheConfig',
     'GrammaSampler',

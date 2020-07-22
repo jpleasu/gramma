@@ -1,5 +1,6 @@
 # Table of contents
 
+
 * [Description](#description)
 * [Overview](#overview)
 * [Install](#install)
@@ -11,6 +12,7 @@
     * [ranges - (`[` .. `]`)  - character ranges](#ranges---------character-ranges)
     * [ternary operator (`?:`) - choice based on computed boolean](#ternary-operator----choice-based-on-computed-boolean)
     * [weighted alternation (`|`) - weighted random choice from alternatives](#weighted-alternation----weighted-random-choice-from-alternatives)
+    * [denotation (`/`) - denotation](#denotation----denotation)
     * [concatenation (`.`) - definite concatenation](#concatenation----definite-concatenation)
     * [repetition (`{`...`}`) - random repeats](#repetition----random-repeats)
     * [variables (`choose ` .. `~` .. `in` ...) - reuse of samples](#variables-choose-----in----reuse-of-samples)
@@ -24,6 +26,7 @@
 * [Rope Aplenty](#rope-aplenty)
     * [`TraceNode.child_containing`](#tracenodechild_containing)
     * [`TraceNode.resample`](#tracenoderesample)
+
 
 # Description
 
@@ -144,12 +147,36 @@ recurs := `depth<5` recurs | "token";
 ```  
 this sets the recurse branch weight to `1` if `depth <5`, and `0` otherwise (because `int(True)==1` and `int(False)==0`).
               
+
+## denotation (`/`) - denotation
+```
+    x / y
+```
+Denotes the value `x` with `y`.
+
+Denotation can be interpreted as invoking a method of the sample type:
+```
+    sample(x).denote(y)
+```
+
+For example, with a sample type of `Pair`, as in 
+```python
+class Pair(object):
+    def __init__(self, x:str):
+        self.x=x
+        self.y=None
+    def denote(self, y:object):
+        self.y=y
+```
+we can interpret the syntax, `-/-` as defining the a mapping for denotational semantics of the generated language.
+
+Semantics can then be represented in the grammar by accessing the denotations of sampled values.
+
 ## concatenation (`.`) - definite concatenation
 ```
 x . y
 ```
 concatenates `x` and `y`.
-
 
 ## repetition (`{`...`}`) - random repeats
 ```
