@@ -1,23 +1,20 @@
 #!/usr/bin/env python3
 """
+The parser module parses GLF to GExpr objects.
+
+A GExpr is an abstract syntax tree for analysis and interpretation or compilation.
+
+The GrammaGramma object indexes the GExpr of each defined rule and its parameters by name.
+
 """
-import copy
 import logging
 import numbers
-import sys
-from functools import reduce
 from itertools import groupby
-from typing import Dict, Tuple, List, Set
+from typing import Dict, List, Set, Union, Optional, Literal, cast, Tuple
 
 import lark
-import numpy as np
 
 from .util import SetStack
-
-try:
-    import astpretty
-except ImportError:
-    pass
 
 log = logging.getLogger('gramma.parser')
 
@@ -26,7 +23,8 @@ gcode_globals = globals()
 
 
 def identifier2string(lt: lark.Tree) -> str:
-    return lt.children[0].value
+    tok = cast(lark.Token, lt.children[0])
+    return tok.value
 
 
 gramma_grammar = r"""
@@ -51,15 +49,17 @@ gramma_grammar = r"""
 
     ?cat : rep ("." rep)*
 
-    ?rep: atom ( "{" rep_args "}" )?
-    rep_args : (INT|code)? (COMMA (INT|code)?)? (COMMA func)?
-            | func
+    ?rep : atom ( "{" rep_args "}" )?
+    rep_args : (INT|code|rep_dist) 
+             | (INT|code)? COMMA (INT|code)? (COMMA rep_dist)?
+    rep_dist : identifier "(" rep_dist_args ")"
+    rep_dist_args : number ("," number)*
 
     ?atom : string
-         | identifier
-         | func
-         | range
-         | "(" expr ")"
+          | identifier
+          | func
+          | range
+          | "(" expr ")"
 
     range : "["  range_part ("," range_part )* "]"
     range_part : CHAR  (".." CHAR)?
@@ -103,6 +103,9 @@ class LarkTransformer(object):
         a top-down transformer from lark.Tree to GExpr that handles lexically scoped variables
     """
 
+    vars: Union[Set[str], SetStack[str]]
+    rulenames: Set[str]
+
     def __init__(self, rulenames: Set[str]):
         self.vars = set()
         self.rulenames = rulenames
@@ -117,14 +120,28 @@ class LarkTransformer(object):
     def visit(self, lt):
         if isinstance(lt, lark.lexer.Token):
             return GTok.from_ltok(lt)
-        if lt.data == 'string':
-            return GTok('string', lt.children[0].value)
-        if lt.data == 'code':
-            return GCode(lt.children[0].value[1:-1])
 
         if hasattr(self, lt.data):
             return getattr(self, lt.data)(lt)
         raise GrammaParseError('''unrecognized Lark node %s during parse of glf''' % lt)
+
+    def string(self, lt):
+        return GTok('string', lt.children[0].value)
+
+    def code(self, lt):
+        return GCode(lt.children[0].value[1:-1])
+
+    def ruledef(self, lt):
+        rname = identifier2string(lt.children[0])
+        if len(lt.children) == 3:
+            rule_parms = lt.children[1]
+            parms = [identifier2string(parm) for parm in rule_parms.children]
+        else:
+            parms = []
+        self.push_vars(parms)
+        rhs = self.visit(lt.children[-1])
+        self.pop_vars()
+        return RuleDef(rname, parms, rhs)
 
     def choosein(self, lt):
         # lt.children = [var1, expr1, var2, expr2, ..., varN, exprN, child]
@@ -141,15 +158,17 @@ class LarkTransformer(object):
         weights = []
         children = []
         for clt in lt.children:
+            # weights are numbers or code, and children can be neither of these
             if clt.data == 'number':
-                weights.append(GTok.from_ltok(clt.children[0]).as_num())
-                continue
-            if clt.data == 'code':
-                weights.append(GCode(clt.children[0][1:-1]))
-                continue
-            if len(weights) <= len(children):
-                weights.append(1)
-            children.append(self.visit(clt))
+                weights.append(GTok.from_ltok(clt.children[0]))
+            elif clt.data == 'code':
+                weights.append(self.code(clt))
+            else:
+                # weights come before their corresponding child element, so
+                # if there's a gap, fill it with a 1
+                if len(weights) <= len(children):
+                    weights.append(GTok.from_int(1))
+                children.append(self.visit(clt))
         return GAlt(weights, children)
 
     def tern(self, lt):
@@ -167,126 +186,34 @@ class LarkTransformer(object):
             {,}     - uniform, integer size bounds
             {#}     - exactly #
             {d}     - sample from distribution d
-            {,d}    - " " " "
+            {,d}    - unclear, disallow
+            {#,d}   - silly, disallow
             {,#}    - uniform with upper bound, lower bound is 0
             {#,}    - uniform with lower bound, no upper bound
             {#,#}   - uniform with lower and upper bounds
-            {#,d}   - sample from distribution d, reject if below lower bound
-            {,#,d}  - sample from distribution d, reject if above upper bound
-            {#,#,d} - sample from distribution d, reject if out of bounds
+            {#,,d}  - sample from distribution d, truncate if below lower bound
+            {,#,d}  - sample from distribution d, truncate if above upper bound
+            {#,#,d} - sample from distribution d, truncate if out of bounds
         """
         child = self.visit(lt.children[0])
-        args = [self.visit(c) for c in lt.children[1].children[:]]
-        # figure out the distribution.. if not a GCode or a GFunc, assume uniform
-        a = args[-1]
-        if isinstance(a, GFunc):
-            fname = a.fname
-            fargs = [x.as_num() for x in a.fargs]
-            dist = RepDist(a.fname, fargs)
-            if fname == u'geom':
-                # "a"{geom(n)} has an average of n copies of "a"
-                parm = 1 / float(fargs[0] + 1)
-                g = lambda x: x.random.geometric(parm) - 1
-            elif fname == 'norm':
-                g = lambda x: int(x.random.normal(*fargs) + .5)
-            elif fname == 'binom':
-                g = lambda x: x.random.binomial(*fargs)
-            elif fname == 'choose':
-                g = lambda x: x.random.choice(fargs)
+        lo: Union[GTok, GCode] = None
+        hi: Union[GTok, GCode] = None
+        ncommas = 0
+        dist: Optional[RepDist] = None
+        for c in lt.children[1].children:
+            if isinstance(c, lark.Token) and c.type == 'COMMA':
+                ncommas += 1
+            elif isinstance(c, lark.Tree) and c.data == 'rep_dist':
+                dist = self.visit(c)
+            elif ncommas == 0:
+                lo = self.visit(c)
             else:
-                raise GrammaParseError('no dist %s' % (fname))
+                hi = self.visit(c)
 
-            del args[-2:]
-        else:
-            dist = RepDist('unif', [])
-            g = None
+        if ncommas == 0:
+            hi = lo
 
-        # parse bounds to lo and hi, each is either None, GTok integer, or GCode
-        if len(args) == 0:
-            # {`dynamic`}
-            lo = None
-            hi = None
-        elif len(args) == 1:
-            # {2} or {2,`dynamic`}.. where the latter is pretty stupid
-            lo = hi = args[0]
-        elif len(args) == 2:
-            # {0,,`dynamic`}
-            if (str(args[1]) == ','):
-                lo = args[0].as_int()
-                hi = None
-            else:
-                # {,2} or {,2,`dynamic`}
-                if str(args[0]) != ',':
-                    raise GrammaParseError('expected comma in repetition arg "%s"' % lt)
-                lo = None
-                hi = args[1]
-        elif len(args) == 3:
-            # {2,3} or {2,3,`dynamic`}
-            lo = args[0]
-            hi = args[2]
-        else:
-            raise GrammaParseError('failed to parse repetition arg "%s"' % lt)
-
-        if hi is None:
-            if lo is None:
-                if g is None:
-                    rgen = lambda x: x.random.randint(0, 2 ** 32)
-                else:
-                    rgen = g
-            else:
-                if isinstance(lo, GCode):
-                    if g is None:
-                        rgen = lambda x: x.random.randint(lo.invoke(x), 2 ** 32)
-                    else:
-                        rgen = lambda x: max(lo.invoke(x), g(x))
-                else:
-                    lo = lo.as_int()
-                    if g is None:
-                        rgen = lambda x: x.random.randint(lo, 2 ** 32)
-                    else:
-                        rgen = lambda x: max(lo, g(x))
-        else:
-            if isinstance(hi, GCode):
-                if lo is None:
-                    if g is None:
-                        rgen = lambda x: x.random.randint(0, 1 + hi.invoke(x))
-                    else:
-                        rgen = lambda x: min(g(x), hi.invoke(x))
-                else:
-                    if isinstance(lo, GCode):
-                        if g is None:
-                            rgen = lambda x: x.random.randint(lo.invoke(x), 1 + hi.invoke(x))
-                        else:
-                            rgen = lambda x: max(lo.invoke(x), min(g(x), hi.invoke(x)))
-                    else:
-                        lo = lo.as_int()
-                        if g is None:
-                            rgen = lambda x: x.random.randint(lo, 1 + hi.invoke(x))
-                        else:
-                            rgen = lambda x: max(lo, min(g(x), hi.invoke(x)))
-            else:
-                hi = hi.as_int()
-                hip1 = 1 + hi
-                if lo is None:
-                    if g is None:
-                        rgen = lambda x: x.random.randint(0, hip1)
-                    else:
-                        rgen = lambda x: min(g(x), hi)
-                else:
-                    if isinstance(lo, GCode):
-                        if g is None:
-                            rgen = lambda x: x.random.randint(lo.invoke(x), hip1)
-                        else:
-                            rgen = lambda x: max(lo.invoke(x), min(g(x), hi))
-                    else:
-                        lo = lo.as_int()
-                        if g is None:
-                            rgen = lambda x: x.random.randint(lo, hip1)
-                        else:
-                            rgen = lambda x: max(lo, min(g(x), hi))
-
-        # lo and hi, are each either None, int, or GCode
-        return GRep([child], lo, hi, rgen, dist)
+        return GRep(child, lo, hi, dist)
 
     def range(self, lt):
         # pairs = [  (base, count), (base, count), ... ]
@@ -302,6 +229,11 @@ class LarkTransformer(object):
                 count = 1 + e - base
             pairs.append((base, count))
         return GRange(pairs)
+
+    def rep_dist(self, lt):
+        name = identifier2string(lt.children[0])
+        args = [self.visit(clt) for clt in lt.children[1].children]
+        return RepDist(name, args)
 
     def func(self, lt):
         fname = identifier2string(lt.children[0])
@@ -327,6 +259,7 @@ class LarkTransformer(object):
             return GRule(name, [])
         else:
             return GFunc(name, [])
+
 
 class GExpr(object):
     """
@@ -374,6 +307,8 @@ class GExpr(object):
 class GTok(GExpr):
     _typemap = {'CHAR': 'string'}
     __slots__ = 'type', 'value', 's'
+    type: Literal['INT', 'FLOAT', 'STRING']
+    value: str
 
     def __init__(self, type, value):
         GExpr.__init__(self)
@@ -417,12 +352,16 @@ class GTok(GExpr):
             raise GrammaParseError('not a num: %s' % self)
 
     @staticmethod
-    def from_ltok(lt):
-        return GTok(lt.type, lt.value)
+    def from_ltok(tok: lark.Token):
+        return GTok(tok.type, tok.value)
 
     @staticmethod
-    def from_str(s):
+    def from_str(s: str):
         return GTok('string', repr(s))
+
+    @staticmethod
+    def from_int(n: int):
+        return GTok('INT', n)
 
     @staticmethod
     def join(tok_iter):
@@ -465,6 +404,7 @@ class GCode(GExpr):
        code expression, e.g. for dynamic alternation weights, ternary expressions, and dynamic repetition
     """
     __slots__ = 'expr', 'compiled'
+    expr: str
 
     def __init__(self, expr):
         self.expr = expr
@@ -510,6 +450,10 @@ class GChooseIn(GInternal):
     def child(self):
         return self.children[-1]
 
+    @property
+    def values(self):
+        return self.children[:-1]
+
     def copy(self):
         return GChooseIn(dict(zip(self.vnames, self.dists)), self.child)
 
@@ -544,36 +488,19 @@ class GTern(GInternal):
 class GAlt(GInternal):
     __slots__ = 'weights', 'dynamic', 'nweights'
 
+    weights: List[Union[GTok, GCode]]  # numbers or code
+
     def __init__(self, weights, children):
         GInternal.__init__(self, children)
-        self.dynamic = any(w for w in weights if isinstance(w, GCode))
-
-        if self.dynamic:
-            self.weights = weights
-        else:
-            self.weights = weights
-            w = np.array(weights)
-            self.nweights = w / w.sum()
+        self.weights = weights
 
     def get_code(self):
         return [w for w in self.weights if isinstance(w, GCode)]
 
-    def compute_weights(self, x):
-        """
-            dynamic weights are computed using the SamplerInterface variable
-            every time an alternation is invoked.
-        """
-        if self.dynamic:
-            w = np.array([w.invoke(x) if isinstance(w, GCode) else w for w in self.weights])
-            return w / w.sum()
-        return self.nweights
-
     def __str__(self):
         weights = []
         for w in self.weights:
-            if isinstance(w, GCode):
-                weights.append('`%s` ' % w.expr)
-            elif w == 1:
+            if isinstance(w, GTok) and w.type == 'INT' and w.as_int() == 1:
                 weights.append('')
             else:
                 weights.append(str(w) + ' ')
@@ -695,6 +622,8 @@ class GCat(GInternal):
 
 class RepDist(object):
     __slots__ = 'name', 'args'
+    name: str
+    args: List[GTok]  # list of number tokens
 
     def __init__(self, name, args):
         self.name = name
@@ -705,13 +634,15 @@ class RepDist(object):
 
 
 class GRep(GInternal):
-    __slots__ = 'rgen', 'lo', 'hi', 'dist'
+    __slots__ = 'lo', 'hi', 'dist'
+    lo: Union[GTok, GCode]
+    hi: Union[GTok, GCode]
+    dist: Optional[RepDist]
 
-    def __init__(self, children, lo, hi, rgen, dist):
-        GInternal.__init__(self, children)
+    def __init__(self, child, lo, hi, dist):
+        GInternal.__init__(self, [child])
         self.lo = lo
         self.hi = hi
-        self.rgen = rgen
         self.dist = dist
 
     def get_code(self):
@@ -722,29 +653,34 @@ class GRep(GInternal):
         return self.children[0]
 
     def copy(self):
-        return GRep([self.child.copy()], self.lo, self.hi, self.rgen, self.dist)
+        return GRep([self.child.copy()], self.lo, self.hi, self.dist)
 
     def simplify(self):
-        return GRep([self.child.simplify()], self.lo, self.hi, self.rgen, self.dist)
+        return GRep([self.child.simplify()], self.lo, self.hi, self.dist)
 
-    def range_args(self):
+    def args_str(self):
         if self.lo == self.hi:
             if self.lo is None:
                 return ','
-            return '%s' % (self.lo)
-        lo = '' if self.lo is None else '%s' % (self.lo)
-        hi = '' if self.hi is None else '%s' % (self.hi)
-        return '%s,%s' % (lo, self.hi)
+            return '%s' % self.lo
+        lo = '' if self.lo is None else '%s' % self.lo
+        hi = '' if self.hi is None else '%s' % self.hi
+        return '%s,%s' % (lo, hi)
 
     def __str__(self):
         child = self.child
-        if self.dist.name == 'unif':
-            return '%s{%s}' % (child, self.range_args())
-        return '%s{%s,%s}' % (child, self.range_args(), self.dist)
+        # display x{,,dist} as x{dist}
+        if self.lo is None and self.hi is None and self.dist is not None:
+            return '%s{%s}' % (child, self.dist)
+        # no dist
+        if self.dist is None:
+            return '%s{%s}' % (child, self.args_str())
+        return '%s{%s,%s}' % (child, self.args_str(), self.dist)
 
 
 class GRange(GExpr):
     __slots__ = 'pairs',
+    pairs: List[Tuple[int, int]]
 
     def __init__(self, pairs):
         """
@@ -855,26 +791,30 @@ class GVar(GExpr):
     def __str__(self):
         return self.vname
 
+
+class RuleDef(object):
+    __slots__ = 'rname', 'params', 'rhs'
+
+    def __init__(self, rname: str, params: List[str], rhs: GExpr):
+        self.rname = rname
+        self.params = params
+        self.rhs = rhs
+
+
 class GrammaGrammar(object):
     GLF_PARSER = lark.Lark(gramma_grammar, parser='earley', lexer='standard', start='start')
     GEXPR_PARSER = lark.Lark(gramma_grammar, parser='earley', lexer='standard', start='expr')
 
-    ruledefs: Dict[str, Tuple[GExpr, List[str]]]
+    ruledefs: Dict[str, RuleDef]
 
     def __init__(self, glf: str):
         self.ruledefs = {}
 
-        lark_tree = GrammaGrammar.GLF_PARSER.parse(glf)
-        rulenames = set([identifier2string(ruledef.children[0]) for ruledef in lark_tree.children])
+        lark_tree: lark.Tree = GrammaGrammar.GLF_PARSER.parse(glf)
+        ruledef_trees = cast(List[lark.Tree], lark_tree.children)
+        rulenames = set([identifier2string(cast(lark.Tree, ruledef.children[0])) for ruledef in ruledef_trees])
         transformer = LarkTransformer(rulenames)
 
-        for ruledef in lark_tree.children:
-            rulename = identifier2string(ruledef.children[0])
-            if len(ruledef.children) == 3:
-                rule_parms = ruledef.children[1]
-                parms = [identifier2string(parm) for parm in rule_parms.children]
-            else:
-                parms = []
-            transformer.push_vars(parms)
-            self.ruledefs[rulename] = (transformer.visit(ruledef.children[-1]), parms)
-            transformer.pop_vars()
+        for ruledef_ast in lark_tree.children:
+            ruledef = transformer.visit(ruledef_ast)
+            self.ruledefs[ruledef.rname] = ruledef
