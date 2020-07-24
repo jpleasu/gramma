@@ -2,7 +2,7 @@
 all: unittests typechecks
 
 typechecks:
-	cd .. && mypy ./gramma --pretty
+	cd .. && mypy ./gramma ./tests --pretty
 
 unittests:
-	./test_parser.py
+	./test_all.py

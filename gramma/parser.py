@@ -7,10 +7,10 @@ A GExpr is an abstract syntax tree for analysis and interpretation or compilatio
 The GrammaGramma object indexes the GExpr of each defined rule and its parameters by name.
 
 """
-import logging
 import io
+import logging
 from itertools import groupby
-from typing import Dict, List, Set, Union, Optional, Literal, cast, Tuple, IO
+from typing import Dict, List, Set, Union, Optional, Literal, cast, Tuple, IO, Iterator, Callable
 
 import lark
 
@@ -272,7 +272,10 @@ class GExpr(object):
     def __init__(self):
         self.parent = None
 
-    def get_code(self):
+    def get_code(self) -> List['GCode']:
+        """
+        get code associated with this element _not_ in the AST
+        """
         return []
 
     def get_ancestor(self, cls):
@@ -282,6 +285,9 @@ class GExpr(object):
                 return p
             p = p.parent
         return p
+
+    def walk(self) -> Iterator['GExpr']:
+        yield self
 
     def is_rule(self, rname=None):
         return False
@@ -294,10 +300,10 @@ class GExpr(object):
         return self.copy()
 
     def as_num(self):
-        raise GrammaParseError('''only tokens (literal numbers) have an as_num method''')
+        raise GrammaParseError('''only tokens (literal ints and floats) have an as_num method''')
 
     def as_float(self):
-        raise GrammaParseError('''only tokens (literal ints) have an as_float method''')
+        raise GrammaParseError('''only tokens (literal floats) have an as_float method''')
 
     def as_int(self):
         raise GrammaParseError('''only tokens (literal ints) have an as_int method''')
@@ -396,6 +402,12 @@ class GInternal(GExpr):
     def __str__(self):
         return '%s(%s)' % (self.__class__.__name__, ','.join(str(clt) for clt in self.children))
 
+    def walk(self) -> Iterator['GExpr']:
+        yield self
+        for c in self.children:
+            for cc in c.walk():
+                yield cc
+
     def flat_simple_children(self):
         cls = self.__class__
         children = []
@@ -412,17 +424,12 @@ class GCode(GExpr):
     """
        code expression, e.g. for dynamic alternation weights, ternary expressions, and dynamic repetition
     """
-    __slots__ = 'expr', 'compiled'
+    __slots__ = 'expr',
     expr: str
 
     def __init__(self, expr):
         super().__init__()
         self.expr = expr
-        self.compiled = None  # set in finalize_gexpr
-
-    def invoke(self, x):
-        locs = dict(x.params.__dict__, **x.state.__dict__)
-        return eval(self.compiled, gcode_globals, locs)
 
     def __str__(self):
         return '`%s`' % self.expr
@@ -481,7 +488,7 @@ class GTern(GInternal):
         GInternal.__init__(self, children)
         self.code = code
 
-    def get_code(self):
+    def get_code(self) -> List['GCode']:
         return [self.code]
 
     def compute_case(self, x):
@@ -508,7 +515,7 @@ class GAlt(GInternal):
         self.weights = weights
         self.dynamic = any(isinstance(w, GCode) for w in self.weights)
 
-    def get_code(self):
+    def get_code(self) -> List['GCode']:
         return [w for w in self.weights if isinstance(w, GCode)]
 
     def __str__(self):
@@ -659,7 +666,7 @@ class GRep(GInternal):
         self.hi = hi
         self.dist = dist
 
-    def get_code(self):
+    def get_code(self) -> List['GCode']:
         return [c for c in [self.lo, self.hi] if isinstance(c, GCode)]
 
     @property
@@ -733,21 +740,20 @@ class GRange(GExpr):
 
 class GFunc(GInternal):
     """
-    a reference to a gfunc. The gfunc implementation should be in the sampler.
+    a reference to a gfunc. The implementation is in the sampler.
     """
-    __slots__ = 'fname', 'gf'
+    __slots__ = 'fname',
+    fname: str
 
-    def __init__(self, fname, fargs, gf=None):
+    def __init__(self, fname, fargs):
         GInternal.__init__(self, fargs)
         self.fname = fname
-        # set in finalize_gexpr
-        self.gf = gf
 
     def copy(self):
-        return GFunc(self.fname, [c.copy() for c in self.fargs], self.gf)
+        return GFunc(self.fname, [c.copy() for c in self.fargs])
 
     def simplify(self):
-        return GFunc(self.fname, [c.simplify() for c in self.fargs], self.gf)
+        return GFunc(self.fname, [c.simplify() for c in self.fargs])
 
     @property
     def fargs(self):
@@ -832,6 +838,11 @@ class GrammaGrammar(object):
         for ruledef_ast in lark_tree.children:
             ruledef = transformer.visit(ruledef_ast)
             self.ruledefs[ruledef.rname] = ruledef
+
+    def walk(self) -> Iterator[GExpr]:
+        for ruledef in self.ruledefs.values():
+            for ge in ruledef.rhs.walk():
+                yield ge
 
     @staticmethod
     def of(grammar: Union[str, IO[str], 'GrammaGrammar']) -> 'GrammaGrammar':
