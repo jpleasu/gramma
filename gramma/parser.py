@@ -8,9 +8,9 @@ The GrammaGramma object indexes the GExpr of each defined rule and its parameter
 
 """
 import logging
-import numbers
+import io
 from itertools import groupby
-from typing import Dict, List, Set, Union, Optional, Literal, cast, Tuple
+from typing import Dict, List, Set, Union, Optional, Literal, cast, Tuple, IO
 
 import lark
 
@@ -196,8 +196,8 @@ class LarkTransformer(object):
             {#,#,d} - sample from distribution d, truncate if out of bounds
         """
         child = self.visit(lt.children[0])
-        lo: Union[GTok, GCode] = None
-        hi: Union[GTok, GCode] = None
+        lo: Union[GTok, GCode, None] = None
+        hi: Union[GTok, GCode, None] = None
         ncommas = 0
         dist: Optional[RepDist] = None
         for c in lt.children[1].children:
@@ -267,6 +267,8 @@ class GExpr(object):
     """
     __slots__ = 'parent',
 
+    parent: Optional['GExpr']
+
     def __init__(self):
         self.parent = None
 
@@ -307,13 +309,14 @@ class GExpr(object):
 class GTok(GExpr):
     _typemap = {'CHAR': 'string'}
     __slots__ = 'type', 'value', 's'
-    type: Literal['INT', 'FLOAT', 'STRING']
+
+    type: Literal['INT', 'FLOAT', 'string']
     value: str
 
-    def __init__(self, type, value):
+    def __init__(self, token_type, value):
         GExpr.__init__(self)
         # self.type='string' if type=='CHAR' else type
-        self.type = GTok._typemap.get(type, type)
+        self.type = GTok._typemap.get(token_type, token_type)
         self.value = value
         if self.type == 'string':
             self.s = eval(self.value)
@@ -324,7 +327,7 @@ class GTok(GExpr):
     def __str__(self):
         return self.value
 
-    def as_native(self):
+    def as_native(self) -> Union[int, float, str]:
         if self.type == 'INT':
             return self.as_int()
         elif self.type == 'FLOAT':
@@ -334,16 +337,16 @@ class GTok(GExpr):
         else:
             raise ValueError('''don't recognize GTok type %s''' % self.type)
 
-    def as_int(self):
+    def as_int(self) -> int:
         return int(self.value)
 
-    def as_float(self):
+    def as_float(self) -> float:
         return float(self.value)
 
-    def as_str(self):
+    def as_str(self) -> str:
         return self.s
 
-    def as_num(self):
+    def as_num(self) -> Union[int, float]:
         if self.type == u'INT':
             return int(self.value)
         elif self.type == u'FLOAT':
@@ -352,23 +355,27 @@ class GTok(GExpr):
             raise GrammaParseError('not a num: %s' % self)
 
     @staticmethod
-    def from_ltok(tok: lark.Token):
+    def from_ltok(tok: lark.Token) -> 'GTok':
         return GTok(tok.type, tok.value)
 
     @staticmethod
-    def from_str(s: str):
+    def from_str(s: str) -> 'GTok':
         return GTok('string', repr(s))
 
     @staticmethod
-    def from_int(n: int):
-        return GTok('INT', n)
+    def from_int(n: int) -> 'GTok':
+        return GTok('INT', str(n))
 
     @staticmethod
-    def join(tok_iter):
+    def from_float(n: float) -> 'GTok':
+        return GTok('FLOAT', str(n))
+
+    @staticmethod
+    def join(tok_iter) -> 'GTok':
         return GTok.from_str(''.join(t.as_str() for t in tok_iter))
 
     @staticmethod
-    def new_empty():
+    def new_empty() -> 'GTok':
         return GTok.from_str('')
 
 
@@ -377,6 +384,8 @@ class GInternal(GExpr):
         nodes with GExpr children
     """
     __slots__ = 'children',
+
+    children: List[GExpr]
 
     def __init__(self, children):
         GExpr.__init__(self)
@@ -407,6 +416,7 @@ class GCode(GExpr):
     expr: str
 
     def __init__(self, expr):
+        super().__init__()
         self.expr = expr
         self.compiled = None  # set in finalize_gexpr
 
@@ -418,7 +428,7 @@ class GCode(GExpr):
         return '`%s`' % self.expr
 
     def __add__(self, other):
-        if isinstance(other, numbers.Number):
+        if isinstance(other, (int, float)):
             return GCode('(%s)+%f' % (self.expr, other))
         return GCode('(%s)+(%s)' % (self.expr, other.expr))
 
@@ -438,7 +448,9 @@ class GChooseIn(GInternal):
     """
     __slots__ = 'vnames',
 
-    def __init__(self, var_dists, child):
+    vnames: List[str]
+
+    def __init__(self, var_dists: Dict[str, GExpr], child: GExpr):
         GInternal.__init__(self, list(var_dists.values()) + [child])
         self.vnames = list(var_dists.keys())
 
@@ -489,10 +501,12 @@ class GAlt(GInternal):
     __slots__ = 'weights', 'dynamic', 'nweights'
 
     weights: List[Union[GTok, GCode]]  # numbers or code
+    dynamic: bool
 
     def __init__(self, weights, children):
         GInternal.__init__(self, children)
         self.weights = weights
+        self.dynamic = any(isinstance(w, GCode) for w in self.weights)
 
     def get_code(self):
         return [w for w in self.weights if isinstance(w, GCode)]
@@ -534,10 +548,10 @@ class GAlt(GInternal):
             c = c.simplify()
             if isinstance(c, GAlt) and not c.dynamic:
                 t = sum(c.weights)
-                weights.extend([float(w * cw) / t for cw in c.weights])
+                weights.extend([float(w.as_num() * cw.as_num()) / t for cw in c.weights])
                 children.extend(c.children)
             else:
-                weights.append(w)
+                weights.append(w.as_num())
                 children.append(c)
         if len(children) == 0:
             return GTok.new_empty()
@@ -557,7 +571,7 @@ class GAlt(GInternal):
             return GTok.new_empty()
         if len(nchildren) == 1:
             return nchildren[0]
-        return GAlt(nweights, nchildren)
+        return GAlt([GTok.from_float(w) for w in nweights], nchildren)
 
     def copy(self):
         return GAlt(self.weights, [c.copy() for c in self.children])
@@ -609,15 +623,15 @@ class GCat(GInternal):
         if len(children) == 1:
             return children[0]
 
-        l = []
+        nchildren = []
         for t, cl in groupby(children, lambda c: isinstance(c, GTok)):
             if t:
-                l.append(GTok.join(cl))
+                nchildren.append(GTok.join(cl))
             else:
-                l.extend(cl)
-        if len(children) == 1:
-            return children[0]
-        return GCat(l)
+                nchildren.extend(cl)
+        if len(nchildren) == 1:
+            return nchildren[0]
+        return GCat(nchildren)
 
 
 class RepDist(object):
@@ -786,7 +800,7 @@ class GVar(GExpr):
         self.vname = vname
 
     def copy(self):
-        return GRule(self.vname)
+        return GVar(self.vname)
 
     def __str__(self):
         return self.vname
@@ -818,3 +832,13 @@ class GrammaGrammar(object):
         for ruledef_ast in lark_tree.children:
             ruledef = transformer.visit(ruledef_ast)
             self.ruledefs[ruledef.rname] = ruledef
+
+    @staticmethod
+    def of(grammar: Union[str, IO[str], 'GrammaGrammar']) -> 'GrammaGrammar':
+        if isinstance(grammar, GrammaGrammar):
+            return grammar
+        elif isinstance(grammar, str):
+            return GrammaGrammar(grammar)
+        elif isinstance(grammar, io.TextIOBase):
+            return GrammaGrammar(grammar.read())
+        raise TypeError('unknown type for grammar')

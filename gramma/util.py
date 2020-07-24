@@ -13,8 +13,8 @@ class SetStack(Generic[T]):
     parent: Union[Set[T], 'SetStack[T]']
     local: Set[T]
 
-    def __init__(self, parent=set()):
-        self.parent = parent
+    def __init__(self, parent=None):
+        self.parent = parent if parent is not None else set()
         self.local = set()
 
     def add(self, item: T):
@@ -42,8 +42,8 @@ class DictStack(Generic[K, V]):
     parent: Union[Dict[K, V], 'DictStack[K, V]']
     local: Dict[K, V]
 
-    def __init__(self, parent={}):
-        self.parent = parent
+    def __init__(self, parent=None):
+        self.parent = parent if parent is not None else dict()
         self.local = {}
 
     def get(self, key: K) -> Optional[V]:
@@ -60,12 +60,3 @@ class DictStack(Generic[K, V]):
     def update(self, items: Dict[K, V]):
         self.local.update(items)
 
-
-class defaultdict(dict):
-    __slots__ = 'default_func',
-
-    def __init__(self, default_func):
-        self.default_func = default_func
-
-    def __missing__(self, key):
-        return self.default_func(key)
