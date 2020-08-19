@@ -2,10 +2,10 @@
 
 import unittest
 
-from gramma.samplers import GrammaInterpreterSamplerBase, gfunc
+from gramma.samplers import GrammaInterpreterBase, gfunc
 
 
-class ArithmeticSampler(GrammaInterpreterSamplerBase):
+class Arithmetic(GrammaInterpreterBase):
     G = '''
         start := expr;
         expr := add;
@@ -27,7 +27,7 @@ class ArithmeticSampler(GrammaInterpreterSamplerBase):
 
 class TestInterpreters(unittest.TestCase):
     def test_simple(self):
-        s = ArithmeticSampler()
+        s = Arithmetic()
 
 
 if __name__ == '__main__':

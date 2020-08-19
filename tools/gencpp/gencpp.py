@@ -124,7 +124,7 @@ class CppGen(Emitter):
 
         glf_source = glf_file.read()
 
-        lt = GrammaGrammar.ruledef_parser.parse(glf_source)
+        lt = GrammaGrammar.GLF_PARSER.parse(glf_source)
 
         self.ruledefs = {}
         for ruledef in lt.children:

@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 __all__ = [
-    'GrammaInterpreterSamplerBase',
+    'GrammaInterpreterBase',
     'gfunc',
 ]
 
@@ -10,7 +10,7 @@ import logging
 from types import CodeType
 from typing import Union, IO, Final, Dict, Any, List, Callable, TypeVar, Protocol, runtime_checkable, Optional
 
-from ..parser import GrammaGrammar, GFunc, GCode
+from ..parser import GrammaGrammar, GFuncRef, GCode
 
 log = logging.getLogger('gramma.samplers')
 
@@ -72,7 +72,7 @@ class GCodeWrap:
         self.code = code
         self.compiled = compile(code.expr, '<GCode>', 'eval')
 
-    def __call__(self, sampler: GrammaInterpreterSamplerBase):
+    def __call__(self, sampler: GrammaInterpreterBase):
         return eval(self.compiled, gcode_globals, sampler.__dict__)
 
 
@@ -119,10 +119,10 @@ class Strang:
         return self.s
 
 
-class GrammaInterpreterSamplerBase:
+class GrammaInterpreterBase:
     grammar: Final[GrammaGrammar]
     random: RandomAPI
-    gfuncmap: Dict[GFunc, GFuncWrap]
+    gfuncmap: Dict[GFuncRef, GFuncWrap]
     gcodemap: Dict[GCode, GCodeWrap]
 
     def _(self, return_=None, **kw):
@@ -142,12 +142,12 @@ class GrammaInterpreterSamplerBase:
         self.grammar = GrammaGrammar.of(grammar)
         self.gfuncmap = {}
         self.gcodemap = {}
-        gfuncrefs: Dict[str, List[GFunc]] = {}
+        gfuncrefs: Dict[str, List[GFuncRef]] = {}
         gcode: List[GCode] = []
 
         # get GCode and GFunc refs from AST
         for ge in self.grammar.walk():
-            if isinstance(ge, GFunc):
+            if isinstance(ge, GFuncRef):
                 gfuncrefs.setdefault(ge.fname, []).append(ge)
             elif isinstance(ge, GCode):
                 gcode.append(ge)

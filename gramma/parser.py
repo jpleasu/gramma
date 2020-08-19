@@ -43,9 +43,14 @@ gramma_grammar = r"""
     ?alt : weight? tern ("|" weight? tern)*
     ?weight: number| code
     
-    ?tern :  code "?" den ":" den | den
+    ?tern :  code "?" denoted ":" denoted | denoted
     
-    ?den : cat ("/" cat)*
+    ?denoted : cat ("/" denotation)*
+    
+    ?denotation : number | string | identifier | code  | dfunc
+    dfunc.2 : identifier "(" dfunc_args? ")"
+    dfunc_args : denotation ("," denotation)*
+    
 
     ?cat : rep ("." rep)*
 
@@ -98,7 +103,7 @@ class GrammaParseError(Exception):
     pass
 
 
-class LarkTransformer(object):
+class LarkTransformer:
     """
         a top-down transformer from lark.Tree to GExpr that handles lexically scoped variables
     """
@@ -123,7 +128,7 @@ class LarkTransformer(object):
 
         if hasattr(self, lt.data):
             return getattr(self, lt.data)(lt)
-        raise GrammaParseError('''unrecognized Lark node %s during parse of glf''' % lt)
+        raise GrammaParseError(f'''unrecognized Lark node "{lt.data}" during parse of glf: {lt}''')
 
     def string(self, lt):
         return GTok('string', lt.children[0].value)
@@ -175,8 +180,12 @@ class LarkTransformer(object):
         code = GCode(lt.children[0].children[0][1:-1])
         return GTern(code, [self.visit(clt) for clt in lt.children[1:]])
 
-    def den(self, lt):
-        return GDen(self.visit(lt.children[0]), self.visit(lt.children[1]))
+    def denoted(self, lt):
+        return GDenoted(self.visit(lt.children[0]), self.visit(lt.children[1]))
+
+    def denotation(self, lt):
+        print(lt)
+        return self.visit(lt.children[0])
 
     def cat(self, lt):
         return GCat([self.visit(clt) for clt in lt.children])
@@ -243,9 +252,14 @@ class LarkTransformer(object):
             fargs = []
 
         if fname in self.rulenames:
-            return GRule(fname, fargs)
+            return GRuleRef(fname, fargs)
         else:
-            return GFunc(fname, fargs)
+            return GFuncRef(fname, fargs)
+
+    def dfunc(self, lt):
+        fname = identifier2string(lt.children[0])
+        fargs = [self.visit(clt) for clt in lt.children[1].children]
+        return GDFuncRef(fname, fargs)
 
     def number(self, lt):
         tok = lt.children[0]
@@ -254,14 +268,14 @@ class LarkTransformer(object):
     def identifier(self, lt):
         name = identifier2string(lt)
         if name in self.vars:
-            return GVar(name)
+            return GVarRef(name)
         elif name in self.rulenames:
-            return GRule(name, [])
+            return GRuleRef(name, [])
         else:
-            return GFunc(name, [])
+            return GFuncRef(name, [])
 
 
-class GExpr(object):
+class GExpr:
     """
         the expression tree for a GLF expression.
     """
@@ -584,9 +598,9 @@ class GAlt(GInternal):
         return GAlt(self.weights, [c.copy() for c in self.children])
 
 
-class GDen(GInternal):
+class GDenoted(GInternal):
     """
-    denotations
+    a denoted expression
     """
 
     def __init__(self, left, right):
@@ -607,7 +621,7 @@ class GDen(GInternal):
         return s
 
     def copy(self):
-        return GDen(self.left, self.right)
+        return GDenoted(self.left, self.right)
 
     def simplify(self):
         return self.copy()
@@ -641,7 +655,7 @@ class GCat(GInternal):
         return GCat(nchildren)
 
 
-class RepDist(object):
+class RepDist:
     __slots__ = 'name', 'args'
     name: str
     args: List[GTok]  # list of number tokens
@@ -738,7 +752,7 @@ class GRange(GExpr):
         return '[%s]' % (','.join(parts))
 
 
-class GFunc(GInternal):
+class GFuncRef(GInternal):
     """
     a reference to a gfunc. The implementation is in the sampler.
     """
@@ -750,10 +764,10 @@ class GFunc(GInternal):
         self.fname = fname
 
     def copy(self):
-        return GFunc(self.fname, [c.copy() for c in self.fargs])
+        return self.__class__(self.fname, [c.copy() for c in self.fargs])
 
     def simplify(self):
-        return GFunc(self.fname, [c.simplify() for c in self.fargs])
+        return self.__class__(self.fname, [c.simplify() for c in self.fargs])
 
     @property
     def fargs(self):
@@ -763,7 +777,15 @@ class GFunc(GInternal):
         return '%s(%s)' % (self.fname, ','.join(str(a) for a in self.fargs))
 
 
-class GRule(GInternal):
+class GDFuncRef(GFuncRef):
+    """
+    a reference to a dfunc.  These differ from GFuncs only by what their arguments are allowed to be and where
+    they show up (the RHS of GDenoted nodes)
+    """
+    pass
+
+
+class GRuleRef(GInternal):
     """
     a reference to a rule. The rule definition is part of the GrammaGrammar class.
     """
@@ -776,7 +798,7 @@ class GRule(GInternal):
         self.rhs = rhs
 
     def copy(self):
-        return GRule(self.rname, self.rargs, self.rhs)
+        return GRuleRef(self.rname, self.rargs, self.rhs)
 
     def is_rule(self, rname=None):
         if rname is None:
@@ -794,7 +816,7 @@ class GRule(GInternal):
             return self.rname
 
 
-class GVar(GExpr):
+class GVarRef(GExpr):
     """
     a variable reference. Refers to either a choosein binding, or rule parameter.
     """
@@ -806,13 +828,13 @@ class GVar(GExpr):
         self.vname = vname
 
     def copy(self):
-        return GVar(self.vname)
+        return GVarRef(self.vname)
 
     def __str__(self):
         return self.vname
 
 
-class RuleDef(object):
+class RuleDef:
     __slots__ = 'rname', 'params', 'rhs'
 
     def __init__(self, rname: str, params: List[str], rhs: GExpr):
@@ -821,7 +843,7 @@ class RuleDef(object):
         self.rhs = rhs
 
 
-class GrammaGrammar(object):
+class GrammaGrammar:
     GLF_PARSER = lark.Lark(gramma_grammar, parser='earley', lexer='standard', start='start')
     GEXPR_PARSER = lark.Lark(gramma_grammar, parser='earley', lexer='standard', start='expr')
 

@@ -2,7 +2,8 @@
 
 import unittest
 
-from gramma.parser import GrammaGrammar, GFunc, GRule, GChooseIn, GVar, GAlt, GRep, RepDist, GRange
+from gramma.parser import GrammaGrammar, GFuncRef, GRuleRef, GChooseIn, GVarRef, GAlt, GRep, RepDist, GRange, GDenoted, \
+    GTok, GCode, GDFuncRef
 
 smt_glf = '''\
 start := equals(sort);
@@ -79,8 +80,9 @@ class TestLarkParser(unittest.TestCase):
         self.assertEqual(args.children[1].data, 'string')
         self.assertEqual(args.children[2].data, 'number')
         self.assertEqual(args.children[2].children[0].type, 'INT')
-        self.assertEqual(args.children[3].data, 'number')
-        self.assertEqual(args.children[3].children[0].type, 'FLOAT')
+        a = args.children[3]
+        self.assertEqual(a.data, 'number')
+        self.assertEqual(a.children[0].type, 'FLOAT')
         self.assertEqual(args.children[4].data, 'code')
 
     def test_lark_sampler(self):
@@ -96,14 +98,15 @@ class TestLarkParser(unittest.TestCase):
             r8:=f('a',`x`,10,1.2);
             
             r9(a):= a/'b';
+            r10(a):= a/f('b','c');
         ''')
         self.assertTrue(all(c.data == 'ruledef' for c in lt.children), msg='all children should be ruledefs')
-        self.assertEqual(len(lt.children), 10, msg='wrong number of ruledefs')
+        self.assertEqual(len(lt.children), 11, msg='wrong number of ruledefs')
         self.assertEqual(lt.children[0].children[1].data, 'string')
         self.assertEqual(lt.children[1].children[1].data, 'choosein')
         self.assertEqual(lt.children[2].children[1].data, 'alt')
         self.assertEqual(lt.children[3].children[1].data, 'tern')
-        self.assertEqual(lt.children[4].children[1].data, 'den')
+        self.assertEqual(lt.children[4].children[1].data, 'denoted')
         self.assertEqual(lt.children[5].children[1].data, 'cat')
         self.assertEqual(lt.children[6].children[1].data, 'rep')
         self.assertEqual(lt.children[7].children[1].data, 'range')
@@ -111,15 +114,26 @@ class TestLarkParser(unittest.TestCase):
 
         self.assertTrue(all(len(c.children) == 2 for c in lt.children[:9]),
                         msg='non parameterized ruledefs should have 2 children')
-        self.assertEqual(len(lt.children[9].children), 3,
-                         msg='parameterized ruledefs should have 3 children')
+        self.assertTrue(all(len(c.children) == 3 for c in lt.children[9:]),
+                        msg='non parameterized ruledefs should have 2 children')
 
-        self.assertEqual(lt.children[9].children[1].data, 'rule_parms')
-        self.assertEqual(lt.children[9].children[2].data, 'den')
+        r = lt.children[9]
+        self.assertEqual(r.children[1].data, 'rule_parms')
+        self.assertEqual(r.children[2].data, 'denoted')
+
+        r = lt.children[10]
+        self.assertEqual(r.children[1].data, 'rule_parms')
+        d = r.children[2]
+        self.assertEqual(d.data, 'denoted')
+        self.assertEqual(d.children[1].data, 'dfunc')
+
+
+class GDFunc(object):
+    pass
 
 
 class TestGrammaGrammar(unittest.TestCase):
-    def test_sampler(self):
+    def test_ruledefs(self):
         g = GrammaGrammar('''
             r0:='a';
             r1:=choose x~'a' in 'b';
@@ -252,17 +266,17 @@ class TestGrammaGrammar(unittest.TestCase):
         r2 = g.ruledefs['r2'].rhs
         self.assertIsInstance(r2, GChooseIn)
         e = r2.child
-        self.assertIsInstance(e.children[0], GFunc)
-        self.assertIsInstance(e.children[1], GFunc)
-        self.assertIsInstance(e.children[2], GRule)
-        self.assertIsInstance(e.children[3], GRule)
-        self.assertIsInstance(e.children[4], GVar)
+        self.assertIsInstance(e.children[0], GFuncRef)
+        self.assertIsInstance(e.children[1], GFuncRef)
+        self.assertIsInstance(e.children[2], GRuleRef)
+        self.assertIsInstance(e.children[3], GRuleRef)
+        self.assertIsInstance(e.children[4], GVarRef)
 
         r3 = g.ruledefs['r3'].rhs
         self.assertIsInstance(r3, GChooseIn)
-        self.assertIsInstance(r3.child, GVar)
+        self.assertIsInstance(r3.child, GVarRef)
         self.assertEqual(r3.vnames[0], 'x')
-        self.assertIsInstance(r3.values[0], GVar)
+        self.assertIsInstance(r3.values[0], GVarRef)
 
     def test_range(self):
         g = GrammaGrammar('''
@@ -291,6 +305,31 @@ class TestGrammaGrammar(unittest.TestCase):
         self.assertEqual(r2.pairs[2][0], ord('d'))
         self.assertEqual(r2.pairs[2][1], 1)
 
+    def test_den(self):
+        g = GrammaGrammar('''
+            r0 := 'a'/123;
+            r1 := 'a'/'b';
+            r2 := 'a'/`b`;
+            r3(x) := 'a'/f(x);
+        ''')
+        for rulename, ruledef in g.ruledefs.items():
+            self.assertIsInstance(ruledef.rhs, GDenoted)
+
+        r = g.ruledefs['r0']
+        self.assertIsInstance(r.rhs.right, GTok)
+        self.assertEqual(r.rhs.right.as_int(), 123)
+
+        r = g.ruledefs['r1']
+        self.assertIsInstance(r.rhs.right, GTok)
+        self.assertEqual(r.rhs.right.as_str(), 'b')
+
+        r = g.ruledefs['r2']
+        self.assertIsInstance(r.rhs.right, GCode)
+        self.assertEqual(r.rhs.right.expr, 'b')
+
+        r = g.ruledefs['r3']
+        self.assertIsInstance(r.rhs.right, GDFuncRef)
+        self.assertEqual(r.rhs.right.fname, 'f')
 
 
 if __name__ == '__main__':
