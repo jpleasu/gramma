@@ -305,7 +305,7 @@ class TestGrammaGrammar(unittest.TestCase):
         self.assertEqual(r2.pairs[2][0], ord('d'))
         self.assertEqual(r2.pairs[2][1], 1)
 
-    def test_den(self):
+    def test_denoted(self):
         g = GrammaGrammar('''
             r0 := 'a'/123;
             r1 := 'a'/'b';
@@ -330,6 +330,7 @@ class TestGrammaGrammar(unittest.TestCase):
         r = g.ruledefs['r3']
         self.assertIsInstance(r.rhs.right, GDFuncRef)
         self.assertEqual(r.rhs.right.fname, 'f')
+        self.assertIsInstance(r.rhs.right.fargs[0], GVarRef)
 
 
 if __name__ == '__main__':

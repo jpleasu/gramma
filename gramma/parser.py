@@ -10,7 +10,7 @@ The GrammaGramma object indexes the GExpr of each defined rule and its parameter
 import io
 import logging
 from itertools import groupby
-from typing import Dict, List, Set, Union, Optional, Literal, cast, Tuple, IO, Iterator, Callable
+from typing import Dict, List, Set, Union, Optional, Literal, cast, Tuple, IO, Iterator, ClassVar
 
 import lark
 
@@ -657,6 +657,7 @@ class GCat(GInternal):
 
 class RepDist:
     __slots__ = 'name', 'args'
+    default: ClassVar['RepDist']
     name: str
     args: List[GTok]  # list of number tokens
 
@@ -668,17 +669,20 @@ class RepDist:
         return f"{self.name}({','.join(str(x) for x in self.args)})"
 
 
+RepDist.default = RepDist('uniform', [])
+
+
 class GRep(GInternal):
     __slots__ = 'lo', 'hi', 'dist'
-    lo: Union[GTok, GCode]
-    hi: Union[GTok, GCode]
-    dist: Optional[RepDist]
+    lo: Union[GTok, GCode, None]
+    hi: Union[GTok, GCode, None]
+    dist: RepDist
 
     def __init__(self, child, lo, hi, dist):
         GInternal.__init__(self, [child])
         self.lo = lo
         self.hi = hi
-        self.dist = dist
+        self.dist = RepDist.default if dist is None else dist
 
     def get_code(self) -> List['GCode']:
         return [c for c in [self.lo, self.hi] if isinstance(c, GCode)]
@@ -705,10 +709,10 @@ class GRep(GInternal):
     def __str__(self):
         child = self.child
         # display x{,,dist} as x{dist}
-        if self.lo is None and self.hi is None and self.dist is not None:
+        if self.lo is None and self.hi is None and self.dist is not RepDist.default:
             return '%s{%s}' % (child, self.dist)
-        # no dist
-        if self.dist is None:
+        # default dist
+        if self.dist is RepDist.default:
             return '%s{%s}' % (child, self.args_str())
         return '%s{%s,%s}' % (child, self.args_str(), self.dist)
 
