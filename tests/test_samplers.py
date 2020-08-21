@@ -2,11 +2,11 @@
 
 import unittest
 
-from gramma.samplers import GrammaInterpreter, gfunc
+from gramma.samplers import GrammaInterpreter, gfunc, gdfunc
 
 
 class Arithmetic(GrammaInterpreter):
-    G = '''
+    GLF = '''
         start := expr;
         expr := add;
         add := mul . ('+'.mul){,3};
@@ -17,7 +17,7 @@ class Arithmetic(GrammaInterpreter):
     '''
 
     def __init__(self):
-        super().__init__(self.G)
+        super().__init__(self.GLF)
         self.expr_rec = .1
 
     @gfunc
@@ -88,6 +88,24 @@ class TestInterpreter(unittest.TestCase):
         ''')
         s.random.seed(1)
         self.assertEqual(str(s.sample()), 'aba')
+
+    def test_denoted_gcode(self):
+        s = GrammaInterpreter('''
+            start := 'a'/`17`;
+        ''')
+        self.assertEqual(s.sample().d, 17)
+
+    def test_denoted_dfunc(self):
+        class G(GrammaInterpreter):
+            @gdfunc
+            def f(self):
+                return 17
+
+        s = G('''
+            start := 'a'/f();
+        ''')
+        x = s.sample()
+        self.assertEqual(x.d, 17)
 
     def test_rules_parameterized(self):
         s = GrammaInterpreter('''

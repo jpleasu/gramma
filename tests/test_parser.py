@@ -260,7 +260,7 @@ class TestGrammaGrammar(unittest.TestCase):
         g = GrammaGrammar('''
             r0(a,b) := a.b;
             r1 := 'c';
-            r2 := choose x ~ 'd' in f0('a','b') . f1. r0('a','b') . r1 . x;
+            r2 := choose x ~ 'd' in f0('a','b') . f1(). r0('a','b') . r1 . x;
             r3(x,y) :=  choose x ~ x in x;
         ''')
         r2 = g.ruledefs['r2'].rhs

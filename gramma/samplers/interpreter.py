@@ -1,13 +1,13 @@
 from functools import reduce
 from types import CodeType
-from typing import Union, IO, Final, Dict, Any, Callable, Optional, List, TypeVar, Protocol
+from typing import Union, IO, Final, Dict, Any, Callable, Optional, List, TypeVar, Protocol, Type
 
 # numpy doesn't have type hints yet and data-science-type is missing numpy.random.Generator
 import numpy as np  # type: ignore
 
 from . import log
 from ..parser import GrammaGrammar, GFuncRef, GCode, GDFuncRef, GCat, GAlt, GTok, GRuleRef, GRep, GExpr, GVarRef, \
-    GChooseIn
+    GChooseIn, GDenoted
 from ..util import DictStack
 
 T = TypeVar('T')
@@ -67,20 +67,24 @@ class GDFuncWrap(GFuncWrap):
     pass
 
 
-def gfunc(*args, **kw):
-    """
-    decorator sampler methods to indicate implementation of a GFunc element
-    """
-
+def make_decorator(wrapper_class: Type):
     def _decorate(func, **kw):
         fname = kw.pop('fname', func.__name__)
-        return GFuncWrap(func, fname)
+        return wrapper_class(func, fname)
 
-    if len(args) == 0 or not callable(args[0]):
-        return lambda func: _decorate(func, *args, **kw)
+    def decorator(*args, **kw):
+        f"""decorator for sampler methods to indicate {wrapper_class.__class__.__name__} implementation"""
 
-    return _decorate(args[0], **kw)
+        if len(args) == 0 or not callable(args[0]):
+            return lambda func: _decorate(func, *args, **kw)
 
+        return _decorate(args[0], **kw)
+
+    return decorator
+
+
+gfunc = make_decorator(GFuncWrap)
+gdfunc = make_decorator(GDFuncWrap)
 
 gcode_globals: Final[Dict[str, Any]] = {}
 
@@ -133,17 +137,23 @@ class SamplerMixinInterface(Protocol):
     gdfuncmap: Dict[GDFuncRef, GDFuncWrap]
     gcodemap: Dict[GCode, GCodeWrap]
 
+    @staticmethod
+    def create_sample(*args, **kwargs) -> Sample:
+        ...
+
     def sample(self, start: Optional[GExpr]) -> Sample:
+        ...
+
+    def evaluate_denotation(self, ge: GExpr) -> Denotation:
+        ...
+
+    def exec(self, gc: GCode) -> Any:
         ...
 
     def eval_num(self, ge: Union[GTok, GCode]) -> Union[int, float]:
         ...
 
     def eval_int(self, ge: Union[GTok, GCode]) -> int:
-        ...
-
-    @staticmethod
-    def create_sample(*args, **kwargs) -> Sample:
         ...
 
 
@@ -251,8 +261,28 @@ class OperatorsImplementationSamplerMixin(SamplerMixinInterface):
         fargs = [self.sample(c) for c in ge.fargs]
         return gfw.func(self, *fargs)
 
+    def sample_GDenoted(self, ge: GDenoted) -> Sample:
+        s = self.sample(ge.left)
+        val = self.evaluate_denotation(ge.right)
+        return s.denote(val)
 
-class GrammaInterpreter(OperatorsImplementationSamplerMixin, GCodeHelpersSamplerMixin):
+
+# noinspection PyPep8Naming,PyMethodMayBeStatic
+class DenotationImplementationSamplerMixin(SamplerMixinInterface):
+    def evaluate_denotation_GTok(self, ge: GTok) -> Denotation:
+        return ge.as_native()
+
+    def evaluate_denotation_GDFuncRef(self, ge: GDFuncRef) -> Denotation:
+        gdfw = self.gdfuncmap[ge]
+        fargs = [self.sample(c) for c in ge.fargs]
+        return gdfw.func(self, *fargs)
+
+    def evaluate_denotation_GCode(self, ge: GCode) -> Denotation:
+        return self.exec(ge)
+
+
+class GrammaInterpreter(DenotationImplementationSamplerMixin, OperatorsImplementationSamplerMixin,
+                        GCodeHelpersSamplerMixin):
     """
     A sampler that interprets GLF on the function stack.  It's slow, so only use it to prototype and debug a grammar.
     """
@@ -262,6 +292,10 @@ class GrammaInterpreter(OperatorsImplementationSamplerMixin, GCodeHelpersSampler
     gfuncmap: Dict[GFuncRef, GFuncWrap]
     gdfuncmap: Dict[GDFuncRef, GDFuncWrap]
     gcodemap: Dict[GCode, GCodeWrap]
+
+    @staticmethod
+    def create_sample(*args, **kwargs) -> Sample:
+        return Sample(*args, **kwargs)
 
     def __init__(self, grammar: Union[IO[str], str, GrammaGrammar]):
         """
@@ -290,7 +324,7 @@ class GrammaInterpreter(OperatorsImplementationSamplerMixin, GCodeHelpersSampler
                 gfuncs[val.fname] = val
 
         # wire GCode, GFunc, and GDFunc refs from AST to Wraps
-        missing: List[GFuncRef] = []
+        missing: List[Union[GFuncRef, GDFuncRef]] = []
         for ge in self.grammar.walk():
             if isinstance(ge, GDFuncRef):
                 wd = gdfuncs.get(ge.fname)
@@ -312,7 +346,7 @@ class GrammaInterpreter(OperatorsImplementationSamplerMixin, GCodeHelpersSampler
         if len(missing) > 0:
             for ge in missing:
                 log.error(f'no implementation in {self.__class__.__name__} for {ge.__class__.__name__} "{ge.fname}"')
-            raise GrammaSamplerError('sampler is missing gfunc implementations')
+            raise GrammaSamplerError('sampler is missing function implementations')
 
     def _(self, return_=None, **kw):
         """
@@ -339,12 +373,17 @@ class GrammaInterpreter(OperatorsImplementationSamplerMixin, GCodeHelpersSampler
         """
         if start is None:
             start = self.grammar.ruledefs['start'].rhs
-        m = getattr(self, 'sample_' + start.__class__.__name__, None)
+        handler_name = 'sample_' + start.__class__.__name__
+        m = getattr(self, handler_name, None)
         if m is None:
-            log.error(f'no handler in {self.__class__.__name__} for GExpr type {start.__class__.__name__}')
-            raise GrammaSamplerError('sampler is missing GExpr handlers')
+            log.error(f'missing handler in {self.__class__.__name__}, expected method {handler_name}')
+            raise GrammaSamplerError('sampler is missing sample_* method')
         return m(start)
 
-    @staticmethod
-    def create_sample(*args, **kwargs) -> Sample:
-        return Sample(*args, **kwargs)
+    def evaluate_denotation(self, ge: GExpr) -> Denotation:
+        handler_name = 'evaluate_denotation_' + ge.__class__.__name__
+        m = getattr(self, handler_name, None)
+        if m is None:
+            log.error(f'missing handler in {self.__class__.__name__}, expected method {handler_name}')
+            raise GrammaSamplerError('sampler is missing evaluate_denotation_* method')
+        return m(ge)

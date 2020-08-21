@@ -10,7 +10,7 @@ The GrammaGramma object indexes the GExpr of each defined rule and its parameter
 import io
 import logging
 from itertools import groupby
-from typing import Dict, List, Set, Union, Optional, Literal, cast, Tuple, IO, Iterator, ClassVar, Any
+from typing import Dict, List, Set, Union, Optional, Literal, cast, Tuple, IO, Iterator, ClassVar
 
 import lark
 
@@ -177,7 +177,6 @@ class LarkTransformer:
         return GDenoted(self.visit(lt.children[0]), self.visit(lt.children[1]))
 
     def denotation(self, lt):
-        print(lt)
         return self.visit(lt.children[0])
 
     def cat(self, lt):
@@ -251,7 +250,11 @@ class LarkTransformer:
 
     def dfunc(self, lt):
         fname = identifier2string(lt.children[0])
-        fargs = [self.visit(clt) for clt in lt.children[1].children]
+        fargs: List[GExpr]
+        if len(lt.children) > 1:
+            fargs = [self.visit(clt) for clt in lt.children[1].children]
+        else:
+            fargs = []
         return GDFuncRef(fname, fargs)
 
     def number(self, lt):
@@ -265,7 +268,7 @@ class LarkTransformer:
         elif name in self.rulenames:
             return GRuleRef(name, [])
         else:
-            return GFuncRef(name, [])
+            raise GrammaParseError(f'no variable named "{name}" in scope')
 
 
 class GExpr:
@@ -788,11 +791,11 @@ class GRuleRef(GInternal):
     """
 
     __slots__ = 'rname', 'rhs'
+    rname: str
 
-    def __init__(self, rname, rargs, rhs=None):
+    def __init__(self, rname, rargs):
         GInternal.__init__(self, rargs)
         self.rname = rname
-        self.rhs = rhs
 
     def copy(self):
         return GRuleRef(self.rname, self.rargs, self.rhs)
