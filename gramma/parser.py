@@ -10,7 +10,7 @@ The GrammaGramma object indexes the GExpr of each defined rule and its parameter
 import io
 import logging
 from itertools import groupby
-from typing import Dict, List, Set, Union, Optional, Literal, cast, Tuple, IO, Iterator, ClassVar
+from typing import Dict, List, Set, Union, Optional, Literal, cast, Tuple, IO, Iterator, ClassVar, Any
 
 import lark
 
@@ -103,24 +103,18 @@ class GrammaParseError(Exception):
     pass
 
 
+# noinspection PyMethodMayBeStatic
 class LarkTransformer:
     """
         a top-down transformer from lark.Tree to GExpr that handles lexically scoped variables
     """
 
-    vars: Union[Set[str], SetStack[str]]
+    vars: SetStack[str]
     rulenames: Set[str]
 
     def __init__(self, rulenames: Set[str]):
-        self.vars = set()
+        self.vars = SetStack()
         self.rulenames = rulenames
-
-    def push_vars(self, new_vars):
-        self.vars = SetStack(self.vars)
-        self.vars.update(new_vars)
-
-    def pop_vars(self):
-        self.vars = self.vars.parent
 
     def visit(self, lt):
         if isinstance(lt, lark.lexer.Token):
@@ -138,25 +132,24 @@ class LarkTransformer:
 
     def ruledef(self, lt):
         rname = identifier2string(lt.children[0])
+        parms: List[str]
         if len(lt.children) == 3:
             rule_parms = lt.children[1]
             parms = [identifier2string(parm) for parm in rule_parms.children]
         else:
             parms = []
-        self.push_vars(parms)
-        rhs = self.visit(lt.children[-1])
-        self.pop_vars()
+
+        with self.vars.context(parms):
+            rhs = self.visit(lt.children[-1])
         return RuleDef(rname, parms, rhs)
 
     def choosein(self, lt):
         # lt.children = [var1, expr1, var2, expr2, ..., varN, exprN, child]
         i = iter(lt.children[:-1])
-        var_exprs = dict((identifier2string(v), self.visit(d)) for v, d in zip(i, i))
+        var_exprs: Dict[str, GExpr] = dict((identifier2string(v), self.visit(d)) for v, d in zip(i, i))
 
-        # push new lexical scope, process child, and pop
-        self.push_vars(var_exprs.keys())
-        child = self.visit(lt.children[-1])
-        self.pop_vars()
+        with self.vars.context(var_exprs.keys()):
+            child = self.visit(lt.children[-1])
         return GChooseIn(var_exprs, child)
 
     def alt(self, lt):

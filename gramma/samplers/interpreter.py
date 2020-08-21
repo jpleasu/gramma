@@ -6,7 +6,8 @@ from typing import Union, IO, Final, Dict, Any, Callable, Optional, List, TypeVa
 import numpy as np  # type: ignore
 
 from . import log
-from ..parser import GrammaGrammar, GFuncRef, GCode, GDFuncRef, GCat, GAlt, GTok, GRuleRef, GRep, GExpr
+from ..parser import GrammaGrammar, GFuncRef, GCode, GDFuncRef, GCat, GAlt, GTok, GRuleRef, GRep, GExpr, GVarRef
+from ..util import DictStack
 
 T = TypeVar('T')
 
@@ -96,7 +97,7 @@ class GCodeWrap:
         return eval(self.compiled, gcode_globals, sampler.__dict__)
 
 
-class Denotation:
+class Denotation(Protocol):
     ...
 
 
@@ -110,8 +111,8 @@ class Sample:
         self.s = s
         self.d = val
 
-    def denote(self, val):
-        self.d = val
+    def denote(self, val: Denotation) -> 'Sample':
+        return Sample(self.s, val)
 
     def cat(self, other: 'Sample') -> 'Sample':
         return Sample(self.s + other.s)
@@ -124,9 +125,12 @@ class Sample:
         return self.s
 
 
-class SamplerInterface(Protocol):
+class SamplerMixinInterface(Protocol):
     random: RandomAPI
     grammar: GrammaGrammar
+    gfuncmap: Dict[GFuncRef, GFuncWrap]
+    gdfuncmap: Dict[GDFuncRef, GDFuncWrap]
+    gcodemap: Dict[GCode, GCodeWrap]
 
     def sample(self, start: Optional[GExpr]) -> Sample:
         ...
@@ -142,12 +146,12 @@ class SamplerInterface(Protocol):
         ...
 
 
-class GCodeHelpersSamplerMixin:
+class GCodeHelpersSamplerMixin(SamplerMixinInterface):
     """
     methods intended for use by GCode
     """
 
-    def _(self: SamplerInterface, return_=None, **kw):
+    def _(self, return_=None, **kw):
         """
         a convenience for assigning to the sampler from gcode
             e.g.
@@ -161,23 +165,24 @@ class GCodeHelpersSamplerMixin:
 
 
 # noinspection PyPep8Naming
-class OperatorsImplementationSamplerMixin:
-    def sample_GTok(self: SamplerInterface, ge: GTok) -> Sample:
+class OperatorsImplementationSamplerMixin(SamplerMixinInterface):
+    vars: DictStack[str, Sample]
+
+    def __init__(self):
+        self.vars = DictStack()
+
+    def sample_GTok(self, ge: GTok) -> Sample:
         return self.create_sample(ge.as_str())
 
-    def sample_GRuleRef(self: SamplerInterface, ge: GRuleRef) -> Sample:
-        rule = self.grammar.ruledefs[ge.rname]
-        return self.sample(rule.rhs)
-
-    def sample_GCat(self: SamplerInterface, ge: GCat) -> Sample:
+    def sample_GCat(self, ge: GCat) -> Sample:
         samples = [self.sample(c) for c in ge.children]
         return reduce(Sample.cat, samples, Sample.get_unit())
 
-    def sample_GAlt(self: SamplerInterface, ge: GAlt) -> Sample:
+    def sample_GAlt(self, ge: GAlt) -> Sample:
         weights = [self.eval_num(c) for c in ge.weights]
         return self.sample(self.random.choice(ge.children, weights))
 
-    def sample_GRep(self: SamplerInterface, ge: GRep) -> Sample:
+    def sample_GRep(self, ge: GRep) -> Sample:
         lo: Union[int, None]
         hi: Union[int, None]
         if ge.lo is None:
@@ -222,8 +227,26 @@ class OperatorsImplementationSamplerMixin:
             n -= 1
         return s
 
+    def sample_GRuleRef(self, ge: GRuleRef) -> Sample:
+        rule = self.grammar.ruledefs[ge.rname]
+        args = [self.sample(c) for c in ge.rargs]
+        with self.vars.context(dict(zip(rule.params, args))):
+            samp = self.sample(rule.rhs)
+        return samp
 
-class GrammaInterpreter(OperatorsImplementationSamplerMixin, GCodeHelpersSamplerMixin, SamplerInterface):
+    def sample_GVarRef(self, ge: GVarRef) -> Sample:
+        s = self.vars.get(ge.vname)
+        if s is None:
+            raise GrammaSamplerError(f'undefined variable "{ge.vname}" ')
+        return s
+
+    def sample_GFuncRef(self, ge: GFuncRef) -> Sample:
+        gfw = self.gfuncmap[ge]
+        fargs = [self.sample(c) for c in ge.fargs]
+        return gfw.func(self, *fargs)
+
+
+class GrammaInterpreter(OperatorsImplementationSamplerMixin, GCodeHelpersSamplerMixin):
     """
     A sampler that interprets GLF on the function stack.  It's slow, so only use it to prototype and debug a grammar.
     """
@@ -238,6 +261,9 @@ class GrammaInterpreter(OperatorsImplementationSamplerMixin, GCodeHelpersSampler
         """
         grammar is either a GrammaGrammar object, a string containing GLF, or a file handle to a GLF file.
         """
+        OperatorsImplementationSamplerMixin.__init__(self)
+        GCodeHelpersSamplerMixin.__init__(self)
+
         self.grammar = GrammaGrammar.of(grammar)
         self.gfuncmap = {}
         self.gdfuncmap = {}
