@@ -69,12 +69,48 @@ class TestInterpreter(unittest.TestCase):
         ''')
         self.assertEqual(str(s.sample()), 'def')
 
+    def test_choosein(self):
+        s = GrammaInterpreter('''
+            start := choose x ~ 'a' in x.x.x;
+        ''')
+        self.assertEqual(str(s.sample()), 'aaa')
+
+    def test_choosein2(self):
+        s = GrammaInterpreter('''
+            start := choose x ~ 'a'|'b', y ~ 'c'|'d' in x.x.x.y.y.y;
+        ''')
+        s.random.seed(1)
+        self.assertEqual(str(s.sample()), 'aaaddd')
+
+    def test_choosein3(self):
+        s = GrammaInterpreter('''
+            start := choose x ~ 'a' in x.( choose x ~ 'b' in x).x;
+        ''')
+        s.random.seed(1)
+        self.assertEqual(str(s.sample()), 'aba')
+
     def test_rules_parameterized(self):
         s = GrammaInterpreter('''
             start := r('a'). ',' .r('b');
             r(x) := x . x;
         ''')
         self.assertEqual(str(s.sample()), 'aa,bb')
+
+    def test_rules_parameterized2(self):
+        s = GrammaInterpreter('''
+            start := r1('a'). ',' .r2('b');
+            r1(x) := x . x;
+            r2(x) := r1(x) . '-' . r1(r1(x));
+        ''')
+        self.assertEqual(str(s.sample()), 'aa,bb-bbbb')
+
+    def test_rules_parameterized3(self):
+        s = GrammaInterpreter('''
+            start := r('a'|'b'). ',' .r('c'|'d');
+            r(x) := x {5};
+        ''')
+        s.random.seed(1)
+        self.assertEqual(str(s.sample()), 'aaaaa,ddddd')
 
     def test_rep1(self):
         s = GrammaInterpreter('''

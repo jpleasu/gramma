@@ -6,7 +6,8 @@ from typing import Union, IO, Final, Dict, Any, Callable, Optional, List, TypeVa
 import numpy as np  # type: ignore
 
 from . import log
-from ..parser import GrammaGrammar, GFuncRef, GCode, GDFuncRef, GCat, GAlt, GTok, GRuleRef, GRep, GExpr, GVarRef
+from ..parser import GrammaGrammar, GFuncRef, GCode, GDFuncRef, GCat, GAlt, GTok, GRuleRef, GRep, GExpr, GVarRef, \
+    GChooseIn
 from ..util import DictStack
 
 T = TypeVar('T')
@@ -233,6 +234,11 @@ class OperatorsImplementationSamplerMixin(SamplerMixinInterface):
         with self.vars.context(dict(zip(rule.params, args))):
             samp = self.sample(rule.rhs)
         return samp
+
+    def sample_GChooseIn(self, ge: GChooseIn) -> Sample:
+        dists = [self.sample(c) for c in ge.dists]
+        with self.vars.context(dict(zip(ge.vnames, dists))):
+            return self.sample(ge.child)
 
     def sample_GVarRef(self, ge: GVarRef) -> Sample:
         s = self.vars.get(ge.vname)
