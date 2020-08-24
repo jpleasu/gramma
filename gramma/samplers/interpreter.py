@@ -102,49 +102,43 @@ class GCodeWrap:
         return eval(self.compiled, gcode_globals, sampler.__dict__)
 
 
-class Denotation(Protocol):
-    ...
-
-
 class Sample:
     __slots__ = 's', 'd'
 
     s: str
-    d: Optional[Denotation]
+    d: Any
 
-    def __init__(self, s: str, val: Denotation = None):
+    def __init__(self, s: str, val: Any = None):
         self.s = s
         self.d = val
-
-    def denote(self, val: Denotation) -> 'Sample':
-        return Sample(self.s, val)
-
-    def cat(self, other: 'Sample') -> 'Sample':
-        return Sample(self.s + other.s)
-
-    @staticmethod
-    def get_unit() -> 'Sample':
-        return Sample('')
 
     def __str__(self):
         return self.s
 
 
-class SamplerMixinInterface(Protocol):
+class SamplerInterface(Protocol):
     random: RandomAPI
     grammar: GrammaGrammar
     gfuncmap: Dict[GFuncRef, GFuncWrap]
     gdfuncmap: Dict[GDFuncRef, GDFuncWrap]
     gcodemap: Dict[GCode, GCodeWrap]
 
-    @staticmethod
-    def create_sample(*args, **kwargs) -> Sample:
+    def create_sample(self, *args, **kwargs) -> Sample:
+        ...
+
+    def get_unit(self) -> Sample:
+        ...
+
+    def cat(self, a: Sample, b: Sample) -> Sample:
+        ...
+
+    def denote(self, a: Sample, b: Any) -> Sample:
         ...
 
     def sample(self, start: Optional[GExpr]) -> Sample:
         ...
 
-    def evaluate_denotation(self, ge: GExpr) -> Denotation:
+    def evaluate_denotation(self, ge: GExpr) -> Any:
         ...
 
     def exec(self, gc: GCode) -> Any:
@@ -157,7 +151,7 @@ class SamplerMixinInterface(Protocol):
         ...
 
 
-class GCodeHelpersSamplerMixin(SamplerMixinInterface):
+class GCodeHelpersSamplerMixin(SamplerInterface):
     """
     methods intended for use by GCode
     """
@@ -176,7 +170,7 @@ class GCodeHelpersSamplerMixin(SamplerMixinInterface):
 
 
 # noinspection PyPep8Naming
-class OperatorsImplementationSamplerMixin(SamplerMixinInterface):
+class OperatorsImplementationSamplerMixin(SamplerInterface):
     vars: DictStack[str, Sample]
 
     def __init__(self):
@@ -187,7 +181,7 @@ class OperatorsImplementationSamplerMixin(SamplerMixinInterface):
 
     def sample_GCat(self, ge: GCat) -> Sample:
         samples = [self.sample(c) for c in ge.children]
-        return reduce(Sample.cat, samples, Sample.get_unit())
+        return reduce(self.cat, samples, self.get_unit())
 
     def sample_GAlt(self, ge: GAlt) -> Sample:
         weights = [self.eval_num(c) for c in ge.weights]
@@ -234,7 +228,7 @@ class OperatorsImplementationSamplerMixin(SamplerMixinInterface):
         n -= 1
         s = self.sample(ge.child)
         while n > 0:
-            s = s.cat(self.sample(ge.child))
+            s = self.cat(s, self.sample(ge.child))
             n -= 1
         return s
 
@@ -264,25 +258,25 @@ class OperatorsImplementationSamplerMixin(SamplerMixinInterface):
     def sample_GDenoted(self, ge: GDenoted) -> Sample:
         s = self.sample(ge.left)
         val = self.evaluate_denotation(ge.right)
-        return s.denote(val)
+        return self.denote(s, val)
 
 
 # noinspection PyPep8Naming,PyMethodMayBeStatic
-class DenotationImplementationSamplerMixin(SamplerMixinInterface):
-    def evaluate_denotation_GTok(self, ge: GTok) -> Denotation:
+class DenotationImplementationSamplerMixin(SamplerInterface):
+    def evaluate_denotation_GTok(self, ge: GTok) -> Any:
         return ge.as_native()
 
-    def evaluate_denotation_GDFuncRef(self, ge: GDFuncRef) -> Denotation:
+    def evaluate_denotation_GDFuncRef(self, ge: GDFuncRef) -> Any:
         gdfw = self.gdfuncmap[ge]
         fargs = [self.sample(c) for c in ge.fargs]
         return gdfw.func(self, *fargs)
 
-    def evaluate_denotation_GCode(self, ge: GCode) -> Denotation:
+    def evaluate_denotation_GCode(self, ge: GCode) -> Any:
         return self.exec(ge)
 
 
 class GrammaInterpreter(DenotationImplementationSamplerMixin, OperatorsImplementationSamplerMixin,
-                        GCodeHelpersSamplerMixin):
+                        GCodeHelpersSamplerMixin, SamplerInterface):
     """
     A sampler that interprets GLF on the function stack.  It's slow, so only use it to prototype and debug a grammar.
     """
@@ -296,6 +290,17 @@ class GrammaInterpreter(DenotationImplementationSamplerMixin, OperatorsImplement
     @staticmethod
     def create_sample(*args, **kwargs) -> Sample:
         return Sample(*args, **kwargs)
+
+    @staticmethod
+    def get_unit() -> Sample:
+        return Sample('')
+
+    @staticmethod
+    def cat(a: Sample, b: Sample) -> Sample:
+        return Sample(a.s + b.s)
+
+    def denote(self, a: Sample, b: Any) -> Sample:
+        return Sample(a.s, b)
 
     def __init__(self, grammar: Union[IO[str], str, GrammaGrammar]):
         """
@@ -380,7 +385,7 @@ class GrammaInterpreter(DenotationImplementationSamplerMixin, OperatorsImplement
             raise GrammaSamplerError('sampler is missing sample_* method')
         return m(start)
 
-    def evaluate_denotation(self, ge: GExpr) -> Denotation:
+    def evaluate_denotation(self, ge: GExpr) -> Any:
         handler_name = 'evaluate_denotation_' + ge.__class__.__name__
         m = getattr(self, handler_name, None)
         if m is None:

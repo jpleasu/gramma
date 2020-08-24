@@ -1,8 +1,10 @@
 #!/usr/bin/env python3
 
 import unittest
+from functools import reduce
+from typing import Any
 
-from gramma.samplers import GrammaInterpreter, gfunc, gdfunc
+from gramma.samplers import GrammaInterpreter, gfunc, gdfunc, Sample
 
 
 class Arithmetic(GrammaInterpreter):
@@ -11,18 +13,68 @@ class Arithmetic(GrammaInterpreter):
         expr := add;
         add := mul . ('+'.mul){,3};
         mul := atom . ('*'.atom){,3};
-        atom :=   'x' 
+        atom :=   'x'
                 | randint()
                 | `expr_rec` '(' . expr . ')';
     '''
 
-    def __init__(self):
-        super().__init__(self.GLF)
+    def __init__(self, glf=GLF):
+        super().__init__(glf)
         self.expr_rec = .1
 
     @gfunc
     def randint(self):
         return self.create_sample(str(self.random.integers(0, 100000)))
+
+
+def flatlist(a):
+    if a is None:
+        return []
+    elif isinstance(a, list):
+        return a
+    else:
+        return [a]
+
+
+class SemanticArithmetic(Arithmetic):
+    """
+        denotations are
+            null for unadorned tokens
+            integers for rules
+            list of integers otherwise
+    """
+    GLF = '''
+        start := expr;
+        expr := add;
+        add := mul . ('+'.mul){,3} / 'sum';
+        mul := atom . ('*'.atom){,3} / 'product';
+        atom :=   'x' / 'variable'
+                | randint()
+                | `expr_rec` '(' . expr . ')';
+    '''
+
+    def __init__(self, glf=GLF):
+        super().__init__(glf)
+        self.expr_rec = .1
+        self.variables = dict()
+
+    @staticmethod
+    def cat(a: Sample, b: Sample):
+        return Sample(a.s + b.s, flatlist(a.d) + flatlist(b.d))
+
+    def denote(self, a: Sample, b: Any) -> Sample:
+        if b == 'variable':
+            d = self.variables.get(a.s)
+        elif b == 'sum':
+            d = sum(a.d)
+        elif b == 'product':
+            d = reduce(lambda x, y: x * y, a.d)
+        return Sample(a.s, d)
+
+    @gfunc
+    def randint(self):
+        n = self.random.integers(0, 100000)
+        return Sample(str(n), n)
 
 
 class TestInterpreter(unittest.TestCase):
@@ -183,6 +235,19 @@ class TestInterpreter(unittest.TestCase):
         self.assertEqual(str(s.sample()), '77305*x*70020+x*10991*85623*'
                                           '(x*x*(x*6795*x*30102+x*x*x)*18804+x*33287*18412*x+x*x+x*x*x*x)'
                                           '+x*50515*x*x+x')
+
+    def test_semantic_arithmetic_grammar(self):
+        s = SemanticArithmetic()
+        s.variables['x'] = 2
+
+        s.random.seed(1)
+        samp = s.sample()
+        self.assertEqual(samp.s, 'x*x*17781')
+        self.assertEqual(samp.d, 71124)
+
+        samp = s.sample()
+        self.assertEqual(samp.s, 'x+15135')
+        self.assertEqual(samp.d, 15137)
 
 
 if __name__ == '__main__':
