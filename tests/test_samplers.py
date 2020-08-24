@@ -159,6 +159,18 @@ class TestInterpreter(unittest.TestCase):
         x = s.sample()
         self.assertEqual(x.d, 17)
 
+    def test_denoted_choosein(self):
+        class G(GrammaInterpreter):
+            @gdfunc
+            def f(self, x: Sample):
+                return x.s
+
+        s = G('''
+            start := choose x~'somevar' in 'a'/f(x);
+        ''')
+        x = s.sample()
+        self.assertEqual(x.d, 'somevar')
+
     def test_rules_parameterized(self):
         s = GrammaInterpreter('''
             start := r('a'). ',' .r('b');
@@ -213,6 +225,13 @@ class TestInterpreter(unittest.TestCase):
 
         s.random.seed(1)
         self.assertEqual(','.join(str(s.sample()) for i in range(10)), 'aa,aaaa,aaaa,aa,aaa,aaaa,aaa,aa,aa,aa')
+
+    def test_grange(self):
+        s = GrammaInterpreter('''
+               start := ['a'..'z'];
+           ''')
+        s.random.seed(1)
+        self.assertEqual(''.join(str(s.sample()) for i in range(10)), 'gxscoynedi')
 
     def test_basic_operators(self):
         s = GrammaInterpreter('''

@@ -7,7 +7,7 @@ import numpy as np  # type: ignore
 
 from . import log
 from ..parser import GrammaGrammar, GFuncRef, GCode, GDFuncRef, GCat, GAlt, GTok, GRuleRef, GRep, GExpr, GVarRef, \
-    GChooseIn, GDenoted
+    GChooseIn, GDenoted, GRange
 from ..util import DictStack
 
 T = TypeVar('T')
@@ -231,6 +231,14 @@ class OperatorsImplementationSamplerMixin(SamplerInterface):
             s = self.cat(s, self.sample(ge.child))
             n -= 1
         return s
+
+    def sample_GRange(self, ge: GRange) -> Sample:
+        n = sum(c for  b,c in ge.pairs)
+        i = self.random.integers(0, n)
+        for b, c in ge.pairs:
+            if i < c:
+                return Sample(chr(b+i), None)
+        raise GrammaSamplerError('range exceeded')
 
     def sample_GRuleRef(self, ge: GRuleRef) -> Sample:
         rule = self.grammar.ruledefs[ge.rname]
