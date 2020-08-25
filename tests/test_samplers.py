@@ -210,6 +210,15 @@ class TestInterpreter(unittest.TestCase):
         s.random.seed(1)
         self.assertEqual(str(s.sample()), 'aaaaa,ddddd')
 
+    def test_rules_parameterized4(self):
+        s = GrammaInterpreter('''
+            start := r('a'|'b', 'c'|'d');
+            r(x,y) := x.y;
+        ''')
+        s.random.seed(1)
+        self.assertEqual(str(s.sample()), 'ad')
+
+
     def test_rep1(self):
         s = GrammaInterpreter('''
             start := 'a'{3};

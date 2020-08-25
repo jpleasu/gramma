@@ -125,3 +125,6 @@ class DictStack(Generic[K, V]):
 
     def context(self, d: Optional[Dict[K, V]] = None) -> Context['DictStack[K, V]', Dict[K, V]]:
         return Context(self, d)
+
+    def __str__(self):
+        return ','.join(str(d) for d in self.stack if len(d)>0)

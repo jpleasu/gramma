@@ -246,6 +246,8 @@ class OperatorsImplementationSamplerMixin(SamplerInterface):
     def sample_GRuleRef(self, ge: GRuleRef) -> Sample:
         rule = self.grammar.ruledefs[ge.rname]
         args = [self.sample(c) for c in ge.rargs]
+        if len(rule.params)!=len(args):
+            raise GrammaSamplerError(f'rule {ge.rname}/{len(rule.params)} called with {len(args)} argument(s)')
         with self.vars.context(dict(zip(rule.params, args))):
             samp = self.sample(rule.rhs)
         return samp
