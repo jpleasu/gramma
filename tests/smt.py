@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 
-from gramma.samplers import GrammaInterpreter, gfunc, gdfunc, Sample
 from typing import Any
+
+from gramma.samplers import GrammaInterpreter, gfunc, gdfunc, Sample
 
 
 class SMTSampler(GrammaInterpreter):
@@ -21,7 +22,7 @@ class SMTSampler(GrammaInterpreter):
                     ;
         array_sexpr(domain_sort, range_sort) :=
                       "((as const (Array ".domain_sort." ".range_sort.")) ".sexpr(range_sort).")"
-                    | .1 "(store ".array_sexpr(domain_sort, range_sort)." ".sexpr(domain_sort)." ".sexpr(range_sort).")"
+                    | `array_sexpr_rec` "(store ".array_sexpr(domain_sort, range_sort)." ".sexpr(domain_sort)." ".sexpr(range_sort).")"
                     ;
         const_array_sexpr :=
                     '(store (store (store ((as const (Array Int Int)) 0) 0 1) 1 2) 0 0)';
@@ -39,13 +40,13 @@ class SMTSampler(GrammaInterpreter):
         array_sort(d, r) := '( Array '.d.' '.r.' )' / mk_array_sort(d,r);
 
         # random sort
-        sort := int_sort | bool_sort | .1 array_sort(sort,sort);
+        sort := int_sort | bool_sort | `sort_rec` array_sort(sort,sort);
 
     '''
 
     @gdfunc
     def mk_array_sort(self, domain, range):
-        return ('array', domain, range)
+        return 'array', domain, range
 
     @gfunc
     def domain(self, a):
@@ -57,24 +58,28 @@ class SMTSampler(GrammaInterpreter):
 
     @gfunc(lazy=True)
     def switch_sort(self, sort, i, b, a):
-        d=self.sample(sort).d
-        if d=='i':
+        d = self.sample(sort).d
+        if d == 'i':
             return self.sample(i)
-        elif d=='b':
+        elif d == 'b':
             return self.sample(b)
         return self.sample(a)
 
     def __init__(self, glf=GLF):
         super().__init__(glf)
-        self.expr_rec = .1
+        self.sort_rec = .1
+        self.array_sexpr_rec = .001
 
-    def denote(self, s:Sample, d:Any):
+    def denote(self, s: Sample, d: Any):
         return Sample(s.s, d)
 
-if __name__=='__main__':
-    s=SMTSampler()
-    s.random.seed(1)
-    samp=s.sample()
-    print(samp.s)
-    print(samp.d)
 
+if __name__ == '__main__':
+    import sys
+
+    sys.setrecursionlimit(10000)
+    s = SMTSampler()
+    s.random.seed(1)
+    for i in range(100):
+        samp = s.sample_start()
+        print(samp.s)

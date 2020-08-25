@@ -1,6 +1,6 @@
 from functools import reduce
 from types import CodeType
-from typing import Union, IO, Final, Dict, Any, Callable, Optional, List, TypeVar, Protocol, Type
+from typing import Union, IO, Final, Dict, Any, Callable, List, TypeVar, Protocol, Type
 
 # numpy doesn't have type hints yet and data-science-type is missing numpy.random.Generator
 import numpy as np  # type: ignore
@@ -138,12 +138,6 @@ class SamplerInterface(Protocol):
     def denote(self, a: Sample, b: Any) -> Sample:
         ...
 
-    def sample(self, start: Optional[GExpr]) -> Sample:
-        ...
-
-    def evaluate_denotation(self, ge: GExpr) -> Any:
-        ...
-
     def exec(self, gc: GCode) -> Any:
         ...
 
@@ -172,12 +166,20 @@ class GCodeHelpersSamplerMixin(SamplerInterface):
         return return_
 
 
-# noinspection PyPep8Naming
+# noinspection PyPep8Naming,PyMethodMayBeStatic
 class OperatorsImplementationSamplerMixin(SamplerInterface):
     vars: DictStack[str, Sample]
 
     def __init__(self):
         self.vars = DictStack()
+
+    def sample(self, ge: GExpr):
+        handler_name = 'sample_' + ge.__class__.__name__
+        m = getattr(self, handler_name, None)
+        if m is None:
+            log.error(f'missing handler in {self.__class__.__name__}, expected method {handler_name}')
+            raise GrammaSamplerError('sampler is missing sample_* method')
+        return m(ge)
 
     def sample_GTok(self, ge: GTok) -> Sample:
         return self.create_sample(ge.as_str())
@@ -236,17 +238,17 @@ class OperatorsImplementationSamplerMixin(SamplerInterface):
         return s
 
     def sample_GRange(self, ge: GRange) -> Sample:
-        n = sum(c for  b,c in ge.pairs)
+        n = sum(c for b, c in ge.pairs)
         i = self.random.integers(0, n)
         for b, c in ge.pairs:
             if i < c:
-                return Sample(chr(b+i), None)
+                return Sample(chr(b + i), None)
         raise GrammaSamplerError('range exceeded')
 
     def sample_GRuleRef(self, ge: GRuleRef) -> Sample:
         rule = self.grammar.ruledefs[ge.rname]
         args = [self.sample(c) for c in ge.rargs]
-        if len(rule.params)!=len(args):
+        if len(rule.params) != len(args):
             raise GrammaSamplerError(f'rule {ge.rname}/{len(rule.params)} called with {len(args)} argument(s)')
         with self.vars.context(dict(zip(rule.params, args))):
             samp = self.sample(rule.rhs)
@@ -276,23 +278,30 @@ class OperatorsImplementationSamplerMixin(SamplerInterface):
         val = self.evaluate_denotation(ge.right)
         return self.denote(s, val)
 
+    # denotation
+    def evaluate_denotation(self, ge: GExpr) -> Any:
+        handler_name = 'evaluate_denotation_' + ge.__class__.__name__
+        m = getattr(self, handler_name, None)
+        if m is None:
+            log.error(f'missing handler in {self.__class__.__name__}, expected method {handler_name}')
+            raise GrammaSamplerError('sampler is missing evaluate_denotation_* method')
+        return m(ge)
 
-# noinspection PyPep8Naming,PyMethodMayBeStatic
-class DenotationImplementationSamplerMixin(SamplerInterface):
+    evaluate_denotation_GVarRef = sample_GVarRef
+
     def evaluate_denotation_GTok(self, ge: GTok) -> Any:
         return ge.as_native()
 
     def evaluate_denotation_GDFuncRef(self, ge: GDFuncRef) -> Any:
         gdfw = self.gdfuncmap[ge]
-        fargs = [self.sample(c) for c in ge.fargs]
+        fargs = [self.evaluate_denotation(c) for c in ge.fargs]
         return gdfw.func(self, *fargs)
 
     def evaluate_denotation_GCode(self, ge: GCode) -> Any:
         return self.exec(ge)
 
 
-class GrammaInterpreter(DenotationImplementationSamplerMixin, OperatorsImplementationSamplerMixin,
-                        GCodeHelpersSamplerMixin, SamplerInterface):
+class GrammaInterpreter(OperatorsImplementationSamplerMixin, GCodeHelpersSamplerMixin, SamplerInterface):
     """
     A sampler that interprets GLF on the function stack.  It's slow, so only use it to prototype and debug a grammar.
     """
@@ -388,23 +397,6 @@ class GrammaInterpreter(DenotationImplementationSamplerMixin, OperatorsImplement
     def eval_num(self, ge: Union[GTok, GCode]) -> Union[float, int]:
         return ge.as_num() if isinstance(ge, GTok) else self.exec(ge)
 
-    def sample(self, start=None) -> Sample:
-        """
-        draw a sample from the distribution defined by grammar and its sampler methods
-        """
-        if start is None:
-            start = self.grammar.ruledefs['start'].rhs
-        handler_name = 'sample_' + start.__class__.__name__
-        m = getattr(self, handler_name, None)
-        if m is None:
-            log.error(f'missing handler in {self.__class__.__name__}, expected method {handler_name}')
-            raise GrammaSamplerError('sampler is missing sample_* method')
-        return m(start)
-
-    def evaluate_denotation(self, ge: GExpr) -> Any:
-        handler_name = 'evaluate_denotation_' + ge.__class__.__name__
-        m = getattr(self, handler_name, None)
-        if m is None:
-            log.error(f'missing handler in {self.__class__.__name__}, expected method {handler_name}')
-            raise GrammaSamplerError('sampler is missing evaluate_denotation_* method')
-        return m(ge)
+    def sample_start(self) -> Sample:
+        ge = self.grammar.ruledefs['start'].rhs
+        return self.sample(ge)

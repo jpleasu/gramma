@@ -4,8 +4,8 @@ import unittest
 from functools import reduce
 from typing import Any
 
-from gramma.samplers import GrammaInterpreter, gfunc, gdfunc, Sample
 from gramma.parser import GExpr
+from gramma.samplers import GrammaInterpreter, gfunc, gdfunc, Sample
 
 
 class Arithmetic(GrammaInterpreter):
@@ -84,34 +84,34 @@ class TestInterpreter(unittest.TestCase):
         s = GrammaInterpreter('''
             start := 'abc';
         ''')
-        self.assertEqual(str(s.sample()), 'abc')
+        self.assertEqual(str(s.sample_start()), 'abc')
 
     def test_cat(self):
         s = GrammaInterpreter('''
             start := 'a' . 'b' . 'c';
         ''')
-        self.assertEqual(str(s.sample()), 'abc')
+        self.assertEqual(str(s.sample_start()), 'abc')
 
     def test_alt(self):
         s = GrammaInterpreter('''
             start := 'a' | 'b' | 'c';
         ''')
         s.random.seed(1)
-        self.assertEqual(''.join(str(s.sample()) for i in range(10)), 'acbbacbbaa')
+        self.assertEqual(''.join(str(s.sample_start()) for i in range(10)), 'acbbacbbaa')
 
     def test_alt_numerical_weights(self):
         s = GrammaInterpreter('''
             start := 1.2 'a' | 2 'b' | 'c';
         ''')
         s.random.seed(1)
-        self.assertEqual(''.join(str(s.sample()) for i in range(10)), 'abbbacbbaa')
+        self.assertEqual(''.join(str(s.sample_start()) for i in range(10)), 'abbbacbbaa')
 
     def test_alt_gcode_weights(self):
         s = GrammaInterpreter('''
             start := 'a' | `False` 'b' | 'c';
         ''')
         s.random.seed(1)
-        self.assertEqual(''.join(str(s.sample()) for i in range(10)), 'acccacaaaa')
+        self.assertEqual(''.join(str(s.sample_start()) for i in range(10)), 'acccacaaaa')
 
     def test_rules_simple(self):
         s = GrammaInterpreter('''
@@ -120,33 +120,33 @@ class TestInterpreter(unittest.TestCase):
             r2 := 'e';
             r3 := 'f';
         ''')
-        self.assertEqual(str(s.sample()), 'def')
+        self.assertEqual(str(s.sample_start()), 'def')
 
     def test_choosein(self):
         s = GrammaInterpreter('''
             start := choose x ~ 'a' in x.x.x;
         ''')
-        self.assertEqual(str(s.sample()), 'aaa')
+        self.assertEqual(str(s.sample_start()), 'aaa')
 
     def test_choosein2(self):
         s = GrammaInterpreter('''
             start := choose x ~ 'a'|'b', y ~ 'c'|'d' in x.x.x.y.y.y;
         ''')
         s.random.seed(1)
-        self.assertEqual(str(s.sample()), 'aaaddd')
+        self.assertEqual(str(s.sample_start()), 'aaaddd')
 
     def test_choosein3(self):
         s = GrammaInterpreter('''
             start := choose x ~ 'a' in x.( choose x ~ 'b' in x).x;
         ''')
         s.random.seed(1)
-        self.assertEqual(str(s.sample()), 'aba')
+        self.assertEqual(str(s.sample_start()), 'aba')
 
     def test_denoted_gcode(self):
         s = GrammaInterpreter('''
             start := 'a'/`17`;
         ''')
-        self.assertEqual(s.sample().d, 17)
+        self.assertEqual(s.sample_start().d, 17)
 
     def test_gfunc_lazy(self):
         class G(GrammaInterpreter):
@@ -159,9 +159,8 @@ class TestInterpreter(unittest.TestCase):
         ''')
         s.random.seed(1)
 
-        x = s.sample()
+        x = s.sample_start()
         self.assertEqual(x.s, 'ab')
-
 
     def test_denoted_dfunc(self):
         class G(GrammaInterpreter):
@@ -172,7 +171,7 @@ class TestInterpreter(unittest.TestCase):
         s = G('''
             start := 'a'/f();
         ''')
-        x = s.sample()
+        x = s.sample_start()
         self.assertEqual(x.d, 17)
 
     def test_denoted_choosein(self):
@@ -184,7 +183,7 @@ class TestInterpreter(unittest.TestCase):
         s = G('''
             start := choose x~'somevar' in 'a'/f(x);
         ''')
-        x = s.sample()
+        x = s.sample_start()
         self.assertEqual(x.d, 'somevar')
 
     def test_rules_parameterized(self):
@@ -192,7 +191,7 @@ class TestInterpreter(unittest.TestCase):
             start := r('a'). ',' .r('b');
             r(x) := x . x;
         ''')
-        self.assertEqual(str(s.sample()), 'aa,bb')
+        self.assertEqual(str(s.sample_start()), 'aa,bb')
 
     def test_rules_parameterized2(self):
         s = GrammaInterpreter('''
@@ -200,7 +199,7 @@ class TestInterpreter(unittest.TestCase):
             r1(x) := x . x;
             r2(x) := r1(x) . '-' . r1(r1(x));
         ''')
-        self.assertEqual(str(s.sample()), 'aa,bb-bbbb')
+        self.assertEqual(str(s.sample_start()), 'aa,bb-bbbb')
 
     def test_rules_parameterized3(self):
         s = GrammaInterpreter('''
@@ -208,7 +207,7 @@ class TestInterpreter(unittest.TestCase):
             r(x) := x {5};
         ''')
         s.random.seed(1)
-        self.assertEqual(str(s.sample()), 'aaaaa,ddddd')
+        self.assertEqual(str(s.sample_start()), 'aaaaa,ddddd')
 
     def test_rules_parameterized4(self):
         s = GrammaInterpreter('''
@@ -216,28 +215,27 @@ class TestInterpreter(unittest.TestCase):
             r(x,y) := x.y;
         ''')
         s.random.seed(1)
-        self.assertEqual(str(s.sample()), 'ad')
-
+        self.assertEqual(str(s.sample_start()), 'ad')
 
     def test_rep1(self):
         s = GrammaInterpreter('''
             start := 'a'{3};
         ''')
-        self.assertEqual(str(s.sample()), 'aaa')
+        self.assertEqual(str(s.sample_start()), 'aaa')
 
     def test_rep2(self):
         s = GrammaInterpreter('''
             start := 'a'{3,4};
         ''')
         s.random.seed(1)
-        self.assertEqual(','.join(str(s.sample()) for i in range(10)), 'aaa,aaaa,aaaa,aaa,aaaa,aaaa,aaaa,aaa,aaa,aaa')
+        self.assertEqual(','.join(str(s.sample_start()) for i in range(10)), 'aaa,aaaa,aaaa,aaa,aaaa,aaaa,aaaa,aaa,aaa,aaa')
 
     def test_rep_geom(self):
         s = GrammaInterpreter('''
                start := 'a'{geom(3)};
            ''')
         s.random.seed(1)
-        self.assertEqual(','.join(str(s.sample()) for i in range(10)), 'a,aaaaa,aaa,aaa,a,aaaaaaaaa,aaa,aa,a,aa')
+        self.assertEqual(','.join(str(s.sample_start()) for i in range(10)), 'a,aaaaa,aaa,aaa,a,aaaaaaaaa,aaa,aa,a,aa')
 
     def test_rep_gcode(self):
         class G(GrammaInterpreter):
@@ -249,14 +247,14 @@ class TestInterpreter(unittest.TestCase):
         s.x = 3
 
         s.random.seed(1)
-        self.assertEqual(','.join(str(s.sample()) for i in range(10)), 'aa,aaaa,aaaa,aa,aaa,aaaa,aaa,aa,aa,aa')
+        self.assertEqual(','.join(str(s.sample_start()) for i in range(10)), 'aa,aaaa,aaaa,aa,aaa,aaaa,aaa,aa,aa,aa')
 
     def test_grange(self):
         s = GrammaInterpreter('''
                start := ['a'..'z'];
            ''')
         s.random.seed(1)
-        self.assertEqual(''.join(str(s.sample()) for i in range(10)), 'gxscoynedi')
+        self.assertEqual(''.join(str(s.sample_start()) for i in range(10)), 'gxscoynedi')
 
     def test_basic_operators(self):
         s = GrammaInterpreter('''
@@ -266,17 +264,17 @@ class TestInterpreter(unittest.TestCase):
             r3 :=  'e' | 'f';
         ''')
         s.random.seed(1)
-        self.assertEqual(str(s.sample()), 'a,cdc,e')
+        self.assertEqual(str(s.sample_start()), 'a,cdc,e')
 
     def test_arithmetic_grammar(self):
         s = Arithmetic()
         s.random.seed(1)
-        self.assertEqual(str(s.sample()), 'x*x*17781')
-        self.assertEqual(str(s.sample()), 'x+15135')
-        self.assertEqual(str(s.sample()), '2810*35917*x')
-        self.assertEqual(str(s.sample()), '99487*x*89714')
-        self.assertEqual(str(s.sample()), 'x*94935+x*x*x')
-        self.assertEqual(str(s.sample()), '77305*x*70020+x*10991*85623*'
+        self.assertEqual(str(s.sample_start()), 'x*x*17781')
+        self.assertEqual(str(s.sample_start()), 'x+15135')
+        self.assertEqual(str(s.sample_start()), '2810*35917*x')
+        self.assertEqual(str(s.sample_start()), '99487*x*89714')
+        self.assertEqual(str(s.sample_start()), 'x*94935+x*x*x')
+        self.assertEqual(str(s.sample_start()), '77305*x*70020+x*10991*85623*'
                                           '(x*x*(x*6795*x*30102+x*x*x)*18804+x*33287*18412*x+x*x+x*x*x*x)'
                                           '+x*50515*x*x+x')
 
@@ -285,11 +283,11 @@ class TestInterpreter(unittest.TestCase):
         s.variables['x'] = 2
 
         s.random.seed(1)
-        samp = s.sample()
+        samp = s.sample_start()
         self.assertEqual(samp.s, 'x*x*17781')
         self.assertEqual(samp.d, 71124)
 
-        samp = s.sample()
+        samp = s.sample_start()
         self.assertEqual(samp.s, 'x+15135')
         self.assertEqual(samp.d, 15137)
 
