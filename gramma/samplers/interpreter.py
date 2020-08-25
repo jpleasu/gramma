@@ -45,13 +45,15 @@ class GrammaSamplerError(Exception):
 
 
 class GFuncWrap:
-    __slots__ = 'func', 'fname'
+    __slots__ = 'func', 'fname', 'lazy'
     fname: str
     func: Callable
+    lazy: bool
 
-    def __init__(self, func, fname):
+    def __init__(self, func, fname, lazy=False):
         self.func = func
         self.fname = fname
+        self.lazy = lazy
 
     def __call__(self, *args, **kw):
         return self.func(*args, **kw)
@@ -64,13 +66,14 @@ class GFuncWrap:
 
 
 class GDFuncWrap(GFuncWrap):
-    pass
+    def __str__(self):
+        return f'gdfunc {self.fname}'
 
 
 def make_decorator(wrapper_class: Type):
     def _decorate(func, **kw):
         fname = kw.pop('fname', func.__name__)
-        return wrapper_class(func, fname)
+        return wrapper_class(func, fname, **kw)
 
     def decorator(*args, **kw):
         f"""decorator for sampler methods to indicate {wrapper_class.__class__.__name__} implementation"""
@@ -260,7 +263,10 @@ class OperatorsImplementationSamplerMixin(SamplerInterface):
 
     def sample_GFuncRef(self, ge: GFuncRef) -> Sample:
         gfw = self.gfuncmap[ge]
-        fargs = [self.sample(c) for c in ge.fargs]
+        if gfw.lazy:
+            fargs = ge.fargs
+        else:
+            fargs = [self.sample(c) for c in ge.fargs]
         return gfw.func(self, *fargs)
 
     def sample_GDenoted(self, ge: GDenoted) -> Sample:

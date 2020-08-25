@@ -5,6 +5,7 @@ from functools import reduce
 from typing import Any
 
 from gramma.samplers import GrammaInterpreter, gfunc, gdfunc, Sample
+from gramma.parser import GExpr
 
 
 class Arithmetic(GrammaInterpreter):
@@ -146,6 +147,21 @@ class TestInterpreter(unittest.TestCase):
             start := 'a'/`17`;
         ''')
         self.assertEqual(s.sample().d, 17)
+
+    def test_gfunc_lazy(self):
+        class G(GrammaInterpreter):
+            @gfunc(lazy=True)
+            def f(self, ge: GExpr):
+                return self.cat(self.sample(ge), self.sample(ge))
+
+        s = G('''
+            start := f('a'|'b');
+        ''')
+        s.random.seed(1)
+
+        x = s.sample()
+        self.assertEqual(x.s, 'ab')
+
 
     def test_denoted_dfunc(self):
         class G(GrammaInterpreter):
