@@ -228,7 +228,8 @@ class TestInterpreter(unittest.TestCase):
             start := 'a'{3,4};
         ''')
         s.random.seed(1)
-        self.assertEqual(','.join(str(s.sample_start()) for i in range(10)), 'aaa,aaaa,aaaa,aaa,aaaa,aaaa,aaaa,aaa,aaa,aaa')
+        self.assertEqual(','.join(str(s.sample_start()) for i in range(10)),
+                         'aaa,aaaa,aaaa,aaa,aaaa,aaaa,aaaa,aaa,aaa,aaa')
 
     def test_rep_geom(self):
         s = GrammaInterpreter('''
@@ -275,8 +276,8 @@ class TestInterpreter(unittest.TestCase):
         self.assertEqual(str(s.sample_start()), '99487*x*89714')
         self.assertEqual(str(s.sample_start()), 'x*94935+x*x*x')
         self.assertEqual(str(s.sample_start()), '77305*x*70020+x*10991*85623*'
-                                          '(x*x*(x*6795*x*30102+x*x*x)*18804+x*33287*18412*x+x*x+x*x*x*x)'
-                                          '+x*50515*x*x+x')
+                                                '(x*x*(x*6795*x*30102+x*x*x)*18804+x*33287*18412*x+x*x+x*x*x*x)'
+                                                '+x*50515*x*x+x')
 
     def test_semantic_arithmetic_grammar(self):
         s = SemanticArithmetic()
@@ -288,6 +289,44 @@ class TestInterpreter(unittest.TestCase):
         self.assertEqual(samp.d, 71124)
 
         samp = s.sample_start()
+        self.assertEqual(samp.s, 'x+15135')
+        self.assertEqual(samp.d, 15137)
+
+
+class TestCoroInterpreter(unittest.TestCase):
+    def test_basic(self):
+        s = GrammaInterpreter('''
+            start := r1 . ','. r2{2,3} . ',' . r3;
+            r1 :=  'a' | 'b';
+            r2 :=  'c' | 'd';
+            r3 :=  'e' | 'f';
+        ''')
+        s.random.seed(1)
+        samp = s.coro_sample_start()
+        self.assertEqual(str(samp), 'a,cdc,e')
+
+    def test_arithmetic_grammar(self):
+        s = Arithmetic()
+        s.random.seed(1)
+        self.assertEqual(str(s.coro_sample_start()), 'x*x*17781')
+        self.assertEqual(str(s.coro_sample_start()), 'x+15135')
+        self.assertEqual(str(s.coro_sample_start()), '2810*35917*x')
+        self.assertEqual(str(s.coro_sample_start()), '99487*x*89714')
+        self.assertEqual(str(s.coro_sample_start()), 'x*94935+x*x*x')
+        self.assertEqual(str(s.coro_sample_start()), '77305*x*70020+x*10991*85623*'
+                                                     '(x*x*(x*6795*x*30102+x*x*x)*18804+x*33287*18412*x+x*x+x*x*x*x)'
+                                                     '+x*50515*x*x+x')
+
+    def test_semantic_arithmetic_grammar(self):
+        s = SemanticArithmetic()
+        s.variables['x'] = 2
+
+        s.random.seed(1)
+        samp = s.coro_sample_start()
+        self.assertEqual(samp.s, 'x*x*17781')
+        self.assertEqual(samp.d, 71124)
+
+        samp = s.coro_sample_start()
         self.assertEqual(samp.s, 'x+15135')
         self.assertEqual(samp.d, 15137)
 

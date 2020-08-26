@@ -1,6 +1,7 @@
 from functools import reduce
 from types import CodeType
-from typing import Union, IO, Final, Dict, Any, Callable, List, TypeVar, Protocol, Type
+# noinspection PyUnresolvedReferences
+from typing import Union, IO, Final, Dict, Any, Callable, List, TypeVar, Protocol, Type, Generator
 
 # numpy doesn't have type hints yet and data-science-type is missing numpy.random.Generator
 import numpy as np  # type: ignore
@@ -123,7 +124,9 @@ class SamplerInterface(Protocol):
     random: RandomAPI
     grammar: GrammaGrammar
     gfuncmap: Dict[GFuncRef, GFuncWrap]
+    coro_gfuncmap: Dict[GFuncRef, GFuncWrap]
     gdfuncmap: Dict[GDFuncRef, GDFuncWrap]
+    coro_gdfuncmap: Dict[GDFuncRef, GDFuncWrap]
     gcodemap: Dict[GCode, GCodeWrap]
 
     def create_sample(self, *args, **kwargs) -> Sample:
@@ -177,7 +180,7 @@ class OperatorsImplementationSamplerMixin(SamplerInterface):
         handler_name = 'sample_' + ge.__class__.__name__
         m = getattr(self, handler_name, None)
         if m is None:
-            log.error(f'missing handler in {self.__class__.__name__}, expected method {handler_name}')
+            log.error(f'missing handler in {self.__class__.__name__}, {handler_name}')
             raise GrammaSamplerError('sampler is missing sample_* method')
         return m(ge)
 
@@ -242,7 +245,7 @@ class OperatorsImplementationSamplerMixin(SamplerInterface):
         i = self.random.integers(0, n)
         for b, c in ge.pairs:
             if i < c:
-                return Sample(chr(b + i), None)
+                return Sample(chr(b + i))
         raise GrammaSamplerError('range exceeded')
 
     def sample_GRuleRef(self, ge: GRuleRef) -> Sample:
@@ -283,7 +286,7 @@ class OperatorsImplementationSamplerMixin(SamplerInterface):
         handler_name = 'evaluate_denotation_' + ge.__class__.__name__
         m = getattr(self, handler_name, None)
         if m is None:
-            log.error(f'missing handler in {self.__class__.__name__}, expected method {handler_name}')
+            log.error(f'missing handler in {self.__class__.__name__}, {handler_name}')
             raise GrammaSamplerError('sampler is missing evaluate_denotation_* method')
         return m(ge)
 
@@ -299,6 +302,186 @@ class OperatorsImplementationSamplerMixin(SamplerInterface):
 
     def evaluate_denotation_GCode(self, ge: GCode) -> Any:
         return self.exec(ge)
+
+    #######################################################
+    # the following "coroutine" API consists of stack machines,
+    # coro_sample and coro_evaluate_denotation and rewrites of
+    # the sample_* methods.
+    #######################################################
+
+    def coro_sample(self, ge: GExpr) -> Sample:
+        stack: List[Generator] = []
+
+        while True:
+            handler_name = 'coro_sample_' + ge.__class__.__name__
+            m = getattr(self, handler_name, None)
+            if m is None:
+                log.error(f'missing handler in {self.__class__.__name__}, {handler_name}')
+                raise GrammaSamplerError('sampler is missing coro_sample_* method')
+            coro = m(ge)
+            x: Union[Sample, GExpr] = next(coro)
+            while isinstance(x, Sample):
+                if len(stack) == 0:
+                    return x
+                coro = stack.pop()
+                x = coro.send(x)
+            stack.append(coro)
+            ge = x
+
+    def coro_evaluate_denotation(self, ge: GExpr) -> Any:
+        stack: List[Generator] = []
+
+        while True:
+            handler_name = 'coro_evaluate_denotation_' + ge.__class__.__name__
+            m = getattr(self, handler_name, None)
+            if m is None:
+                log.error(f'missing handler in {self.__class__.__name__}, {handler_name}')
+                raise GrammaSamplerError('sampler is missing coro_evaluate_denotation_* method')
+            coro = m(ge)
+            x: Union[Any, GExpr] = next(coro)
+            while not isinstance(x, GExpr):
+                if len(stack) == 0:
+                    return x
+                coro = stack.pop()
+                x = coro.send(x)
+            stack.append(coro)
+            ge = x
+
+    ##################
+
+    def coro_sample_GTok(self, ge: GTok) -> Generator[Union[GExpr, Sample], Sample, None]:
+        yield self.create_sample(ge.as_str())
+
+    def coro_sample_GCat(self, ge: GCat) -> Generator[Union[GExpr, Sample], Sample, None]:
+        samples = []
+        for c in ge.children:
+            samples.append((yield c))
+        yield reduce(self.cat, samples, self.get_unit())
+
+    def coro_sample_GAlt(self, ge: GAlt) -> Generator[Union[GExpr, Sample], Sample, None]:
+        weights = [self.eval_num(c) for c in ge.weights]
+        yield (yield self.random.choice(ge.children, weights))
+
+    def coro_sample_GRep(self, ge: GRep) -> Generator[Union[GExpr, Sample], Sample, None]:
+        lo: Union[int, None]
+        hi: Union[int, None]
+        if ge.lo is None:
+            lo = None
+        else:
+            lo = self.eval_int(ge.lo)
+        if ge.hi is None:
+            hi = None
+        else:
+            hi = self.eval_int(ge.hi)
+        d = ge.dist.name
+        n: int
+        if lo == hi and lo is not None:
+            n = lo
+        elif d.startswith('unif'):
+            if lo is None:
+                lo = 0
+            if hi is None:
+                hi = 2 ** 32
+            n = self.random.integers(lo, hi + 1)
+        elif d.startswith('geom'):
+            n = int(0.5 + self.random.geometric(1 / (ge.dist.args[0].as_int
+                                                     () + 1)))
+        else:
+            raise GrammaSamplerError(
+                f'sampler has no handler for repetition distrituion {d}')
+        if lo is not None:
+            n = max(lo, n)
+        if hi is not None:
+            n = min(n, hi)
+        if n == 0:
+            yield self.create_sample('')
+        n -= 1
+        s = yield ge.child
+        while n > 0:
+            s = self.cat(s, (yield ge.child))
+            n -= 1
+        yield s
+
+    def coro_sample_GRange(self, ge: GRange) -> Generator[Union[GExpr, Sample], Sample, None]:
+        n = sum(c for b, c in ge.pairs)
+        i = self.random.integers(0, n)
+        for b, c in ge.pairs:
+            if i < c:
+                yield Sample(chr(b + i))
+        raise GrammaSamplerError('range exceeded')
+
+    def coro_sample_GRuleRef(self, ge: GRuleRef) -> Generator[Union[GExpr, Sample], Sample, None]:
+        rule = self.grammar.ruledefs[ge.rname]
+        args = []
+        for c in ge.rargs:
+            args.append((yield c))
+        if len(rule.params) != len(args):
+            raise GrammaSamplerError(
+                f'rule {ge.rname}/{len(rule.params)} called with {len(args)} argument(s)'
+            )
+        with self.vars.context(dict(zip(rule.params, args))):
+            samp = yield rule.rhs
+        yield samp
+
+    def coro_sample_GChooseIn(self, ge: GChooseIn) -> Generator[Union[GExpr, Sample], Sample, None]:
+        dists = []
+        for c in ge.dists:
+            dists.append((yield c))
+        with self.vars.context(dict(zip(ge.vnames, dists))):
+            yield (yield ge.child)
+
+    def coro_sample_GVarRef(self, ge: GVarRef) -> Generator[Union[GExpr, Sample], Sample, None]:
+        s = self.vars.get(ge.vname)
+        if s is None:
+            raise GrammaSamplerError(f'undefined variable "{ge.vname}" ')
+        yield s
+
+    def coro_sample_GFuncRef(self, ge: GFuncRef) -> Generator[Union[GExpr, Sample], Sample, None]:
+        gfw = self.coro_gfuncmap.get(ge, None)
+        coro = True
+        if gfw is None:
+            gfw = self.gfuncmap[ge]
+            coro = False
+
+        if gfw.lazy:
+            fargs = ge.fargs
+        else:
+            fargs = []
+            for c in ge.fargs:
+                fargs.append((yield c))
+
+        if coro:
+            yield from gfw.func(self, *fargs)
+        else:
+            yield gfw.func(self, *fargs)
+
+    def coro_sample_GDenoted(self, ge: GDenoted) -> Generator[Union[GExpr, Sample], Sample, None]:
+        s = yield ge.left
+        val = self.coro_evaluate_denotation(ge.right)
+        yield self.denote(s, val)
+
+    coro_evaluate_denotation_GVarRef = coro_sample_GVarRef
+
+    def coro_evaluate_denotation_GTok(self, ge: GTok) -> Generator[Union[GExpr, Any], Any, None]:
+        yield ge.as_native()
+
+    def coro_evaluate_denotation_GDFuncRef(self, ge: GDFuncRef) -> Generator[Union[GExpr, Any], Any, None]:
+        gdfw = self.coro_gdfuncmap.get(ge, None)
+        coro = True
+        if gdfw is None:
+            gdfw = self.gdfuncmap[ge]
+            coro = False
+
+        fargs = []
+        for c in ge.fargs:
+            fargs.append((yield c))
+        if coro:
+            yield from gdfw.func(self, *fargs)
+        else:
+            yield gdfw.func(self, *fargs)
+
+    def coro_evaluate_denotation_GCode(self, ge: GCode) -> Generator[Union[GExpr, Any], Any, None]:
+        yield self.exec(ge)
 
 
 class GrammaInterpreter(OperatorsImplementationSamplerMixin, GCodeHelpersSamplerMixin, SamplerInterface):
@@ -336,7 +519,9 @@ class GrammaInterpreter(OperatorsImplementationSamplerMixin, GCodeHelpersSampler
 
         self.grammar = GrammaGrammar.of(grammar)
         self.gfuncmap = {}
+        self.coro_gfuncmap = {}
         self.gdfuncmap = {}
+        self.coro_gdfuncmap = {}
         self.gcodemap = {}
         self.random = RandomAPI()
 
@@ -362,12 +547,20 @@ class GrammaInterpreter(OperatorsImplementationSamplerMixin, GCodeHelpersSampler
                     missing.append(ge)
                 else:
                     self.gdfuncmap[ge] = wd
+                wd = gdfuncs.get('coro_' + ge.fname)
+                if wd is not None:
+                    self.coro_gdfuncmap[ge] = wd
+
             elif isinstance(ge, GFuncRef):
                 w = gfuncs.get(ge.fname)
                 if w is None:
                     missing.append(ge)
                 else:
                     self.gfuncmap[ge] = w
+                w = gfuncs.get('coro_' + ge.fname)
+                if w is not None:
+                    self.coro_gfuncmap[ge] = w
+
             elif isinstance(ge, GCode):
                 self.gcodemap[ge] = GCodeWrap(ge)
             for gc in ge.get_code():
@@ -400,3 +593,7 @@ class GrammaInterpreter(OperatorsImplementationSamplerMixin, GCodeHelpersSampler
     def sample_start(self) -> Sample:
         ge = self.grammar.ruledefs['start'].rhs
         return self.sample(ge)
+
+    def coro_sample_start(self) -> Sample:
+        ge = self.grammar.ruledefs['start'].rhs
+        return self.coro_sample(ge)
