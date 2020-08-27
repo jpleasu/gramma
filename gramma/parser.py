@@ -116,7 +116,7 @@ class LarkTransformer:
         self.vars = SetStack()
         self.rulenames = rulenames
 
-    def visit(self, lt):
+    def visit(self, lt: lark.Tree) -> Union['GExpr', 'RuleDef']:
         if isinstance(lt, lark.lexer.Token):
             return GTok.from_ltok(lt)
 
@@ -501,9 +501,6 @@ class GTern(GInternal):
     def get_code(self) -> List['GCode']:
         return [self.code]
 
-    def compute_case(self, x):
-        return self.code.invoke(x)
-
     def __str__(self):
         return '%s ? %s : %s' % (self.code, self.children[0], self.children[1])
 
@@ -837,6 +834,10 @@ class GVarRef(GExpr):
 class RuleDef:
     __slots__ = 'rname', 'params', 'rhs'
 
+    rname: str
+    rhs: GExpr
+    params: List[str]
+
     def __init__(self, rname: str, params: List[str], rhs: GExpr):
         self.rname = rname
         self.params = params
@@ -850,15 +851,15 @@ class GrammaGrammar:
     ruledefs: Dict[str, RuleDef]
 
     def __init__(self, glf: str):
-        self.ruledefs = {}
 
         lark_tree: lark.Tree = GrammaGrammar.GLF_PARSER.parse(glf)
         ruledef_trees = cast(List[lark.Tree], lark_tree.children)
         rulenames = set([identifier2string(cast(lark.Tree, ruledef.children[0])) for ruledef in ruledef_trees])
-        transformer = LarkTransformer(rulenames)
 
-        for ruledef_ast in lark_tree.children:
-            ruledef = transformer.visit(ruledef_ast)
+        transformer = LarkTransformer(rulenames)
+        self.ruledefs = {}
+        for ruledef_ast in cast(List[lark.Tree], lark_tree.children):
+            ruledef = cast(RuleDef, transformer.visit(ruledef_ast))
             self.ruledefs[ruledef.rname] = ruledef
 
     def walk(self) -> Iterator[GExpr]:

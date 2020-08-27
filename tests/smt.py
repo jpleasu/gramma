@@ -24,13 +24,10 @@ class SMTSampler(GrammaInterpreter):
                       "((as const (Array ".domain_sort." ".range_sort.")) ".sexpr(range_sort).")"
                     | `array_sexpr_rec` "(store ".array_sexpr(domain_sort, range_sort)." ".sexpr(domain_sort)." ".sexpr(range_sort).")"
                     ;
-        const_array_sexpr :=
-                    '(store (store (store ((as const (Array Int Int)) 0) 0 1) 1 2) 0 0)';
 
-        # generate an sexpr of the given type by invoking an array whose range is the given type
+        # generate an sexpr of the given sort by invoking an array with random domain and the given range
         array_wrap(s) := choose domain~sort in
                     "( select " . array_sexpr(domain, s)." ".sexpr(domain).")";
-
 
 
         #### sorts ####

@@ -8,7 +8,7 @@ import numpy as np  # type: ignore
 
 from . import log
 from ..parser import GrammaGrammar, GFuncRef, GCode, GDFuncRef, GCat, GAlt, GTok, GRuleRef, GRep, GExpr, GVarRef, \
-    GChooseIn, GDenoted, GRange
+    GChooseIn, GDenoted, GRange, GTern
 from ..util import DictStack
 
 T = TypeVar('T')
@@ -195,6 +195,12 @@ class OperatorsImplementationSamplerMixin(SamplerInterface):
         weights = [self.eval_num(c) for c in ge.weights]
         return self.sample(self.random.choice(ge.children, weights))
 
+    def sample_GTern(self, ge: GTern) -> Sample:
+        if self.exec(ge.code):
+            return self.sample(ge.children[0])
+        else:
+            return self.sample(ge.children[1])
+
     def sample_GRep(self, ge: GRep) -> Sample:
         lo: Union[int, None]
         hi: Union[int, None]
@@ -245,7 +251,7 @@ class OperatorsImplementationSamplerMixin(SamplerInterface):
         i = self.random.integers(0, n)
         for b, c in ge.pairs:
             if i < c:
-                return Sample(chr(b + i))
+                return self.create_sample(chr(b + i))
         raise GrammaSamplerError('range exceeded')
 
     def sample_GRuleRef(self, ge: GRuleRef) -> Sample:
@@ -362,6 +368,12 @@ class OperatorsImplementationSamplerMixin(SamplerInterface):
         weights = [self.eval_num(c) for c in ge.weights]
         yield (yield self.random.choice(ge.children, weights))
 
+    def coro_sample_GTern(self, ge: GTern) -> Generator[Union[GExpr, Sample], Sample, None]:
+        if self.exec(ge.code):
+            yield (yield ge.children[0])
+        else:
+            yield (yield ge.children[1])
+
     def coro_sample_GRep(self, ge: GRep) -> Generator[Union[GExpr, Sample], Sample, None]:
         lo: Union[int, None]
         hi: Union[int, None]
@@ -407,7 +419,7 @@ class OperatorsImplementationSamplerMixin(SamplerInterface):
         i = self.random.integers(0, n)
         for b, c in ge.pairs:
             if i < c:
-                yield Sample(chr(b + i))
+                yield self.create_sample(chr(b + i))
         raise GrammaSamplerError('range exceeded')
 
     def coro_sample_GRuleRef(self, ge: GRuleRef) -> Generator[Union[GExpr, Sample], Sample, None]:
