@@ -14,10 +14,10 @@ class SMTSampler(GrammaInterpreter):
         #### sexprs ####
         sexpr(s) := switch_sort(s, int_sexpr, bool_sexpr, array_sexpr(domain(s), range(s)));
 
-        bool_sexpr := ('true' | 'false') / 'b'
+        bool_sexpr := 'true' | 'false'
                     | array_wrap(bool_sort)
                     ;
-        int_sexpr := ['1'..'9'].['0'..'9']{geom(4)} / 'i'
+        int_sexpr := ['1'..'9'].['0'..'9']{geom(4)}
                     | array_wrap(int_sort)
                     ;
         array_sexpr(domain_sort, range_sort) :=
