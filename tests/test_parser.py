@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 
 import unittest
+from typing import cast
 
 from gramma.parser import GrammaGrammar, GFuncRef, GRuleRef, GChooseIn, GVarRef, GAlt, GRep, RepDist, GRange, GDenoted, \
     GTok, GCode, GDFuncRef
@@ -176,23 +177,24 @@ class TestGrammaGrammar(unittest.TestCase):
         for rulename, ruledef in g.ruledefs.items():
             self.assertIsInstance(ruledef.rhs, GRep)
             self.assertEqual(str(ruledef.rhs.child), "'a'")
-        r0: GRep = g.ruledefs['r0'].rhs
-        self.assertEqual(r0.lo.as_int(), 2)
-        self.assertEqual(r0.hi, None)
+        r: GRep
+        r = g.ruledefs['r0'].rhs
+        self.assertEqual(r.lo.as_int(), 2)
+        self.assertEqual(r.hi, None)
 
-        r1: GRep = g.ruledefs['r1'].rhs
-        self.assertEqual(r1.lo, None)
-        self.assertEqual(r1.hi.as_int(), 3)
+        r = g.ruledefs['r1'].rhs
+        self.assertEqual(r.lo, None)
+        self.assertEqual(r.hi.as_int(), 3)
 
-        r2: GRep = g.ruledefs['r2'].rhs
-        self.assertEqual(r2.lo.as_int(), 4)
-        self.assertEqual(r2.hi.as_int(), 5)
+        r = g.ruledefs['r2'].rhs
+        self.assertEqual(r.lo.as_int(), 4)
+        self.assertEqual(r.hi.as_int(), 5)
 
-        r3: GRep = g.ruledefs['r3'].rhs
-        self.assertEqual(r3.lo.as_int(), 4)
-        self.assertEqual(r3.hi.as_int(), 5)
-        self.assertEqual(r3.dist.name, 'dist')
-        self.assertEqual(r3.dist.args[0].as_int(), 1)
+        r = g.ruledefs['r3'].rhs
+        self.assertEqual(r.lo.as_int(), 4)
+        self.assertEqual(r.hi.as_int(), 5)
+        self.assertEqual(r.dist.name, 'dist')
+        self.assertEqual(r.dist.args[0].as_int(), 1)
 
     def test_rep3(self):
         g = GrammaGrammar('''
@@ -254,23 +256,24 @@ class TestGrammaGrammar(unittest.TestCase):
         for rulename, ruledef in g.ruledefs.items():
             self.assertIsInstance(ruledef.rhs, GRange)
 
-        r0: GRange = g.ruledefs['r0'].rhs
-        self.assertEqual(r0.pairs[0][0], ord('a'))
-        self.assertEqual(r0.pairs[0][1], 1 + ord('b') - ord('a'))
+        r: GRange
+        r = cast(GRange, g.ruledefs['r0'].rhs)
+        self.assertEqual(r.pairs[0][0], ord('a'))
+        self.assertEqual(r.pairs[0][1], 1 + ord('b') - ord('a'))
 
-        r1: GRange = g.ruledefs['r1'].rhs
-        self.assertEqual(r1.pairs[0][0], ord('a'))
-        self.assertEqual(r1.pairs[0][1], 1 + ord('b') - ord('a'))
-        self.assertEqual(r1.pairs[1][0], ord('c'))
-        self.assertEqual(r1.pairs[1][1], 1 + ord('d') - ord('c'))
+        r = cast(GRange, g.ruledefs['r1'].rhs)
+        self.assertEqual(r.pairs[0][0], ord('a'))
+        self.assertEqual(r.pairs[0][1], 1 + ord('b') - ord('a'))
+        self.assertEqual(r.pairs[1][0], ord('c'))
+        self.assertEqual(r.pairs[1][1], 1 + ord('d') - ord('c'))
 
-        r2: GRange = g.ruledefs['r2'].rhs
-        self.assertEqual(r2.pairs[0][0], ord('a'))
-        self.assertEqual(r2.pairs[0][1], 1)
-        self.assertEqual(r2.pairs[1][0], ord('b'))
-        self.assertEqual(r2.pairs[1][1], 1 + ord('c') - ord('b'))
-        self.assertEqual(r2.pairs[2][0], ord('d'))
-        self.assertEqual(r2.pairs[2][1], 1)
+        r = cast(GRange, g.ruledefs['r2'].rhs)
+        self.assertEqual(r.pairs[0][0], ord('a'))
+        self.assertEqual(r.pairs[0][1], 1)
+        self.assertEqual(r.pairs[1][0], ord('b'))
+        self.assertEqual(r.pairs[1][1], 1 + ord('c') - ord('b'))
+        self.assertEqual(r.pairs[2][0], ord('d'))
+        self.assertEqual(r.pairs[2][1], 1)
 
     def test_denoted(self):
         g = GrammaGrammar('''
@@ -283,21 +286,26 @@ class TestGrammaGrammar(unittest.TestCase):
             self.assertIsInstance(ruledef.rhs, GDenoted)
 
         r = g.ruledefs['r0']
-        self.assertIsInstance(r.rhs.right, GTok)
-        self.assertEqual(r.rhs.right.as_int(), 123)
+        d: GDenoted
+        d = cast(GDenoted, r.rhs)
+        self.assertIsInstance(d.right, GTok)
+        self.assertEqual(d.right.as_int(), 123)
 
         r = g.ruledefs['r1']
-        self.assertIsInstance(r.rhs.right, GTok)
-        self.assertEqual(r.rhs.right.as_str(), 'b')
+        d = cast(GDenoted, r.rhs)
+        self.assertIsInstance(d.right, GTok)
+        self.assertEqual(d.right.as_str(), 'b')
 
         r = g.ruledefs['r2']
-        self.assertIsInstance(r.rhs.right, GCode)
-        self.assertEqual(r.rhs.right.expr, 'b')
+        d = cast(GDenoted, r.rhs)
+        self.assertIsInstance(d.right, GCode)
+        self.assertEqual(d.right.expr, 'b')
 
         r = g.ruledefs['r3']
-        self.assertIsInstance(r.rhs.right, GDFuncRef)
-        self.assertEqual(r.rhs.right.fname, 'f')
-        self.assertIsInstance(r.rhs.right.fargs[0], GVarRef)
+        d = cast(GDenoted, r.rhs)
+        self.assertIsInstance(d.right, GDFuncRef)
+        self.assertEqual(d.right.fname, 'f')
+        self.assertIsInstance(d.right.fargs[0], GVarRef)
 
 
 if __name__ == '__main__':

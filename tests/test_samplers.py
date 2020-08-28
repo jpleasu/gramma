@@ -60,7 +60,7 @@ class SemanticArithmetic(Arithmetic):
         self.variables = dict()
 
     @staticmethod
-    def cat(a: Sample, b: Sample):
+    def cat(a: Sample, b: Sample) -> Sample:
         return Sample(a.s + b.s, flatlist(a.d) + flatlist(b.d))
 
     def denote(self, a: Sample, b: Any) -> Sample:
@@ -151,7 +151,7 @@ class TestInterpreter(unittest.TestCase):
     def test_gfunc_lazy(self):
         class G(GrammaInterpreter):
             @gfunc(lazy=True)
-            def f(self, ge: GExpr):
+            def f(self, ge: GExpr) -> Sample:
                 return self.cat(self.sample(ge), self.sample(ge))
 
         s = G('''
@@ -177,7 +177,7 @@ class TestInterpreter(unittest.TestCase):
     def test_denoted_choosein(self):
         class G(GrammaInterpreter):
             @gdfunc
-            def f(self, x: Sample):
+            def f(self, x: Sample) -> str:
                 return x.s
 
         s = G('''
@@ -240,7 +240,7 @@ class TestInterpreter(unittest.TestCase):
 
     def test_rep_gcode(self):
         class G(GrammaInterpreter):
-            pass
+            x:int
 
         s = G('''
                start := 'a'{`x-1`, `x+1`};

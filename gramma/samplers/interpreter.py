@@ -1,10 +1,9 @@
 from functools import reduce
 from types import CodeType
 # noinspection PyUnresolvedReferences
-from typing import Union, IO, Final, Dict, Any, Callable, List, TypeVar, Protocol, Type, Generator
+from typing import Union, IO, Final, Dict, Any, Callable, List, TypeVar, Protocol, Type, Generator, cast
 
-# numpy doesn't have type hints yet and data-science-type is missing numpy.random.Generator
-import numpy as np  # type: ignore
+import numpy as np
 
 from . import log
 from ..parser import GrammaGrammar, GFuncRef, GCode, GDFuncRef, GCat, GAlt, GTok, GRuleRef, GRep, GExpr, GVarRef, \
@@ -23,32 +22,37 @@ class RandomAPI:
     def __init__(self, seed=None):
         self.generator = np.random.Generator(np.random.MT19937(np.random.SeedSequence(seed)))
 
-    def choice(self, choices: List[T], weights=Union[None, List[Union[int, float]], np.ndarray]) -> T:
+    def choice(self, choices: List[T], weights: Union[None, List[Union[int, float]], np.ndarray]) -> T:
         if weights is None:
             weights = np.ones(len(choices))
         if not isinstance(weights, np.ndarray):
             weights = np.array(weights)
         p = weights / weights.sum()
-        return self.generator.choice(choices, p=p)
+        return cast(T, self.generator.choice(choices, p=p))
 
     def seed(self, v: int) -> None:
         self.generator = np.random.Generator(np.random.MT19937(np.random.SeedSequence(v)))
 
     def integers(self, lo: int, hi: int) -> int:
-        return self.generator.integers(lo, hi)
+        return cast(int, self.generator.integers(lo, hi))
 
     def geometric(self, p: float) -> float:
-        return self.generator.geometric(p)
+        return cast(float, self.generator.geometric(p))
 
 
 class GrammaSamplerError(Exception):
     pass
 
 
+class FuncType(Protocol):
+    def __call__(self, *args: Any, **kwargs: Any) -> Any:
+        ...
+
+
 class GFuncWrap:
     __slots__ = 'func', 'fname', 'lazy'
     fname: str
-    func: Callable
+    func: FuncType
     lazy: bool
 
     def __init__(self, func, fname, lazy=False):
@@ -71,7 +75,10 @@ class GDFuncWrap(GFuncWrap):
         return f'gdfunc {self.fname}'
 
 
-def make_decorator(wrapper_class: Type):
+U = TypeVar('U', bound=Union[Type[GDFuncWrap], Type[GFuncWrap]])
+
+
+def make_decorator(wrapper_class: U) -> Callable[..., Any]:
     def _decorate(func, **kw):
         fname = kw.pop('fname', func.__name__)
         return wrapper_class(func, fname, **kw)
@@ -102,7 +109,7 @@ class GCodeWrap:
         self.code = code
         self.compiled = compile(code.expr, '<GCode>', 'eval')
 
-    def __call__(self, sampler: 'GrammaInterpreter'):
+    def __call__(self, sampler: 'GrammaInterpreter') -> Any:
         return eval(self.compiled, gcode_globals, sampler.__dict__)
 
 
@@ -129,7 +136,7 @@ class SamplerInterface(Protocol):
     coro_gdfuncmap: Dict[GDFuncRef, GDFuncWrap]
     gcodemap: Dict[GCode, GCodeWrap]
 
-    def create_sample(self, *args, **kwargs) -> Sample:
+    def create_sample(self, *args: Any, **kwargs: Any) -> Sample:
         ...
 
     def get_unit(self) -> Sample:
@@ -176,9 +183,9 @@ class OperatorsImplementationSamplerMixin(SamplerInterface):
     def __init__(self):
         self.vars = DictStack()
 
-    def sample(self, ge: GExpr):
+    def sample(self, ge: GExpr) -> Sample:
         handler_name = 'sample_' + ge.__class__.__name__
-        m = getattr(self, handler_name, None)
+        m = cast(Callable[[GExpr], Sample], getattr(self, handler_name, None))
         if m is None:
             log.error(f'missing handler in {self.__class__.__name__}, {handler_name}')
             raise GrammaSamplerError('sampler is missing sample_* method')
@@ -276,11 +283,12 @@ class OperatorsImplementationSamplerMixin(SamplerInterface):
 
     def sample_GFuncRef(self, ge: GFuncRef) -> Sample:
         gfw = self.gfuncmap[ge]
+        func = cast(Callable[..., Sample], gfw.func)
         if gfw.lazy:
             fargs = ge.fargs
         else:
             fargs = [self.sample(c) for c in ge.fargs]
-        return gfw.func(self, *fargs)
+        return func(self, *fargs)
 
     def sample_GDenoted(self, ge: GDenoted) -> Sample:
         s = self.sample(ge.left)
@@ -316,7 +324,7 @@ class OperatorsImplementationSamplerMixin(SamplerInterface):
     #######################################################
 
     def coro_sample(self, ge: GExpr) -> Sample:
-        stack: List[Generator] = []
+        stack: List[Generator[Union[GExpr, Sample], Sample, None]] = []
 
         while True:
             handler_name = 'coro_sample_' + ge.__class__.__name__
@@ -335,7 +343,7 @@ class OperatorsImplementationSamplerMixin(SamplerInterface):
             ge = x
 
     def coro_evaluate_denotation(self, ge: GExpr) -> Any:
-        stack: List[Generator] = []
+        stack: List[Generator[Union[GExpr, Any], Any, None]] = []
 
         while True:
             handler_name = 'coro_evaluate_denotation_' + ge.__class__.__name__
@@ -508,7 +516,7 @@ class GrammaInterpreter(OperatorsImplementationSamplerMixin, GCodeHelpersSampler
     gcodemap: Dict[GCode, GCodeWrap]
 
     @staticmethod
-    def create_sample(*args, **kwargs) -> Sample:
+    def create_sample(*args: Any, **kwargs: Any) -> Sample:
         return Sample(*args, **kwargs)
 
     @staticmethod
@@ -597,10 +605,10 @@ class GrammaInterpreter(OperatorsImplementationSamplerMixin, GCodeHelpersSampler
         return self.gcodemap[gc](self)
 
     def eval_int(self, ge: Union[GTok, GCode]) -> int:
-        return ge.as_int() if isinstance(ge, GTok) else self.exec(ge)
+        return ge.as_int() if isinstance(ge, GTok) else cast(int, self.exec(ge))
 
     def eval_num(self, ge: Union[GTok, GCode]) -> Union[float, int]:
-        return ge.as_num() if isinstance(ge, GTok) else self.exec(ge)
+        return ge.as_num() if isinstance(ge, GTok) else cast(Union[float, int], self.exec(ge))
 
     def sample_start(self) -> Sample:
         ge = self.grammar.ruledefs['start'].rhs

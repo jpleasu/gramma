@@ -1,7 +1,6 @@
 #!/usr/bin/env python3
 from typing import Set, Dict, TypeVar, Generic, Iterable, Optional, List, Any, Protocol, AbstractSet
 
-T = TypeVar('T')
 
 
 class PushesAndPops(Protocol):
@@ -33,6 +32,7 @@ class Context(Generic[ObjT, ArgT]):
     def __exit__(self, exc_type, exc_val, exc_tb):
         self.obj.pop()
 
+T = TypeVar('T')
 
 class SetStack(Generic[T]):
     """
@@ -49,7 +49,7 @@ class SetStack(Generic[T]):
     def top(self) -> Set[T]:
         return self.stack[-1]
 
-    def add(self, item: T):
+    def add(self, item: T) -> None:
         self.top.add(item)
 
     def update(self, items: Iterable[T]) -> None:
@@ -109,10 +109,10 @@ class DictStack(Generic[K, V]):
 
     __getitem__ = get
 
-    def __setitem__(self, key: K, item: V):
+    def __setitem__(self, key: K, item: V) -> None:
         self.top[key] = item
 
-    def update(self, items: Dict[K, V]):
+    def update(self, items: Dict[K, V]) -> None:
         self.top.update(items)
 
     def push(self, d: Optional[Dict[K, V]] = None) -> None:

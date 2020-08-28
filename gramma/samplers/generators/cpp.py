@@ -5,16 +5,19 @@ emit C++ source for a function that generates samples from the GLF input file
 import os
 import re
 import textwrap
+from typing import Dict, cast, List, Union, Iterable, Optional, Generator
 
-from gramma import *
+from gramma.parser import GExpr, GTok, GFuncRef, GInternal, GVarRef, GCode, GRuleRef, RepDist, \
+    GrammaParseError, GAlt, RuleDef, GDenoted, GCat, GTern, GChooseIn, GRange, GRep, GrammaGrammar
 
 # XXX more than this needs to change to change encoding..
 ENCODING = 'utf8'
 
 
-def encode_as_cpp(s, quote):
+def encode_as_cpp(s: Union[str, bytes, int], quote: str) -> str:
     quoteord = ord(quote)
     r = quote
+    b: Iterable[int]
     if isinstance(s, bytes):
         b = s
     elif isinstance(s, int):
@@ -41,11 +44,11 @@ def encode_as_cpp(s, quote):
     return r + quote
 
 
-def encode_as_cpp_str(s):
+def encode_as_cpp_str(s: Union[str, bytes]) -> str:
     return encode_as_cpp(s, quote='"')
 
 
-def encode_as_cpp_char(c):
+def encode_as_cpp_char(c: str) -> str:
     return encode_as_cpp(ord(c), quote="'")
 
 
@@ -102,7 +105,15 @@ class Emitter(object):
                 closure()
 
 
+# noinspection PyMethodMayBeStatic
 class CppGen(Emitter):
+    sampler_classname: str
+    grammar: GrammaGrammar
+
+    @property
+    def ruledefs(self) -> Dict[str, RuleDef]:
+        return self.grammar.ruledefs
+
     def __init__(self, glf_file, cpp_file, sampler_classname=None, impl_include_file=None):
         """
         create and emit a C++ implementions of a gramma samlper.
@@ -123,22 +134,17 @@ class CppGen(Emitter):
         self.sampler_classname = sampler_classname
 
         glf_source = glf_file.read()
-
-        lt = GrammaGrammar.GLF_PARSER.parse(glf_source)
-
-        self.ruledefs = {}
-        for ruledef in lt.children:
-            lp = LarkTransformer()
-            self.ruledefs[ruledef.children[0].value] = lp.visit(ruledef.children[1])
+        self.grammar = GrammaGrammar(glf_source)
 
         self.ident = {}
-        for ge in self.ruledefs.values():
-            self.assign_ids(ge)
+        for ruledef in self.ruledefs.values():
+            self.assign_ids(ruledef.rhs)
 
         # extract gfunc call patterns? contexts
 
         if impl_include_file is None:
             impl_include_file = basename + '_sampler_impl.cpp'
+
         if not os.path.exists(impl_include_file):
             with open(impl_include_file, 'w') as out:
                 impl = Emitter(out)
@@ -214,25 +220,25 @@ class CppGen(Emitter):
                ''')
 
             self.emit('/* === nodes=== */')
-            for ge in self.ruledefs.values():
-                self.dump(ge)
+            for ruledef in self.ruledefs.values():
+                self.dump(ruledef.rhs)
 
             self.emit('/* === ruledefs=== */')
-            for rname, ge in self.ruledefs.items():
+            for ruledef in self.ruledefs.values():
                 with self.indentation(f'''\
                     // ruledef
-                    string_t {rname}() {{
+                    string_t {ruledef.rname}() {{
                 ''', '}'):
                     with self.indentation('#if defined(USE_SIDEEFFECT_API)', flushleft=True):
                         self.emit(f'''\
-                            sideeffect_t assoc_value = push(rule_t::{rname});
-                            string_t subsample={self.invoke(ge)};
+                            sideeffect_t assoc_value = push(rule_t::{ruledef.rname});
+                            string_t subsample={self.invoke(ruledef.rhs)};
                             pop(assoc_value, subsample);
                             return subsample;
                         ''')
                     with self.indentation('#else', '#endif', flushleft=True):
                         self.emit(f'''
-                            return {self.invoke(ge)};
+                            return {self.invoke(ruledef.rhs)};
                         ''')
         with self.indentation('#if defined(BUILDMAIN)', '#endif', flushleft=True):
             self.emit(f'''\
@@ -248,19 +254,17 @@ class CppGen(Emitter):
                 }}
             ''')
 
-    def gen_gfuncs(self, ge: GExpr = None):
+    def gen_gfuncs(self, ge: Optional[GExpr] = None) -> Generator[GFuncRef, None, None]:
         if ge is None:
-            for ge in self.ruledefs.values():
-                for gf in self.gen_gfuncs(ge):
-                    yield gf
-        if isinstance(ge, GFunc):
+            for ruledef in self.ruledefs.values():
+                yield from self.gen_gfuncs(ruledef.rhs)
+        if isinstance(ge, GFuncRef):
             yield ge
         if isinstance(ge, GInternal):
             for c in ge.children:
-                for gf in self.gen_gfuncs(c):
-                    yield gf
+                yield from self.gen_gfuncs(c)
 
-    def as_gfunc_arg(self, ge: GExpr):
+    def as_gfunc_arg(self, ge: GExpr) -> str:
         """
         Generate a C++ callable to pass into a gfunc.
 
@@ -269,24 +273,24 @@ class CppGen(Emitter):
         """
         if isinstance(ge, GTok):
             return f'[]() {{return {self.invoke(ge)};}}'
-        elif isinstance(ge, GFunc):
+        elif isinstance(ge, GFuncRef):
             return f'[]() {{return {self.invoke(ge)};}}'
-        elif isinstance(ge, GVar):
+        elif isinstance(ge, GVarRef):
             return f'[]() {{return {self.invoke(ge)};}}'
         elif isinstance(ge, GCode):
             return f'[&]() {{return {self.invoke(ge)};}}'
-        elif isinstance(ge, GRule):
+        elif isinstance(ge, GRuleRef):
             return f'std::bind(&{self.sampler_classname}::{ge.rname}, this)'
         else:
             return f'std::bind(&{self.sampler_classname}::{self.ident[ge]}, this)'
 
-    def invoke(self, ge: GExpr):
-        if isinstance(ge, GRule):
+    def invoke(self, ge: GExpr) -> str:
+        if isinstance(ge, GRuleRef):
             return f'{ge.rname}()'
-        elif isinstance(ge, GFunc):
+        elif isinstance(ge, GFuncRef):
             args = ','.join(self.as_gfunc_arg(c) for c in ge.fargs)
             return f'{ge.fname}({args})'
-        elif isinstance(ge, GVar):
+        elif isinstance(ge, GVarRef):
             return f'get_var({encode_as_cpp_str(ge.vname)})'
         elif isinstance(ge, GCode):
             return ge.expr
@@ -296,39 +300,39 @@ class CppGen(Emitter):
             return f'{self.ident[ge]}()'
 
     def invoke_rep_bound(self, x, default):
-        if isinstance(x, int):
-            return str(x)
+        if isinstance(x, GTok):
+            return x.value  # use value as written
         elif isinstance(x, GCode):
             return self.invoke(x)
         else:
             return str(default)
 
-    def invoke_rep_dist(self, dist: RepDist):
+    def invoke_rep_dist(self, dist: RepDist) -> str:
         """
         generate C++ source to randomly sample the given RepDist.
 
         assume C++ variables lo, hi, and rand are available
         """
         fstr = 'std::min(std::max(lo, {0}), hi)'
-        if dist.name == 'unif':
+        if dist.name.startswith('unif'):
             return 'std::uniform_int_distribution<int>(lo,hi)(rand)'
-        elif dist.name == 'geom':
+        elif dist.name.startswith('geom'):
             # "a"{geom(n)} has an average of n copies of "a"
-            parm = 1 / float(dist.args[0] + 1)
+            parm = 1 / float(dist.args[0].as_num() + 1)
             return fstr.format(f'(std::geometric_distribution<int>({parm})(rand)-1)')
-        elif dist.name == 'norm':
+        elif dist.name.startswith('norm'):
             args = ','.join(str(x) for x in dist.args)
             return fstr.format(f'static_cast<int>(std::normal_distribution<double>({args})(rand)+.5)')
-        elif dist.name == 'binom':
+        elif dist.name.startswith('binom'):
             args = ','.join(str(x) for x in dist.args)
             return fstr.format(f'(std::binomial_distribution<int>({args})(rand))')
-        elif dist.name == 'choose':
+        elif dist.name.startswith('choose'):
             args = ','.join(str(x) for x in dist.args)
             return fstr.format(f'([](){{int arr[]={args};return uniform_selection(arr);}}())')
         else:
-            raise GrammaParseError('no dist %s' % (dist.name))
+            raise GrammaParseError('unknown repdist %s' % dist.name)
 
-    def dump(self, ge: GExpr):
+    def dump(self, ge: GExpr) -> None:
         # emit children first
         if isinstance(ge, GInternal):
             for c in ge.children:
@@ -338,8 +342,8 @@ class CppGen(Emitter):
         if isinstance(ge, GTok):
             pass  # invoked directly
         elif isinstance(ge, GAlt):
-            def emit_cases():
-                for i, c in enumerate(ge.children):
+            def emit_cases(galt: GAlt = cast(GAlt, ge)) -> None:
+                for i, c in enumerate(galt.children):
                     self.emit(f'''
                         case {i}:
                           return {self.invoke(c)};
@@ -364,7 +368,8 @@ class CppGen(Emitter):
                         emit_cases()
                     self.emit('return {}; // throw exception?')
             else:
-                weights = ','.join(str(d) for d in ge.nweights)
+                # GTok.value will use the value as written in the glf
+                weights = ','.join(w.value for w in cast(List[GTok], ge.weights))
                 with self.indentation(f'''\
                     // galt
                     static constexpr double {gid}_weights[] {{{weights}}};
@@ -376,9 +381,9 @@ class CppGen(Emitter):
                     with self.indentation('switch(i) {', '}'):
                         emit_cases()
                     self.emit('return {}; // throw exception?')
-        elif isinstance(ge, GDen):
+        elif isinstance(ge, GDenoted):
             with self.indentation(f'''\
-                // gden
+                // gdenoted
                 string_t {gid}() {{
             ''', '}'):
                 self.emit(f'''\
@@ -395,9 +400,9 @@ class CppGen(Emitter):
                 for c in ge.children[1:]:
                     self.emit(f's+={self.invoke(c)};')
                 self.emit(f'return s;')
-        elif isinstance(ge, GRule):
+        elif isinstance(ge, GRuleRef):
             pass  # invoked directly
-        elif isinstance(ge, GFunc):
+        elif isinstance(ge, GFuncRef):
             pass  # invoked directly
         elif isinstance(ge, GTern):
             with self.indentation(f'''\
@@ -428,7 +433,7 @@ class CppGen(Emitter):
                     pop_vars();
                     return result;
                 ''')
-        elif isinstance(ge, GVar):
+        elif isinstance(ge, GVarRef):
             pass  # invoked directly
         elif isinstance(ge, GCode):
             pass  # invoked directly
@@ -480,7 +485,7 @@ class CppGen(Emitter):
                     return "?";
                 ''')
 
-    def assign_ids(self, ge: GExpr):
+    def assign_ids(self, ge: GExpr) -> None:
         # self.ident[ge] = 'f%x' % id(ge)
         self.ident[ge] = 'f%d' % len(self.ident)
 
@@ -489,16 +494,16 @@ class CppGen(Emitter):
                 self.assign_ids(c)
 
 
-if __name__ == '__main__':
+def main():
     import argparse
 
     parser = argparse.ArgumentParser(description='generate C++ source for a generator from GLF')
     parser.add_argument('glf', metavar='GLF_IN',
-                        type=argparse.FileType('r'), help='input GLF file')
+                        type=argparse.FileType(), help='input GLF file')
     parser.add_argument('-o', '--out', dest='cpp', metavar='CPP_OUT',
                         type=argparse.FileType('w'), help='output C++ file', default='-')
-    args = parser.parse_args()
+    commandline_args = parser.parse_args()
 
-    CppGen(args.glf, args.cpp)
+    CppGen(commandline_args.glf, commandline_args.cpp)
 
 # vim: ts=4 sw=4

@@ -1,5 +1,9 @@
-.idea/
-.ropeproject/
+.idea
+.mypy_cache
+.ropeproject
+.tox
+.pytest_cache
+.coverage
 *.pyc
 *.so
 *~
