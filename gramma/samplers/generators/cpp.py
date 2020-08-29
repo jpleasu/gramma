@@ -2,6 +2,7 @@
 """
 emit C++ source for a function that generates samples from the GLF input file
 """
+import sys
 import os
 import re
 import textwrap
@@ -202,8 +203,12 @@ class CppGen(Emitter):
                     args = ','.join('method_t arg%d' % i for i in range(nargs))
                     with impl.indentation(f'string_t {fname}({args}){{', '}'):
                         impl.emit('return "?";')
+        include_path = os.path.join(sys.prefix, 'include')
         with self.indentation(f'''\
-            #include "gramma.hpp"
+            /* build with
+                g++ -O3 -I {include_path} generated.cpp -o sampler
+            */
+            #include "gramma/gramma.hpp"
 
             // generated from {glf_file.name} 
             class {sampler_classname} : public gramma::SamplerBase {{
