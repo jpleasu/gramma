@@ -187,8 +187,9 @@ class OperatorsImplementationSamplerMixin(SamplerInterface):
         handler_name = 'sample_' + ge.__class__.__name__
         m = cast(Optional[Callable[[GExpr], Sample]], getattr(self, handler_name, None))
         if m is None:
-            log.error(f'missing handler in {self.__class__.__name__}, {handler_name}')
-            raise GrammaSamplerError('sampler is missing sample_* method')
+            msg = f'missing handler in {self.__class__.__name__}: {handler_name}'
+            log.error(msg)
+            raise GrammaSamplerError(msg)
         return m(ge)
 
     def sample_GTok(self, ge: GTok) -> Sample:
@@ -300,8 +301,9 @@ class OperatorsImplementationSamplerMixin(SamplerInterface):
         handler_name = 'evaluate_denotation_' + ge.__class__.__name__
         m = getattr(self, handler_name, None)
         if m is None:
-            log.error(f'missing handler in {self.__class__.__name__}, {handler_name}')
-            raise GrammaSamplerError('sampler is missing evaluate_denotation_* method')
+            msg = f'missing handler in {self.__class__.__name__}: {handler_name}'
+            log.error(msg)
+            raise GrammaSamplerError(msg)
         return m(ge)
 
     evaluate_denotation_GVarRef = sample_GVarRef
@@ -330,8 +332,9 @@ class OperatorsImplementationSamplerMixin(SamplerInterface):
             handler_name = 'coro_sample_' + ge.__class__.__name__
             m = getattr(self, handler_name, None)
             if m is None:
-                log.error(f'missing handler in {self.__class__.__name__}, {handler_name}')
-                raise GrammaSamplerError('sampler is missing coro_sample_* method')
+                msg = f'missing handler in {self.__class__.__name__}: {handler_name}'
+                log.error(msg)
+                raise GrammaSamplerError(msg)
             coro = m(ge)
             x: Union[Sample, GExpr] = next(coro)
             while isinstance(x, Sample):
@@ -349,8 +352,9 @@ class OperatorsImplementationSamplerMixin(SamplerInterface):
             handler_name = 'coro_evaluate_denotation_' + ge.__class__.__name__
             m = getattr(self, handler_name, None)
             if m is None:
-                log.error(f'missing handler in {self.__class__.__name__}, {handler_name}')
-                raise GrammaSamplerError('sampler is missing coro_evaluate_denotation_* method')
+                msg = f'missing handler in {self.__class__.__name__}: {handler_name}'
+                log.error(msg)
+                raise GrammaSamplerError(msg)
             coro = m(ge)
             x: Union[Any, GExpr] = next(coro)
             while not isinstance(x, GExpr):
@@ -587,9 +591,9 @@ class GrammaInterpreter(OperatorsImplementationSamplerMixin, GCodeHelpersSampler
                 self.gcodemap[gc] = GCodeWrap(gc)
 
         if len(missing) > 0:
-            for ge in missing:
-                log.error(f'no implementation in {self.__class__.__name__} for {ge.__class__.__name__} "{ge.fname}"')
-            raise GrammaSamplerError('sampler is missing function implementations')
+            msg = f'missing handlers in {self.__class__.__name__}:  {",".join(ge.fname for ge in missing)}'
+            log.error(msg)
+            raise GrammaSamplerError(msg)
 
     def _(self, return_=None, **kw):
         """

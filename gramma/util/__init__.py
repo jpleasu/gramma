@@ -4,4 +4,6 @@ __all__ = [
 
 ]
 
+from . import emitters
 from .containers import SetStack, DictStack
+

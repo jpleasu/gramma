@@ -21,9 +21,9 @@ namespace gramma {
         rand_t rand;
 
         template <size_t N>
-        void normalize(double (&arr)[N]) {
-            double sum = std::accumulate(arr, arr + N, 0.0);
-            for (double &x : arr)
+        void normalize(double (&weights)[N]) {
+            double sum = std::accumulate(weights, weights + N, 0.0);
+            for (double &x : weights)
                 x /= sum;
         }
 
@@ -40,16 +40,27 @@ namespace gramma {
             iss >> rand;
         }
 
-        std::uniform_real_distribution<double> u01{ 0.0, 1.0 };
-
-        template <size_t N>
-        int weighted_select(const double (&arr)[N]) {
-            return std::discrete_distribution<int>(arr, arr + N)(rand);
+        template <typename T, size_t N>
+        T choice(const T (&choices)[N]) {
+            return choices[std::uniform_int_distribution<int>(0, N - 1)(rand)];
+        }
+        template <typename T, size_t N>
+        T choice(const T (&choices)[N], const double (&weights)[N]) {
+            return choices[std::discrete_distribution<int>(weights, weights + N)(rand)];
         }
 
-        template <typename T, size_t N>
-        T uniform_selection(const T (&arr)[N]) {
-            return arr[std::uniform_int_distribution<int>(0, N - 1)(rand)];
+        template <size_t N>
+        int weighted_select(const double (&weights)[N]) {
+            return std::discrete_distribution<int>(weights, weights + N)(rand);
+        }
+
+        std::uniform_real_distribution<double> u01{ 0.0, 1.0 };
+        double uniform() {
+            return u01(rand);
+        }
+
+        double uniform(double lo, double hi) {
+            return std::uniform_real_distribution<double>(lo, hi)(rand);
         }
     };
 
@@ -67,12 +78,16 @@ namespace gramma {
         void pop_vars() {
             vars.pop_front();
         }
-        void set_var(int name_id, const SampleT &value) {
-            vars.back()[name_id] = value;
+
+        template <class T>
+        void set_var(int varid, T value) {
+            static_assert(std::is_base_of<SampleT, T>::value, "set_var values must be samples");
+            vars.back()[varid] = std::forward<T>(value);
         }
-        SampleT get_var(int name_id) {
+
+        SampleT get_var(int varid) {
             for (auto &m : vars) {
-                auto it = m.find(name_id);
+                auto it = m.find(varid);
                 if (it != m.end())
                     return it->second;
             }
@@ -84,11 +99,11 @@ namespace gramma {
         }
 
         SampleT cat(const SampleT &a, const SampleT &b) {
-          return impl().cat(a,b);
+            return impl().cat(a, b);
         }
 
         SampleT denote(const SampleT &a, const DenotationT &b) {
-          return impl().denote(a,b);
+            return impl().denote(a, b);
         }
 
         RandomAPI random;

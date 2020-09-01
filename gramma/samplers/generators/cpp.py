@@ -23,7 +23,7 @@ import re
 from typing import Dict, cast, List, Union, Iterable, Optional, Generator, IO, Set, Callable
 
 from ...parser import GExpr, GTok, GFuncRef, GInternal, GVarRef, GCode, GRuleRef, RepDist, \
-    GrammaParseError, GAlt, RuleDef, GDenoted, GCat, GTern, GChooseIn, GRange, GRep, GrammaGrammar, log
+    GrammaParseError, GAlt, RuleDef, GDenoted, GCat, GTern, GChooseIn, GRange, GRep, GrammaGrammar, log, GDFuncRef
 
 from gramma.util.emitters import Emitter
 
@@ -122,6 +122,14 @@ class CppEmitter(Emitter):
             self.emit('''\
                 public:
                 using gramma::SamplerBase<ImplT,SampleT,DenotationT>::impl;
+                
+                using gramma::SamplerBase<ImplT,SampleT,DenotationT>::random;
+                
+                using gramma::SamplerBase<ImplT,SampleT,DenotationT>::set_var;
+                using gramma::SamplerBase<ImplT,SampleT,DenotationT>::get_var;
+                using gramma::SamplerBase<ImplT,SampleT,DenotationT>::push_vars;
+                using gramma::SamplerBase<ImplT,SampleT,DenotationT>::pop_vars;
+                
                 using gramma::SamplerBase<ImplT,SampleT,DenotationT>::cat;
                 using gramma::SamplerBase<ImplT,SampleT,DenotationT>::denote;
             ''')
@@ -132,6 +140,13 @@ class CppEmitter(Emitter):
             self.emit(f'''\
                 enum class rule_t {{{rules}}};
                 enum class varid_t {{{varids}}};
+
+                SampleT get_var(varid_t varid) {{
+                    return get_var(static_cast<int>(varid));
+                }}
+                void set_var(varid_t varid, const SampleT &value) {{
+                    return set_var(static_cast<int>(varid), value);
+                }}
             ''')
 
             self.emit('/* === nodes === */')
@@ -154,6 +169,10 @@ class CppEmitter(Emitter):
         """
         emit a c++ method that samples ge
         """
+        # skip types that are only every directly invoked
+        if isinstance(ge, (GTok, GCode, GDFuncRef, GFuncRef, GRuleRef, GVarRef)):
+            return
+
         # emit children first
         if isinstance(ge, GInternal):
             for c in ge.children:
@@ -162,15 +181,10 @@ class CppEmitter(Emitter):
         handler_name = 'emit_method_' + ge.__class__.__name__
         m = cast(Optional[Callable[[GExpr], None]], getattr(self, handler_name, None))
         if m is None:
-            log.error(f'missing handler in {self.__class__.__name__}, {handler_name}')
-            raise CppEmitterError('emitter is missing emit_method_* method')
+            msg = f'missing handler in {self.__class__.__name__}: {handler_name}'
+            log.error(msg)
+            raise CppEmitterError(msg)
         return m(ge)
-
-    def emit_method_GTok(self, ge: GTok) -> None:
-        pass  # GToks are inlined
-
-    def emit_method_GRuleRef(self, ge: GRuleRef) -> None:
-        pass
 
     def emit_method_GRep(self, ge: GRep) -> None:
         gid = self.ident[ge]
@@ -202,6 +216,99 @@ class CppEmitter(Emitter):
                 self.emit(f's=cat(s,{self.invoke(c)});')
             self.emit(f'return s;')
 
+    def emit_method_GAlt(self, ge: GAlt) -> None:
+        gid = self.ident[ge]
+
+        if ge.dynamic:
+            weights = ','.join(
+                f'static_cast<double>({self.invoke(w)})' if isinstance(w, GCode) else w.value for w in ge.weights
+            )
+            weights = '{' + weights + '}'
+        else:
+            fixed_weights = ','.join(w.value for w in cast(List[GTok], ge.weights))
+            self.emit(f'''
+                static constexpr double {gid}_weights[] {{{fixed_weights}}};
+            ''')
+            weights = f'{gid}_weights'
+
+        with self.indentation(f'''\
+            // GAlt {ge.locstr()}
+            SampleT {gid}() {{
+        ''', '}'):
+            self.emit(f'''\
+                int i = random.weighted_select({weights});
+            ''')
+            with self.indentation('switch(i) {', '}'):
+                for i, c in enumerate(ge.children):
+                    self.emit(f'''
+                       case {i}:
+                         return {self.invoke(c)};
+                   ''')
+
+            self.emit('return {}; // throw exception?')
+
+    def emit_method_GTern(self, ge: GTern) -> None:
+        gid = self.ident[ge]
+
+        with self.indentation(f'''\
+            // GTern {ge.locstr()}
+            SampleT {gid}() {{
+        ''', '}'):
+            self.emit(f'''\
+                return ({self.invoke(ge.code)})?({self.invoke(ge.children[0])}):({self.invoke(ge.children[1])});
+            ''')
+
+    def emit_method_GChooseIn(self, ge: GChooseIn) -> None:
+        gid = self.ident[ge]
+
+        with self.indentation(f'''\
+            // GChooseIn {ge.locstr()}
+            SampleT {gid}() {{
+        ''', '}'):
+            self.emit(f'''\
+                push_vars();
+            ''')
+            for name, value_dist in zip(ge.vnames, ge.dists):
+                self.emit(f'''\
+                    set_var(varid_t::{name}, {self.invoke(value_dist)});
+                ''')
+            self.emit(f'''\
+                SampleT result = {self.invoke(ge.child)};
+                pop_vars();
+                return result;
+            ''')
+
+    def emit_method_GRange(self, ge: GRange) -> None:
+        gid = self.ident[ge]
+
+        encoded = [c.encode(ENCODING) for c in ge.chars]
+        if any(len(c) > 1 for c in encoded):
+            chars = ','.join(encode_as_cpp_str(c) for c in ge.chars)
+            with self.indentation(f'''\
+                // GRange {ge.locstr()}
+                static constexpr char const *{gid}_chars[] {{{chars}}};
+                SampleT {gid}() {{
+            ''', '}'):
+                self.emit(f'''\
+                    return random.choice({gid}_chars);
+                ''')
+        else:
+            chars = ','.join(encode_as_cpp_char(c) for c in ge.chars)
+            with self.indentation(f'''\
+                // GRange {ge.locstr()}
+                static constexpr char {gid}_chars[] {{{chars}}};
+                SampleT {gid}() {{
+            ''', '}'):
+                self.emit(f'''\
+                    return {{1, random.choice({gid}_chars)}};
+                ''')
+
+    def Xemit_method_GRep(self, ge: GRep) -> None:
+        pass
+
+    def Xemit_method_GDenoted(self, ge: GDenoted) -> None:
+        pass
+
     def invoke(self, ge: GExpr) -> str:
         """
         return a C++ expression that samples the given GExpr when executed.
@@ -212,7 +319,7 @@ class CppEmitter(Emitter):
             args = ','.join(self.as_gfunc_arg(c) for c in ge.fargs)
             return f'{ge.fname}({args})'
         elif isinstance(ge, GVarRef):
-            return f'get_var({encode_as_cpp_str(ge.vname)})'
+            return f'get_var(varid_t::{ge.vname})'
         elif isinstance(ge, GCode):
             return ge.expr
         elif isinstance(ge, GTok):
@@ -248,7 +355,8 @@ class CppEmitter(Emitter):
         elif isinstance(x, GCode):
             return self.invoke(x)
 
-    def invoke_rep_dist(self, dist: RepDist) -> str:
+    @staticmethod
+    def invoke_rep_dist(dist: RepDist) -> str:
         """
         generate C++ source to sample the given RepDist.
 
@@ -272,6 +380,55 @@ class CppEmitter(Emitter):
             return fstr.format(f'([](){{int arr[]={args};return uniform_selection(arr);}}())')
         else:
             raise GrammaParseError('unknown repdist %s' % dist.name)
+
+    def emit_simple_main(self, count: Optional[int] = 1, seed: int = 1) -> None:
+        self.emit('''\
+            #include <string>
+            #include <iostream>
+            #include <utility>
+        ''')
+
+        self.emit_base()
+
+        self.emit(f'''\
+
+            // customize sample and denotation types
+
+            using denotation_t = int;
+
+            struct sample_t:  public std::string {{
+                denotation_t d;
+
+                template<class T>
+                sample_t(T s, denotation_t d=0) : std::string(std::forward<T>(s)), d(d) {{
+                }}
+                sample_t(int count, char c, denotation_t d=0) : std::string(count, c), d(d) {{
+                }}
+
+                sample_t() = default;
+            }};
+
+
+            // a sampler
+            class {self.grammar_name}: public {self.grammar_name}_base<{self.grammar_name}, sample_t, denotation_t> {{
+                public:
+                sample_t cat(const sample_t &a, const sample_t &b) {{
+                    return a+b;
+                }}
+                sample_t denote(const sample_t &a, const denotation_t &b) {{
+                    return sample_t(a,b);
+                }}
+            }};
+
+            // and main
+            int main() {{
+                auto s={self.grammar_name}();
+                s.random.set_seed({seed});
+                for({';;' if count is None else 'int n=0;n<' + str(count) + ';++n'}) 
+                    std::cout << s.start();
+                return 0;
+            }}
+        ''')
 
 
 # noinspection PyMethodMayBeStatic
@@ -530,19 +687,15 @@ class CppGen(Emitter):
                     ''')
 
             if ge.dynamic:
-                # compute weight expressions and normalize
-
                 weights = ','.join(
                     f'static_cast<double>({self.invoke(w)})' if isinstance(w, GCode) else str(w) for w in ge.weights
                 )
                 with self.indentation(f'''\
-                    // galt - dynamic
+                    // GAlt dynamic {ge.locstr()}
                     string_t {gid}() {{
                 ''', '}'):
                     self.emit(f'''\
-                        double weights[] {{{weights}}};
-                        // normalize(weights);
-                        int i = weighted_select(weights);
+                        int i = weighted_select({{{weights}}});
                     ''')
                     with self.indentation('switch(i) {', '}'):
                         emit_cases()
@@ -551,7 +704,7 @@ class CppGen(Emitter):
                 # GTok.value will use the value as written in the glf
                 weights = ','.join(w.value for w in cast(List[GTok], ge.weights))
                 with self.indentation(f'''\
-                    // galt
+                    // GAlt static {ge.locstr()}
                     static constexpr double {gid}_weights[] {{{weights}}};
                     string_t {gid}() {{
                 ''', '}'):

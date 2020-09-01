@@ -2,7 +2,7 @@
 
 import unittest
 from io import StringIO
-from typing import cast
+from typing import cast, Optional
 import os
 import sys
 import shutil
@@ -18,17 +18,10 @@ from gramma.samplers.generators.cpp import CppEmitter
 EXAMPLE_DIR = os.path.join(os.path.dirname(__file__), '..', 'examples')
 INCLUDE_DIR = os.path.join(os.path.dirname(__file__), '..', 'include')
 
-cxx = shutil.which('clang++') or shutil.which('gcc')
-
-
-def trybuild(sourcefile):
-    try:
-        with tempfile.NamedTemporaryFile() as tmpfile:
-            if subprocess.call([cxx, '-I', INCLUDE_DIR, '-o', tmpfile.name, sourcefile]) == 0:
-                return True
-    except:
-        pass
-    return False
+_CXX: Optional[str] = shutil.which('clang++') or shutil.which('gcc')
+if _CXX is None:
+    raise SystemError('no compiler found')
+CXX: str = _CXX
 
 
 class TestInvokes(unittest.TestCase):
@@ -36,43 +29,22 @@ class TestInvokes(unittest.TestCase):
     the C++ generator treats
     """
 
-    def assertSampleEquals(self, glf, sample):
+    def assertSampleEquals(self, glf: str, expected: str, count: Optional[int] = 10, seed: int = 1) -> None:
         g = GrammaGrammar(glf)
         with tempfile.NamedTemporaryFile(mode='w', suffix='.cpp', encoding='utf8') as tmpsourcefile:
             e = CppEmitter(tmpsourcefile, g, 'test_grammar', echo=sys.stderr)
-            e.emit('''\
-                #include <string>
-                #include <iostream>
-            ''')
-
-            e.emit_base()
-
-            e.emit('''\
-                // a sampler
-                class test_grammar: public test_grammar_base<test_grammar, std::string, int> {
-                    public:
-                    std::string cat(const std::string &a, const std::string &b) {
-                        return a+b;
-                    }
-                };
-            
-                // and main
-                int main() {
-                    auto s=test_grammar();
-                    s.random.set_seed(1);
-                    std::cout << s.start() << "\\n";
-                    return 0;
-                }
-            ''')
+            e.emit_simple_main(count=count, seed=seed)
 
             tmpexecutable = tempfile.NamedTemporaryFile(dir=os.getcwd(), delete=False)
+
             try:
-                result = subprocess.call([cxx, '-I', INCLUDE_DIR, '-o', tmpexecutable.name, tmpsourcefile.name])
+                result = subprocess.call(
+                    [CXX, '-std=c++17', '-I', INCLUDE_DIR, '-o', tmpexecutable.name, tmpsourcefile.name])
                 self.assertEqual(result, 0, 'failed to build')
                 tmpexecutable.close()
 
                 out = subprocess.check_output([tmpexecutable.name], encoding='utf8')
-                self.assertEqual(out, sample)
+                self.assertEqual(out, expected)
             finally:
                 if os.path.exists(tmpexecutable.name):
                     os.unlink(tmpexecutable.name)
@@ -80,9 +52,30 @@ class TestInvokes(unittest.TestCase):
     def test_GCat(self):
         self.assertSampleEquals('''
             start := 'a' . 'b';
-        ''', 'ab\n')
+        ''', 'ab' * 10)
 
-    def xtest_variety(self):
+    def test_GAlt(self):
+        self.assertSampleEquals('''
+            start := 'a' | 'b';
+        ''', 'aaaaabaabb')
+
+    def test_GTern(self):
+        self.assertSampleEquals('''
+            start := `random.uniform()<.7` ? 'a' : 'b';
+        ''', 'aaaaabaaaa')
+
+    def test_GChooseIn(self):
+        self.assertSampleEquals('''
+            start := choose x ~ ('a'|'b') in x.x.x.' ';
+        ''', 'aaa aaa aaa aaa aaa bbb aaa aaa bbb bbb ')
+
+    def test_GRange(self):
+        self.assertSampleEquals('''
+            start := ['a'..'z'];
+        ''', 'ddlajxmboq')
+
+    @staticmethod
+    def xtest_variety():
         with open(os.path.join(EXAMPLE_DIR, 'variety', 'variety.glf')) as infile:
             g = GrammaGrammar(infile.read())
 
