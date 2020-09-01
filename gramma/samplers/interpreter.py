@@ -1,6 +1,5 @@
 from functools import reduce
 from types import CodeType
-# noinspection PyUnresolvedReferences
 from typing import Union, IO, Final, Dict, Any, Callable, List, TypeVar, Protocol, Type, Generator, cast, Optional
 
 import numpy as np
@@ -22,7 +21,7 @@ class RandomAPI:
     def __init__(self, seed=None):
         self.generator = np.random.Generator(np.random.MT19937(np.random.SeedSequence(seed)))
 
-    def choice(self, choices: List[T], weights: Union[None, List[Union[int, float]], np.ndarray]) -> T:
+    def choice(self, choices: List[T], weights: Union[None, List[Union[int, float]], np.ndarray] = None) -> T:
         if weights is None:
             weights = np.ones(len(choices))
         if not isinstance(weights, np.ndarray):
@@ -36,8 +35,14 @@ class RandomAPI:
     def integers(self, lo: int, hi: int) -> int:
         return cast(int, self.generator.integers(lo, hi))
 
-    def geometric(self, p: float) -> float:
-        return cast(float, self.generator.geometric(p))
+    def geometric(self, p: float) -> int:
+        return cast(int, self.generator.geometric(p))
+
+    def normal(self, mean: float, std: float) -> float:
+        return cast(float, self.generator.normal(mean, std))
+
+    def binomial(self, n: int, p: float) -> int:
+        return cast(int, self.generator.binomial(n, p))
 
 
 class GrammaSamplerError(Exception):
@@ -221,22 +226,27 @@ class OperatorsImplementationSamplerMixin(SamplerInterface):
         else:
             hi = self.eval_int(ge.hi)
 
-        d = ge.dist.name
+        dist = ge.dist
         n: int
         if lo == hi and lo is not None:
             n = lo
-        elif d.startswith('unif'):
+        elif dist.name.startswith('unif'):
             if lo is None:
                 lo = 0
             if hi is None:
                 hi = 2 ** 32
             n = self.random.integers(lo, hi + 1)
-        elif d.startswith('geom'):
+        elif dist.name.startswith('geom'):
             # geom(n) samples have a mean of n
-            n = int(.5 + self.random.geometric(1 / (ge.dist.args[0].as_int() + 1)))
-
+            n = self.random.geometric(1 / (dist.args[0].as_int() + 1)) - 1
+        elif dist.name.startswith('norm'):
+            n = int(.5 + self.random.normal(dist.args[0].as_float(), dist.args[1].as_float()))
+        elif dist.name.startswith('binom'):
+            n = self.random.binomial(dist.args[0].as_int(), dist.args[1].as_float())
+        elif dist.name == 'choose' or dist.name == 'choice':
+            n = self.random.choice([a.as_int() for a in dist.args])
         else:
-            raise GrammaSamplerError(f"sampler has no handler for repetition distrituion {d}")
+            raise GrammaSamplerError(f"sampler has no handler for repetition distrituion {dist.name}")
 
         # truncate
         if lo is not None:

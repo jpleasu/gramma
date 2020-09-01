@@ -236,7 +236,7 @@ class TestInterpreter(unittest.TestCase):
                start := 'a'{geom(3)};
            ''')
         s.random.seed(1)
-        self.assertEqual(','.join(str(s.sample_start()) for i in range(10)), 'a,aaaaa,aaa,aaa,a,aaaaaaaaa,aaa,aa,a,aa')
+        self.assertEqual(','.join(str(s.sample_start()) for i in range(10)), ',aaaa,aa,aa,,aaaaaaaa,aa,a,,a')
 
     def test_rep_gcode(self):
         class G(GrammaInterpreter):

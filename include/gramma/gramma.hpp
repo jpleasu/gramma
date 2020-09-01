@@ -59,9 +59,27 @@ namespace gramma {
             return u01(rand);
         }
 
+        // inclusive, [lo,hi]
+        int uniform(int lo, int hi) {
+            return std::uniform_int_distribution<int>(lo, hi)(rand);
+        }
+
         double uniform(double lo, double hi) {
             return std::uniform_real_distribution<double>(lo, hi)(rand);
         }
+
+        int geometric(double p) {
+            return std::geometric_distribution<int>(p)(rand);
+        }
+
+        double normal(double mean, double stddev) {
+            return std::normal_distribution<double>(mean, stddev)(rand);
+        }
+
+        int binomial(int n, double p) {
+            return std::binomial_distribution<int>(n,p)(rand);
+        }
+
     };
 
     template <class ImplT, class SampleT, class DenotationT>

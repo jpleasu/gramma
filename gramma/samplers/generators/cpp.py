@@ -169,14 +169,15 @@ class CppEmitter(Emitter):
         """
         emit a c++ method that samples ge
         """
-        # skip types that are only every directly invoked
-        if isinstance(ge, (GTok, GCode, GDFuncRef, GFuncRef, GRuleRef, GVarRef)):
-            return
 
         # emit children first
         if isinstance(ge, GInternal):
             for c in ge.children:
                 self.emit_method(c)
+
+        # skip types that are only every directly invoked
+        if isinstance(ge, (GTok, GCode, GDFuncRef, GFuncRef, GRuleRef, GVarRef)):
+            return
 
         handler_name = 'emit_method_' + ge.__class__.__name__
         m = cast(Optional[Callable[[GExpr], None]], getattr(self, handler_name, None))
@@ -221,11 +222,11 @@ class CppEmitter(Emitter):
 
         if ge.dynamic:
             weights = ','.join(
-                f'static_cast<double>({self.invoke(w)})' if isinstance(w, GCode) else w.value for w in ge.weights
+                f'static_cast<double>({self.invoke(w)})' if isinstance(w, GCode) else str(w) for w in ge.weights
             )
             weights = '{' + weights + '}'
         else:
-            fixed_weights = ','.join(w.value for w in cast(List[GTok], ge.weights))
+            fixed_weights = ','.join(str(w) for w in cast(List[GTok], ge.weights))
             self.emit(f'''
                 static constexpr double {gid}_weights[] {{{fixed_weights}}};
             ''')
@@ -303,11 +304,16 @@ class CppEmitter(Emitter):
                     return {{1, random.choice({gid}_chars)}};
                 ''')
 
-    def Xemit_method_GRep(self, ge: GRep) -> None:
-        pass
+    def emit_method_GDenoted(self, ge: GDenoted) -> None:
+        gid = self.ident[ge]
 
-    def Xemit_method_GDenoted(self, ge: GDenoted) -> None:
-        pass
+        with self.indentation(f'''\
+            // GDenoted {ge.locstr()}
+            SampleT {gid}() {{
+        ''', '}'):
+            self.emit(f'''\
+                return denote({self.invoke(ge.left)}, {self.invoke(ge.right)});
+            ''')
 
     def invoke(self, ge: GExpr) -> str:
         """
@@ -317,13 +323,15 @@ class CppEmitter(Emitter):
             return f'{ge.rname}()'
         elif isinstance(ge, GFuncRef):
             args = ','.join(self.as_gfunc_arg(c) for c in ge.fargs)
-            return f'{ge.fname}({args})'
+            return f'impl().{ge.fname}({args})'
         elif isinstance(ge, GVarRef):
             return f'get_var(varid_t::{ge.vname})'
         elif isinstance(ge, GCode):
             return ge.expr
         elif isinstance(ge, GTok):
-            return encode_as_cpp_str(ge.as_str())
+            if ge.type == 'string':
+                return encode_as_cpp_str(ge.as_str())
+            return str(ge)  # ints and floats
         else:
             return f'{self.ident[ge]}()'
 
@@ -351,7 +359,7 @@ class CppEmitter(Emitter):
         if x is None:
             return str(default)
         elif isinstance(x, GTok):
-            return x.value  # use value as written
+            return str(x)  # use value as written
         elif isinstance(x, GCode):
             return self.invoke(x)
 
@@ -364,20 +372,20 @@ class CppEmitter(Emitter):
         """
         fstr = 'std::min(std::max(lo, {0}), hi)'
         if dist.name.startswith('unif'):
-            return 'std::uniform_int_distribution<int>(lo,hi)(rand)'
+            return 'random.uniform(lo,hi)'
         elif dist.name.startswith('geom'):
             # "a"{geom(n)} has an average of n copies of "a"
             parm = 1 / float(dist.args[0].as_num() + 1)
-            return fstr.format(f'(std::geometric_distribution<int>({parm})(rand)-1)')
+            return fstr.format(f'(random.geometric({parm})-1)')
         elif dist.name.startswith('norm'):
             args = ','.join(str(x) for x in dist.args)
-            return fstr.format(f'static_cast<int>(std::normal_distribution<double>({args})(rand)+.5)')
+            return fstr.format(f'static_cast<int>(random.normal({args})+.5)')
         elif dist.name.startswith('binom'):
             args = ','.join(str(x) for x in dist.args)
-            return fstr.format(f'(std::binomial_distribution<int>({args})(rand))')
-        elif dist.name.startswith('choose'):
+            return fstr.format(f'random.binomial({args})')
+        elif dist.name == 'choose' or dist.name == 'choice':
             args = ','.join(str(x) for x in dist.args)
-            return fstr.format(f'([](){{int arr[]={args};return uniform_selection(arr);}}())')
+            return fstr.format(f'random.choice({{{args}}})')
         else:
             raise GrammaParseError('unknown repdist %s' % dist.name)
 
@@ -417,6 +425,11 @@ class CppEmitter(Emitter):
                 }}
                 sample_t denote(const sample_t &a, const denotation_t &b) {{
                     return sample_t(a,b);
+                }}
+
+                sample_t show_den(method_t ag) {{
+                    sample_t a = ag();
+                    return sample_t(a + "<" + std::to_string(a.d) + ">", a.d);
                 }}
             }};
 
@@ -637,7 +650,7 @@ class CppGen(Emitter):
         if x is None:
             return str(default)
         elif isinstance(x, GTok):
-            return x.value  # use value as written
+            return str(x)  # value as written
         elif isinstance(x, GCode):
             return self.invoke(x)
 
@@ -701,8 +714,7 @@ class CppGen(Emitter):
                         emit_cases()
                     self.emit('return {}; // throw exception?')
             else:
-                # GTok.value will use the value as written in the glf
-                weights = ','.join(w.value for w in cast(List[GTok], ge.weights))
+                weights = ','.join(str(w) for w in cast(List[GTok], ge.weights))
                 with self.indentation(f'''\
                     // GAlt static {ge.locstr()}
                     static constexpr double {gid}_weights[] {{{weights}}};

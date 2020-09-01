@@ -32,7 +32,7 @@ class TestInvokes(unittest.TestCase):
     def assertSampleEquals(self, glf: str, expected: str, count: Optional[int] = 10, seed: int = 1) -> None:
         g = GrammaGrammar(glf)
         with tempfile.NamedTemporaryFile(mode='w', suffix='.cpp', encoding='utf8') as tmpsourcefile:
-            e = CppEmitter(tmpsourcefile, g, 'test_grammar', echo=sys.stderr)
+            e = CppEmitter(tmpsourcefile, g, 'test_grammar', echo=sys.stdout)
             e.emit_simple_main(count=count, seed=seed)
 
             tmpexecutable = tempfile.NamedTemporaryFile(dir=os.getcwd(), delete=False)
@@ -73,6 +73,16 @@ class TestInvokes(unittest.TestCase):
         self.assertSampleEquals('''
             start := ['a'..'z'];
         ''', 'ddlajxmboq')
+
+    def test_GRep(self):
+        self.assertSampleEquals('''
+            start := 'a'{1,5}.' ';
+        ''', 'a a aaa a aa aaaaa aaa a aaa aaaa ')
+
+    def test_GDenoted(self):
+        self.assertSampleEquals('''
+            start := show_den('a'/1 | 'b'/2 | 'c'/3). ' ';
+        ''', 'a<1> a<1> b<2> a<1> b<2> c<3> b<2> a<1> b<2> b<2> ')
 
     @staticmethod
     def xtest_variety():
