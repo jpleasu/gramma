@@ -10,7 +10,7 @@ The GrammaGramma object indexes the GExpr of each defined rule and its parameter
 import io
 import logging
 from itertools import groupby
-from typing import Dict, List, Set, Union, Optional, Literal, cast, Tuple, IO, Iterator, ClassVar, Callable
+from typing import Dict, List, Set, Union, Optional, Literal, cast, Tuple, IO, Iterator, ClassVar, Callable, TypeVar
 
 import lark
 
@@ -130,7 +130,7 @@ class LarkTransformer:
 
     def code(self, lt: lark.Tree) -> 'GCode':
         t = cast(lark.Token, lt.children[0])
-        return GCode(t.value[1:-1])
+        return GCode(t.value[1:-1]).loc(Location.from_lark_token(t))
 
     def ruledef(self, lt: lark.Tree) -> 'RuleDef':
         rname = identifier2string(cast(lark.Tree, lt.children[0]))
@@ -143,7 +143,7 @@ class LarkTransformer:
 
         with self.vars.context(parms):
             rhs = self.visit(cast(lark.Tree, lt.children[-1]))
-        return RuleDef(rname, parms, rhs)
+        return RuleDef(rname, parms, rhs).loc(Location.from_lark_tree(lt))
 
     def choosein(self, lt):
         # lt.children = [var1, expr1, var2, expr2, ..., varN, exprN, child]
@@ -152,7 +152,7 @@ class LarkTransformer:
 
         with self.vars.context(var_exprs.keys()):
             child = self.visit(lt.children[-1])
-        return GChooseIn(var_exprs, child)
+        return GChooseIn(var_exprs, child).loc(Location.from_lark_tree(lt))
 
     def alt(self, lt):
         weights: List[Union[GTok, GCode]] = []
@@ -169,21 +169,21 @@ class LarkTransformer:
                 if len(weights) <= len(children):
                     weights.append(GTok.from_int(1))
                 children.append(self.visit(clt))
-        return GAlt(weights, children)
+        return GAlt(weights, children).loc(Location.from_lark_tree(lt))
 
     def tern(self, lt):
         code = GCode(lt.children[0].children[0][1:-1])
-        return GTern(code, [self.visit(clt) for clt in lt.children[1:]])
+        return GTern(code, [self.visit(clt) for clt in lt.children[1:]]).loc(Location.from_lark_tree(lt))
 
     def denoted(self, lt: lark.Tree) -> 'GDenoted':
         children = cast(List[lark.Tree], lt.children)
-        return GDenoted(self.visit(children[0]), self.visit(children[1]))
+        return GDenoted(self.visit(children[0]), self.visit(children[1])).loc(Location.from_lark_tree(lt))
 
     def denotation(self, lt):
-        return self.visit(lt.children[0])
+        return self.visit(lt.children[0]).loc(Location.from_lark_tree(lt))
 
     def cat(self, lt: lark.Tree) -> 'GCat':
-        return GCat([self.visit(cast(lark.Tree, clt)) for clt in lt.children])
+        return GCat([self.visit(cast(lark.Tree, clt)) for clt in lt.children]).loc(Location.from_lark_tree(lt))
 
     def rep(self, lt):
         """
@@ -224,7 +224,7 @@ class LarkTransformer:
         if ncommas == 0:
             hi = lo
 
-        return GRep(child, lo, hi, dist)
+        return GRep(child, lo, hi, dist).loc(Location.from_lark_tree(lt))
 
     def range(self, lt):
         # pairs = [  (base, count), (base, count), ... ]
@@ -239,7 +239,7 @@ class LarkTransformer:
                 e = ord(eval(cl[1].value))
                 count = 1 + e - base
             pairs.append((base, count))
-        return GRange(pairs)
+        return GRange(pairs).loc(Location.from_lark_tree(lt))
 
     def rep_dist(self, lt):
         name = identifier2string(lt.children[0])
@@ -254,9 +254,9 @@ class LarkTransformer:
             fargs = []
 
         if fname in self.rulenames:
-            return GRuleRef(fname, fargs)
+            return GRuleRef(fname, fargs).loc(Location.from_lark_tree(lt))
         else:
-            return GFuncRef(fname, fargs)
+            return GFuncRef(fname, fargs).loc(Location.from_lark_tree(lt))
 
     def dfunc(self, lt):
         fname = identifier2string(lt.children[0])
@@ -265,32 +265,63 @@ class LarkTransformer:
             fargs = [self.visit(clt) for clt in lt.children[1].children]
         else:
             fargs = []
-        return GDFuncRef(fname, fargs)
+        return GDFuncRef(fname, fargs).loc(Location.from_lark_tree(lt))
 
     def number(self, lt):
         tok = lt.children[0]
-        return GTok(tok.type, tok.value)
+        return GTok(tok.type, tok.value).loc(Location.from_lark_tree(lt))
 
     def identifier(self, lt):
         name = identifier2string(lt)
         if name in self.vars:
-            return GVarRef(name)
+            return GVarRef(name).loc(Location.from_lark_tree(lt))
         elif name in self.rulenames:
-            return GRuleRef(name, [])
+            return GRuleRef(name, []).loc(Location.from_lark_tree(lt))
         else:
             raise GrammaParseError(f'no variable named "{name}" in scope')
+
+
+class Location:
+    line: int
+    column: int
+
+    def __init__(self, line: int, column: int):
+        self.line = line
+        self.column = column
+
+    @staticmethod
+    def from_lark_token(tok: lark.Token) -> 'Location':
+        return Location(tok.line, tok.column)
+
+    @staticmethod
+    def from_lark_tree(lt: lark.Tree) -> 'Location':
+        return Location(lt.meta.line, lt.meta.column)
+
+
+GExprT = TypeVar('GExprT', bound='GExpr')
 
 
 class GExpr:
     """
         the expression tree for a GLF expression.
     """
-    __slots__ = 'parent',
+    __slots__ = 'parent', 'location'
 
     parent: Optional['GExpr']
+    location: Optional[Location]
 
     def __init__(self):
         self.parent = None
+        self.location = None
+
+    def loc(self: GExprT, location: Optional[Location]) -> GExprT:
+        self.location = location
+        return self
+
+    def locstr(self) -> str:
+        if self.location is None:
+            return ''
+        return f'line {self.location.line}, column {self.location.column}'
 
     def get_code(self) -> List['GCode']:
         """
@@ -350,7 +381,7 @@ class GTok(GExpr):
             self.s = eval(self.value)
 
     def copy(self):
-        return GTok(self.type, self.value)
+        return GTok(self.type, self.value).loc(self.location)
 
     def __str__(self):
         return self.value
@@ -386,7 +417,7 @@ class GTok(GExpr):
 
     @staticmethod
     def from_ltok(tok: lark.Token) -> 'GTok':
-        return GTok(tok.type, tok.value)
+        return GTok(tok.type, tok.value).loc(Location.from_lark_token(tok))
 
     @staticmethod
     def from_str(s: str) -> 'GTok':
@@ -429,8 +460,7 @@ class GInternal(GExpr):
     def walk(self) -> Iterator['GExpr']:
         yield self
         for c in self.children:
-            for cc in c.walk():
-                yield cc
+            yield from c.walk()
 
     def flat_simple_children(self):
         cls = self.__class__
@@ -452,7 +482,7 @@ class GCode(GExpr):
     expr: str
 
     def __init__(self, expr: str):
-        super().__init__()
+        GExpr.__init__(self)
         self.expr = expr
 
     def __str__(self):
@@ -464,7 +494,7 @@ class GCode(GExpr):
         return GCode('(%s)+(%s)' % (self.expr, other.expr))
 
     def copy(self):
-        return GCode(self.expr)
+        return GCode(self.expr).loc(self.location)
 
 
 class GChooseIn(GInternal):
@@ -498,7 +528,7 @@ class GChooseIn(GInternal):
         return self.children[:-1]
 
     def copy(self):
-        return GChooseIn(dict(zip(self.vnames, self.dists)), self.child)
+        return GChooseIn(dict(zip(self.vnames, self.dists)), self.child).loc(self.location)
 
     def __str__(self):
         var_dists = ', '.join('%s~%s' % (var, dist) for var, dist in zip(self.vnames, self.dists))
@@ -524,7 +554,7 @@ class GTern(GInternal):
         return GTern(self.code, [c.simplify() for c in self.children])
 
     def copy(self):
-        return GTern(self.code, [c.copy() for c in self.children])
+        return GTern(self.code, [c.copy() for c in self.children]).loc(self.location)
 
 
 class GAlt(GInternal):
@@ -604,7 +634,7 @@ class GAlt(GInternal):
         return GAlt([GTok.from_float(w) for w in nweights], nchildren)
 
     def copy(self):
-        return GAlt(self.weights, [c.copy() for c in self.children])
+        return GAlt(self.weights, [c.copy() for c in self.children]).loc(self.location)
 
 
 class GDenoted(GInternal):
@@ -630,7 +660,7 @@ class GDenoted(GInternal):
         return s
 
     def copy(self):
-        return GDenoted(self.left, self.right)
+        return GDenoted(self.left, self.right).loc(self.location)
 
     def simplify(self):
         return self.copy()
@@ -644,7 +674,7 @@ class GCat(GInternal):
         return s
 
     def copy(self):
-        return GCat([c.copy() for c in self.children])
+        return GCat([c.copy() for c in self.children]).loc(self.location)
 
     def simplify(self):
         children = self.flat_simple_children()
@@ -701,7 +731,7 @@ class GRep(GInternal):
         return self.children[0]
 
     def copy(self):
-        return GRep([self.child.copy()], self.lo, self.hi, self.dist)
+        return GRep([self.child.copy()], self.lo, self.hi, self.dist).loc(self.location)
 
     def simplify(self):
         return GRep([self.child.simplify()], self.lo, self.hi, self.dist)
@@ -746,7 +776,7 @@ class GRange(GExpr):
         return chars
 
     def copy(self):
-        return GRange(self.pairs)
+        return GRange(self.pairs).loc(self.location)
 
     def simplify(self):
         if len(self.pairs) == 1 and self.pairs[0][1] == 1:
@@ -777,7 +807,7 @@ class GFuncRef(GInternal):
         self.fname = fname
 
     def copy(self):
-        return self.__class__(self.fname, [c.copy() for c in self.fargs])
+        return self.__class__(self.fname, [c.copy() for c in self.fargs]).loc(self.location)
 
     def simplify(self):
         return self.__class__(self.fname, [c.simplify() for c in self.fargs])
@@ -811,7 +841,7 @@ class GRuleRef(GInternal):
         self.rname = rname
 
     def copy(self):
-        return GRuleRef(self.rname, self.rargs)
+        return GRuleRef(self.rname, self.rargs).loc(self.location)
 
     def is_rule(self, rname=None):
         if rname is None:
@@ -841,28 +871,34 @@ class GVarRef(GExpr):
         self.vname = vname
 
     def copy(self):
-        return GVarRef(self.vname)
+        return GVarRef(self.vname).loc(self.location)
 
     def __str__(self):
         return self.vname
 
 
 class RuleDef:
-    __slots__ = 'rname', 'params', 'rhs'
+    __slots__ = 'rname', 'params', 'rhs', 'location'
 
     rname: str
     rhs: GExpr
     params: List[str]
+
+    location: Location
 
     def __init__(self, rname: str, params: List[str], rhs: GExpr):
         self.rname = rname
         self.params = params
         self.rhs = rhs
 
+    def loc(self, location: Location) -> 'RuleDef':
+        self.location = location
+        return self
+
 
 class GrammaGrammar:
-    GLF_PARSER = lark.Lark(gramma_grammar, parser='earley', lexer='standard', start='start')
-    GEXPR_PARSER = lark.Lark(gramma_grammar, parser='earley', lexer='standard', start='expr')
+    GLF_PARSER = lark.Lark(gramma_grammar, parser='earley', lexer='standard', start='start', propagate_positions=True)
+    GEXPR_PARSER = lark.Lark(gramma_grammar, parser='earley', lexer='standard', start='expr', propagate_positions=True)
 
     ruledefs: Dict[str, RuleDef]
 

@@ -1,7 +1,7 @@
 from functools import reduce
 from types import CodeType
 # noinspection PyUnresolvedReferences
-from typing import Union, IO, Final, Dict, Any, Callable, List, TypeVar, Protocol, Type, Generator, cast
+from typing import Union, IO, Final, Dict, Any, Callable, List, TypeVar, Protocol, Type, Generator, cast, Optional
 
 import numpy as np
 
@@ -185,7 +185,7 @@ class OperatorsImplementationSamplerMixin(SamplerInterface):
 
     def sample(self, ge: GExpr) -> Sample:
         handler_name = 'sample_' + ge.__class__.__name__
-        m = cast(Callable[[GExpr], Sample], getattr(self, handler_name, None))
+        m = cast(Optional[Callable[[GExpr], Sample]], getattr(self, handler_name, None))
         if m is None:
             log.error(f'missing handler in {self.__class__.__name__}, {handler_name}')
             raise GrammaSamplerError('sampler is missing sample_* method')

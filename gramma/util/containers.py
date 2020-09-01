@@ -2,7 +2,6 @@
 from typing import Set, Dict, TypeVar, Generic, Iterable, Optional, List, Any, Protocol, AbstractSet
 
 
-
 class PushesAndPops(Protocol):
     def push(self, arg: Any) -> None:
         ...
@@ -32,7 +31,9 @@ class Context(Generic[ObjT, ArgT]):
     def __exit__(self, exc_type, exc_val, exc_tb):
         self.obj.pop()
 
+
 T = TypeVar('T')
+
 
 class SetStack(Generic[T]):
     """
@@ -127,4 +128,4 @@ class DictStack(Generic[K, V]):
         return Context(self, d)
 
     def __str__(self):
-        return ','.join(str(d) for d in self.stack if len(d)>0)
+        return ','.join(str(d) for d in self.stack if len(d) > 0)
