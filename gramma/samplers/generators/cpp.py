@@ -132,6 +132,8 @@ class CppEmitter(Emitter):
                 
                 using gramma::SamplerBase<ImplT,SampleT,DenotationT>::cat;
                 using gramma::SamplerBase<ImplT,SampleT,DenotationT>::denote;
+                
+                using typename gramma::SamplerBase<ImplT,SampleT,DenotationT>::method_t;
             ''')
 
             rules = ','.join(sorted(self.grammar.ruledefs.keys()))
@@ -351,9 +353,11 @@ class CppEmitter(Emitter):
         elif isinstance(ge, GCode):
             return f'[&]() {{return {self.invoke(ge)};}}'
         elif isinstance(ge, GRuleRef):
-            return f'std::bind(&ImplT::{ge.rname}, this)'
+            #return f'std::bind(&ImplT::{ge.rname}, this)'
+            return f'[this]() -> SampleT {{return ImplT::{ge.rname}();}}'
         else:
-            return f'std::bind(&ImplT::{self.ident[ge]}, this)'
+            #return f'(std::bind(&ImplT::{self.ident[ge]}, this))'
+            return f'[this]() -> SampleT {{return ImplT::{self.ident[ge]}();}}'
 
     def invoke_rep_bound(self, x: Union[GTok, GCode, None], default: int) -> str:
         if x is None:
@@ -407,13 +411,30 @@ class CppEmitter(Emitter):
             struct sample_t:  public std::string {{
                 denotation_t d;
 
-                template<class T>
-                sample_t(T s, denotation_t d=0) : std::string(std::forward<T>(s)), d(d) {{
+                sample_t(std::string &&s, denotation_t d=0) : std::string(std::move(s)), d(d) {{
                 }}
+
+                sample_t(const std::string &s, denotation_t d=0) : std::string(s), d(d) {{
+                }}
+
+                sample_t(const char *s, denotation_t d=0) : std::string(s), d(d) {{
+                }}
+
                 sample_t(int count, char c, denotation_t d=0) : std::string(count, c), d(d) {{
                 }}
 
                 sample_t() = default;
+
+                sample_t(sample_t &&s) : std::string(std::move(s)), d(s.d) {{}}
+                sample_t(const sample_t &s) : std::string(s), d(s.d) {{}}
+
+                sample_t &operator=(const sample_t &) = default;
+
+                // allow non-lazy gfuncs calling callables
+                template<class T>
+                sample_t(T m) : sample_t(m()) {{
+                }}
+
             }};
 
 
@@ -427,8 +448,12 @@ class CppEmitter(Emitter):
                     return sample_t(a,b);
                 }}
 
-                sample_t show_den(method_t ag) {{
-                    sample_t a = ag();
+                sample_t show_den(sample_t a) {{
+                    return sample_t(a + "<" + std::to_string(a.d) + ">", a.d);
+                }}
+
+                sample_t show_den_lazy(method_t m) {{
+                    auto a=m();
                     return sample_t(a + "<" + std::to_string(a.d) + ">", a.d);
                 }}
             }};
