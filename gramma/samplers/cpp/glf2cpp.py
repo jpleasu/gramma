@@ -219,7 +219,7 @@ class CppEmitter(Emitter):
 
                 sample_type s;
                 while(n-->0) {{
-                    s=cat(s,{self.invoke(ge.child)}); 
+                    icat(s,{self.invoke(ge.child)}); 
                 }}
                 return s;
             ''')
@@ -232,7 +232,7 @@ class CppEmitter(Emitter):
         ''', '}'):
             self.emit(f'sample_type s={self.invoke(ge.children[0])};')
             for c in ge.children[1:]:
-                self.emit(f's=cat(s,{self.invoke(c)});')
+                self.emit(f'icat(s,{self.invoke(c)});')
             self.emit(f'return s;')
 
     def emit_method_GAlt(self, ge: GAlt) -> None:
@@ -423,8 +423,8 @@ class CppEmitter(Emitter):
                     using trace_type = bool;
 
                     // sampler API
-                    sample_t cat(const sample_t &a, const sample_t &b) {{
-                        return a+b;
+                    void icat(sample_t &a, const sample_t &b) {{
+                        a+=b;
                     }}
                     sample_t denote(const sample_t &a, const denotation_t &b) {{
                         return sample_t(a,b);
