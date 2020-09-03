@@ -2,19 +2,13 @@
 r"""
 C++ sampler support
 
-
-imple header needs forward def of sampler class for SamplerBase parameter
-sampler header needs impl header
-    to inherit
-    for sample_type
-
-
 TODO
+- add gdfuncs
+- add rule wrapping
 - support wchar_t
     - if we're in multibyte mode, use ENCODING, else, emit character to C++ file and use L'xxx' or L'\u....'
       with wchar_t
     - see emit_method_GRange
-- add gdfuncs and denotation parsing
 
 """
 import logging
@@ -155,23 +149,43 @@ class CppEmitter(Emitter):
 
                 self.emit('\n/* === ruledefs === */', trim=False)
                 for ruledef in self.grammar.ruledefs.values():
-                    self.emit(f'sample_type {ruledef.rname}();')
+                    parms = ','.join(f'sample_type {vname}' for vname in ruledef.params)
+                    self.emit(f'sample_type {ruledef.rname}({parms});')
 
         elif mode == 'definition':
-            self.emit('\n\n// sampler definition', trim=False)
             class_name = self.sampler_name
+            sample_type = f'{class_name}::sample_type'
 
+            self.emit('\n\n// sampler definition', trim=False)
             for ruledef in self.grammar.ruledefs.values():
                 self.emit_method(ruledef.rhs, mode='definition')
 
-            for ruledef in self.grammar.ruledefs.values():
-                with self.indentation(f'''\
-                    // RuleDef {ruledef.locstr()}
-                    inline {class_name}::sample_type {class_name}::{ruledef.rname}() {{
-                ''', '}'):
-                    self.emit(f'''
-                        return {self.invoke(ruledef.rhs)};
-                    ''')
+                if len(ruledef.params) > 0:
+                    parms = ','.join(f'{sample_type} {vname}' for vname in ruledef.params)
+                    with self.indentation(f'''\
+                        // RuleDef {ruledef.locstr()}
+                        inline {sample_type} {class_name}::{ruledef.rname}({parms}) {{
+                    ''', '}'):
+                        self.emit('''\
+                            push_vars();
+                        ''')
+                        for vname in ruledef.params:
+                            self.emit(f'''\
+                            set_var(varid_t::{vname}, {vname});
+                            ''')
+                        self.emit(f'''
+                            auto result = {self.invoke(ruledef.rhs)};
+                            pop_vars();
+                            return result;
+                        ''')
+                else:
+                    with self.indentation(f'''\
+                        // RuleDef {ruledef.locstr()}
+                        inline {sample_type} {class_name}::{ruledef.rname}() {{
+                    ''', '}'):
+                        self.emit(f'''
+                            return {self.invoke(ruledef.rhs)};
+                        ''')
 
     def emit_method(self, ge: GExpr, mode: EmitMode) -> None:
         # emit children first
@@ -201,10 +215,7 @@ class CppEmitter(Emitter):
             inline {self.sampler_name}::sample_type {self.sampler_name}::{gid}() {{
         ''', '}'):
             self.emit(f'''\
-                int lo={self.invoke_rep_bound(ge.lo, 0)};
-                int hi={self.invoke_rep_bound(ge.hi, 2 ** 10)};
-
-                int n={self.invoke_rep_dist(ge.dist)};
+                int n={self.invoke_rep_dist(ge)};
 
                 sample_type s;
                 while(n-->0) {{
@@ -277,7 +288,7 @@ class CppEmitter(Emitter):
                 set_var(varid_t::{name}, {self.invoke(value_dist)});
                 ''')
             self.emit(f'''\
-                sample_type result = {self.invoke(ge.child)};
+                auto result = {self.invoke(ge.child)};
                 pop_vars();
                 return result;
             ''')
@@ -322,7 +333,8 @@ class CppEmitter(Emitter):
         return a C++ expression that samples the given GExpr when executed.
         """
         if isinstance(ge, GRuleRef):
-            return f'{ge.rname}()'
+            args = ','.join(self.invoke(c) for c in ge.rargs)
+            return f'{ge.rname}({args})'
         elif isinstance(ge, GFuncRef):
             args = ','.join(self.as_gfunc_arg(c) for c in ge.fargs)
             return f'{ge.fname}({args})'
@@ -367,16 +379,19 @@ class CppEmitter(Emitter):
         elif isinstance(x, GCode):
             return self.invoke(x)
 
-    @staticmethod
-    def invoke_rep_dist(dist: RepDist) -> str:
+    def invoke_rep_dist(self, ge: GRep) -> str:
         """
         generate C++ source to sample the given RepDist.
 
-        assume C++ variables lo, hi, and rand are available
+        assume random is in scope
         """
-        fstr = 'std::min(std::max(lo, {0}), hi)'
+        dist = ge.dist
+        lo = self.invoke_rep_bound(ge.lo, 0)
+        hi = self.invoke_rep_bound(ge.hi, 2 ** 10)
+
+        fstr = f'std::min(std::max({lo}, {{0}}), {hi})'
         if dist.name.startswith('unif'):
-            return 'random.uniform(lo,hi)'
+            return f'random.uniform({lo},{hi})'
         elif dist.name.startswith('geom'):
             # "a"{geom(n)} has an average of n copies of "a"
             parm = 1 / float(dist.args[0].as_num() + 1)
@@ -405,6 +420,7 @@ class CppEmitter(Emitter):
                 self.emit(f'''\
                     public:
                     using base_type = gramma::SamplerBase<{self.sampler_name}, sample_t>;
+                    using trace_type = bool;
 
                     // sampler API
                     sample_t cat(const sample_t &a, const sample_t &b) {{
@@ -414,9 +430,7 @@ class CppEmitter(Emitter):
                         return sample_t(a,b);
                     }}
 
-                    // === state variables ===
-
-                    // === gfuncs and dfuncs ===
+                    // gfuncs
                     sample_t show_den(sample_t a) {{
                         return sample_t(a + "<" + std::to_string(a.d) + ">", a.d);
                     }}
@@ -591,6 +605,7 @@ def main():
     if build_bin:
         import shutil
         import subprocess
+        import re
 
         # compute bin_path
         if args.bin_path is dummy_arg_value:
@@ -610,13 +625,22 @@ def main():
         # get the compiler
         cxx = os.environ.get('CXX')
         if cxx is None:
-            cxx = shutil.which('clang++') or shutil.which('g++')
+            cxx = shutil.which('g++') or shutil.which('clang++')
         if cxx is None:
             log.error('no compiler found')
             sys.exit(2)
 
-        call_args = [cxx, '-std=c++17', '-I', INCLUDE_DIR, '-o', bin_path, sampler_path]
+        call_args = [cxx, '-O3', '-I', INCLUDE_DIR, '-o', bin_path, sampler_path]
         if not args.main:
             call_args.extend(['-c', '-shared'])
 
+        def q(s: str) -> str:
+            if re.search(r'\s', s) is not None:
+                if '"' in s:
+                    s = s.replace('"', r'\"')
+                return f'"{s}"'
+            return s
+
+        cmd = ' '.join(q(a) for a in call_args)
+        log.info('  ' + cmd)
         result = subprocess.call(call_args)

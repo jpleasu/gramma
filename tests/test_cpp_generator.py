@@ -40,7 +40,7 @@ class TestInvokes(unittest.TestCase):
 
             try:
                 result = subprocess.call(
-                    [CXX, '-std=c++17', '-I', INCLUDE_DIR, '-o', tmpexecutable.name, tmpsourcefile.name])
+                    [CXX, '-I', INCLUDE_DIR, '-o', tmpexecutable.name, tmpsourcefile.name])
                 self.assertEqual(result, 0, 'failed to build')
                 tmpexecutable.close()
 
@@ -85,15 +85,11 @@ class TestInvokes(unittest.TestCase):
             start := show_den('a'/1 | 'b'/2 | 'c'/3). ' ';
         ''', 'a<1> a<1> b<2> a<1> b<2> c<3> b<2> a<1> b<2> b<2> ')
 
-    @staticmethod
-    def xtest_variety():
-        with open(os.path.join(EXAMPLE_DIR, 'variety', 'variety.glf')) as infile:
-            g = GrammaGrammar(infile.read())
-
-        sio = StringIO()
-        e = CppEmitter(sio, g, 'variety')
-        e.emit_sampler()
-        print(sio.getvalue())
+    def test_GRule(self):
+        self.assertSampleEquals('''
+            start := r('a'|'b', 'c'|'d'). ' ';
+            r(x,y) := x.x.y.y;
+        ''', 'aacc aacc aadd aacc bbdd aadd bbcc aacc aadd aacc ')
 
 
 if __name__ == '__main__':

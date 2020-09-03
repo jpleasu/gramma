@@ -25,12 +25,12 @@ class VarietySampler(GrammaInterpreter):
         return self.create_sample('ff')
 
     def a_func(self):
-        return .1
+        return 2 if a else 1
 
 
 if __name__ == '__main__':
+    import sys
     s = VarietySampler()
-    for i in range(10):
+    while True:
         samp = s.coro_sample_start()
-        #samp = s.sample_start()
-        print(samp.s)
+        sys.stdout.write(samp.s)
