@@ -4,10 +4,13 @@ from typing import Union, IO, Final, Dict, Any, Callable, List, TypeVar, Protoco
 
 import numpy as np
 
-from . import log
 from ..parser import GrammaGrammar, GFuncRef, GCode, GDFuncRef, GCat, GAlt, GTok, GRuleRef, GRep, GExpr, GVarRef, \
     GChooseIn, GDenoted, GRange, GTern
 from ..util import DictStack
+
+import logging
+
+log = logging.getLogger('gramma.samplers.interpreter')
 
 T = TypeVar('T')
 

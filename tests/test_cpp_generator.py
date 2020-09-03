@@ -13,12 +13,13 @@ import tempfile
 from gramma.parser import GrammaGrammar, GFuncRef, GRuleRef, GChooseIn, GVarRef, GAlt, GRep, RepDist, GRange, \
     GDenoted, GTok, GCode, GDFuncRef
 
-from gramma.samplers.generators.cpp import CppEmitter
+from gramma.samplers.cpp.glf2cpp import CppEmitter, INCLUDE_DIR
 
 EXAMPLE_DIR = os.path.join(os.path.dirname(__file__), '..', 'examples')
-INCLUDE_DIR = os.path.join(os.path.dirname(__file__), '..', 'include')
 
-_CXX: Optional[str] = shutil.which('clang++') or shutil.which('gcc')
+_CXX: Optional[str] = os.environ.get('CXX')
+if _CXX is None:
+    _CXX = shutil.which('clang++') or shutil.which('gcc')
 if _CXX is None:
     raise SystemError('no compiler found')
 CXX: str = _CXX
@@ -32,8 +33,8 @@ class TestInvokes(unittest.TestCase):
     def assertSampleEquals(self, glf: str, expected: str, count: Optional[int] = 10, seed: int = 1) -> None:
         g = GrammaGrammar(glf)
         with tempfile.NamedTemporaryFile(mode='w', suffix='.cpp', encoding='utf8') as tmpsourcefile:
-            e = CppEmitter(tmpsourcefile, g, 'test_grammar', echo=sys.stdout)
-            e.emit_simple_main(count=count, seed=seed)
+            e = CppEmitter(g, 'test_grammar', out=tmpsourcefile, echo=sys.stdout)
+            e.write_monolithic_main(count=count, seed=seed, close=False)
 
             tmpexecutable = tempfile.NamedTemporaryFile(dir=os.getcwd(), delete=False)
 
@@ -91,7 +92,7 @@ class TestInvokes(unittest.TestCase):
 
         sio = StringIO()
         e = CppEmitter(sio, g, 'variety')
-        e.emit_base()
+        e.emit_sampler()
         print(sio.getvalue())
 
 

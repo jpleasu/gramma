@@ -2,7 +2,7 @@
 
 * [Description](#description)
 * [Overview](#overview)
-* [Installation](#installation)
+* [Setup](#setup)
 * [samplers](#samplers)
     * [Python](#python)
     * [C++ sampler generator](#c-sampler-generator)
@@ -46,7 +46,7 @@ A typical application of Gramma in fuzzing would be as follows:
 4. Repeat.
 
 
-# Installation
+# Setup
 
 Gramma is pure Python 3, depending on `lark-parser` and `numpy`.
 
@@ -54,17 +54,33 @@ Gramma is pure Python 3, depending on `lark-parser` and `numpy`.
 git clone git@github.com:jpleasu/gramma.git
 cd gramma
 
-# to test
-pip3 install tox pytest mypy
-tox
-
 # to install
 pip3 install .
 ```
 
+For developement
+```bash
+# to run from the repo
+pip3 install -e .
+
+# to test, install dependencies
+pip3 install tox pytest mypy
+
+# for unit tests
+pytest
+
+# for static type checking
+mypy
+
+# for both
+tox
+
+```
+
+
 # samplers
-GLF expressions aren't evaluated, they're _sampled_.  Instead of an execution engine, interpreter, or compiler,
-we use a _sampler_ to get a string from a GLF expression.
+Gramma is like an ordinary programming language, except it isn't evaluated, it's _sampled_.  Instead of an execution 
+engine, interpreter, or compiler, we use a _sampler_ to get a string from a GLF expression.
 
 ## Python
 The Python interpretering sampler provides a fast way to prototype a grammar with a straightforward interpreter.  If 

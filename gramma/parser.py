@@ -884,16 +884,22 @@ class RuleDef:
     rhs: GExpr
     params: List[str]
 
-    location: Location
+    location: Optional[Location]
 
     def __init__(self, rname: str, params: List[str], rhs: GExpr):
         self.rname = rname
         self.params = params
         self.rhs = rhs
+        self.location = None
 
     def loc(self, location: Location) -> 'RuleDef':
         self.location = location
         return self
+
+    def locstr(self) -> str:
+        if self.location is None:
+            return ''
+        return f'line {self.location.line}, column {self.location.column}'
 
 
 class GrammaGrammar:
@@ -902,9 +908,8 @@ class GrammaGrammar:
 
     ruledefs: Dict[str, RuleDef]
 
-    def __init__(self, glf: str):
-
-        lark_tree: lark.Tree = GrammaGrammar.GLF_PARSER.parse(glf)
+    def __init__(self, glf_text: str):
+        lark_tree: lark.Tree = GrammaGrammar.GLF_PARSER.parse(glf_text)
         ruledef_trees = cast(List[lark.Tree], lark_tree.children)
         rulenames = set([identifier2string(cast(lark.Tree, ruledef.children[0])) for ruledef in ruledef_trees])
 

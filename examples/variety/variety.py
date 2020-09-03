@@ -24,6 +24,9 @@ class VarietySampler(GrammaInterpreter):
     def ff(self):
         return self.create_sample('ff')
 
+    def a_func(self):
+        return .1
+
 
 if __name__ == '__main__':
     s = VarietySampler()

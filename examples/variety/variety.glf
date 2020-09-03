@@ -1,8 +1,8 @@
 start := recurs."\n";
 
-yyy:='a'{,`g_func()`};
+yyy:='a'{,`a_func()`};
 
-xxx:='a'{1,`g_func()`};
+xxx:='a'{1,`a_func()`};
 
 recurs := 10 ".".recurs | vars . " ". words . " " . ['1'..'9'] . digit{1,15,geom(5)};
 

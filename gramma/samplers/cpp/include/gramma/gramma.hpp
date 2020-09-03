@@ -1,3 +1,7 @@
+#ifndef GRAMMA_HPP
+#define GRAMMA_HPP
+#pragma once
+
 #include <iostream>
 #include <iterator>
 #include <sstream>
@@ -77,17 +81,18 @@ namespace gramma {
         }
 
         int binomial(int n, double p) {
-            return std::binomial_distribution<int>(n,p)(rand);
+            return std::binomial_distribution<int>(n, p)(rand);
         }
-
     };
 
-    template <class ImplT, class SampleT, class DenotationT>
+    template <class SamplerT, class SampleT>
     class SamplerBase {
       public:
-        using method_t = std::function<SampleT()>;
+        using func_type = std::function<SampleT()>;
+        using sample_type = SampleT;
+        using denotation_type = typename sample_type::denotation_type;
 
-        std::deque<std::map<int, SampleT>> vars;
+        std::deque<std::map<int, sample_type>> vars;
 
         // variable stack
         void push_vars() {
@@ -99,11 +104,11 @@ namespace gramma {
 
         template <class T>
         void set_var(int varid, T value) {
-            static_assert(std::is_base_of<SampleT, T>::value, "set_var values must be samples");
+            static_assert(std::is_base_of<sample_type, T>::value, "set_var values must be samples");
             vars.back()[varid] = std::forward<T>(value);
         }
 
-        SampleT get_var(int varid) {
+        sample_type get_var(int varid) {
             for (auto &m : vars) {
                 auto it = m.find(varid);
                 if (it != m.end())
@@ -112,18 +117,12 @@ namespace gramma {
             return {}; // raise bad grammar exception?
         }
 
-        ImplT &impl() {
-            return *static_cast<ImplT *>(this);
-        }
-
-        SampleT cat(const SampleT &a, const SampleT &b) {
-            return impl().cat(a, b);
-        }
-
-        SampleT denote(const SampleT &a, const DenotationT &b) {
-            return impl().denote(a, b);
+        // access to the generated class in the implementation
+        SamplerT &_generated() {
+            return *static_cast<SamplerT *>(this);
         }
 
         RandomAPI random;
     };
 } // namespace gramma
+#endif // GRAMMA_HPP
