@@ -2,7 +2,7 @@
 from typing import Set, Dict, TypeVar, Generic, Iterable, Optional, List, Any, Protocol, AbstractSet
 
 
-class PushesAndPops(Protocol):
+class PushesAndPops(Protocol):  # pragma: no cover
     def push(self, arg: Any) -> None:
         ...
 
@@ -128,4 +128,7 @@ class DictStack(Generic[K, V]):
         return Context(self, d)
 
     def __str__(self):
-        return ','.join(str(d) for d in self.stack if len(d) > 0)
+        s = ','.join(str(d) for d in self.stack if len(d) > 0)
+        if s == '':
+            return '{}'
+        return s
