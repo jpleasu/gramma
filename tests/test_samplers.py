@@ -231,16 +231,38 @@ class TestInterpreter(unittest.TestCase):
         self.assertEqual(','.join(str(s.sample_start()) for i in range(10)),
                          'aaa,aaaa,aaaa,aaa,aaaa,aaaa,aaaa,aaa,aaa,aaa')
 
-    def test_rep_geom(self):
+    def test_rep_dists(self):
         s = GrammaInterpreter('''
                start := 'a'{geom(3)};
            ''')
         s.random.seed(1)
-        self.assertEqual(','.join(str(s.sample_start()) for i in range(10)), ',aaaa,aa,aa,,aaaaaaaa,aa,a,,a')
+        self.assertEqual(','.join(str(s.sample_start()) for i in range(10)),
+                         ',aaaa,aa,aa,,aaaaaaaa,aa,a,,a')
+
+        s = GrammaInterpreter('''
+               start := 'a'{norm(5,3)};
+           ''')
+        s.random.seed(1)
+        self.assertEqual(','.join(str(s.sample_start()) for i in range(10)),
+                         'aaaaaaaaaaa,aa,aaaaaaa,aaaaaa,aaaa,aaaa,aaaaaaaaaaa,aaaa,aaaaaa,aaaa')
+
+        s = GrammaInterpreter('''
+               start := 'a'{binom(5,.7)};
+           ''')
+        s.random.seed(1)
+        self.assertEqual(','.join(str(s.sample_start()) for i in range(10)),
+                         'aaaa,aaa,aaa,aaaa,aaaaa,aa,aaaa,aaaa,aaaa,aaaa')
+
+        s = GrammaInterpreter('''
+               start := 'a'{choice(1,2,3)};
+           ''')
+        s.random.seed(1)
+        self.assertEqual(','.join(str(s.sample_start()) for i in range(10)),
+                         'a,aaa,aa,aa,a,aaa,aa,aa,a,a')
 
     def test_rep_gcode(self):
         class G(GrammaInterpreter):
-            x:int
+            x: int
 
         s = G('''
                start := 'a'{`x-1`, `x+1`};

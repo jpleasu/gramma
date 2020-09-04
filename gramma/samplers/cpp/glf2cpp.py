@@ -3,22 +3,25 @@ r"""
 C++ sampler support
 
 TODO
-- add gdfuncs
-- add rule wrapping
+- add rule wrapping for depth tracking
 - support wchar_t
     - if we're in multibyte mode, use ENCODING, else, emit character to C++ file and use L'xxx' or L'\u....'
       with wchar_t
     - see emit_method_GRange
 
 """
-import logging
+from typing import Dict, cast, List, Union, Iterable, Optional, IO, Set, Callable, Tuple, Literal
+
 import os
 import sys
-from typing import Dict, cast, List, Union, Iterable, Optional, IO, Set, Callable, Tuple, Literal
+import re
+import shutil
 
 from gramma.util.emitters import Emitter
 from ...parser import GExpr, GTok, GFuncRef, GInternal, GVarRef, GCode, GRuleRef, RepDist, \
     GrammaParseError, GAlt, GDenoted, GCat, GTern, GChooseIn, GRange, GRep, GrammaGrammar, GDFuncRef
+
+import logging
 
 log = logging.getLogger('gramma.samplers.cpp')
 
@@ -27,7 +30,32 @@ ENCODING = 'utf8'
 
 INCLUDE_DIR = os.path.join(os.path.dirname(__file__), 'include')
 
+# generated code is only C++11
+# for std::variant denotation_t, need C++17
+# for auto parameter gdfuncs, need c++20
+CXXFLAGS = ['-std=c++20']
+
 EmitMode = Literal['definition', 'declaration']
+
+
+def quote_shell_arg(s: str) -> str:
+    if re.search(r'''[\s"']''', s) is not None:
+        if '"' in s:
+            s = s.replace('"', r'\"')
+        return f'"{s}"'
+    return s
+
+
+def shell_join(call_args: List[str]) -> str:
+    return ' '.join(quote_shell_arg(a) for a in call_args)
+
+
+def get_compiler() -> Optional[str]:
+    cxx = os.environ.get('CXX')
+    if cxx is None:
+        cxx = shutil.which('clang++') or shutil.which('g++')
+        # cxx = shutil.which('g++') or shutil.which('clang++')
+    return cxx
 
 
 def encode_as_cpp(s: Union[str, bytes, int], quote: str) -> str:
@@ -80,6 +108,7 @@ class CppEmitter(Emitter):
 
     ident: Dict[GExpr, str]
     varids: Set[str]  # (vname)
+    gdfs: Set[Tuple[str, int]]  # (fname, nargs)
     gfs: Set[Tuple[str, int]]  # (fname, nargs)
 
     def __init__(self, grammar: GrammaGrammar, sampler_name: str,
@@ -93,6 +122,7 @@ class CppEmitter(Emitter):
         # walk the AST to collect info
         self.ident = {}
         self.varids = set()
+        self.gdfs = set()
         self.gfs = set()
         for ruledef in self.grammar.ruledefs.values():
             self.walk_ast(ruledef.rhs)
@@ -106,8 +136,9 @@ class CppEmitter(Emitter):
 
         if isinstance(ge, GVarRef):
             self.varids.add(ge.vname)
-
-        if isinstance(ge, GFuncRef):
+        elif isinstance(ge, GDFuncRef):
+            self.gdfs.add((ge.fname, len(ge.fargs)))
+        elif isinstance(ge, GFuncRef):
             self.gfs.add((ge.fname, len(ge.fargs)))
 
         if isinstance(ge, GInternal):
@@ -335,6 +366,9 @@ class CppEmitter(Emitter):
         if isinstance(ge, GRuleRef):
             args = ','.join(self.invoke(c) for c in ge.rargs)
             return f'{ge.rname}({args})'
+        elif isinstance(ge, GDFuncRef):
+            args = ','.join(self.as_gdfunc_arg(c) for c in ge.fargs)
+            return f'{ge.fname}({args})'
         elif isinstance(ge, GFuncRef):
             args = ','.join(self.as_gfunc_arg(c) for c in ge.fargs)
             return f'{ge.fname}({args})'
@@ -349,6 +383,18 @@ class CppEmitter(Emitter):
         else:
             return f'{self.ident[ge]}()'
 
+    def as_gdfunc_arg(self, ge: GExpr) -> str:
+        if isinstance(ge, GTok):
+            return self.invoke(ge)
+        elif isinstance(ge, GDFuncRef):
+            return self.invoke(ge)
+        elif isinstance(ge, GVarRef):
+            return self.invoke(ge)
+        elif isinstance(ge, GCode):
+            return self.invoke(ge)
+        else:
+            raise CppEmitterError('bad node in denotation tree: ' + ge.__class__.__name__)
+
     def as_gfunc_arg(self, ge: GExpr) -> str:
         """
         return a C++ callable to pass into a gfunc.
@@ -359,9 +405,9 @@ class CppEmitter(Emitter):
         if isinstance(ge, GTok):
             return f'[]() {{return {self.invoke(ge)};}}'
         elif isinstance(ge, GFuncRef):
-            return f'[]() {{return {self.invoke(ge)};}}'
+            return f'[this]() {{return {self.invoke(ge)};}}'
         elif isinstance(ge, GVarRef):
-            return f'[]() {{return {self.invoke(ge)};}}'
+            return f'[this]() {{return {self.invoke(ge)};}}'
         elif isinstance(ge, GCode):
             return f'[&]() {{return {self.invoke(ge)};}}'
         elif isinstance(ge, GRuleRef):
@@ -412,7 +458,32 @@ class CppEmitter(Emitter):
         if mode == 'declaration':
             self.emit('\n\n// implementation declaration', trim=False)
             with self.indentation(f'''\
-                using denotation_t = int;
+                using char_t = char;
+
+                using string_t = std::basic_string<char_t>;
+                // using char_t = wchar_t;
+
+                struct denotation_t : public std::variant<int,double,string_t> {{
+                    using base_type = std::variant<int,double,string_t>;
+                    using base_type::variant;
+                }};
+
+                template<class T>
+                string_t str(T && arg) {{
+                    return std::to_string(std::forward<T>(arg));
+                    //return std::to_wstring(std::forward<T>(arg));
+                }};
+
+                template<>
+                string_t str<denotation_t &>(denotation_t &d) {{
+                    switch(d.index()) {{
+                        case 0: return str(std::get<int>(d));
+                        case 1: return str(std::get<double>(d));
+                        case 2: return std::get<string_t>(d);
+                    }}
+                    return {{}};
+                }}
+
                 using sample_t = gramma::basic_sample<denotation_t, char>;
 
                 class {self.impl_name}: public gramma::SamplerBase<{self.sampler_name}, sample_t> {{
@@ -431,33 +502,71 @@ class CppEmitter(Emitter):
                     }}
 
                     // gfuncs
-                    sample_t show_den(sample_t a) {{
-                        return sample_t(a + "<" + std::to_string(a.d) + ">", a.d);
-                    }}
 
+                    // for testing
                     sample_t show_den_lazy(func_type m) {{
                         auto a=m();
-                        return sample_t(a + "<" + std::to_string(a.d) + ">", a.d);
+                        return sample_t(a + "<" + str(a.d) + ">", a.d);
+                    }}
+
+                    // this non-lazy form of the previous gfunc relies on a
+                    // callable-converting constructor of sample_t
+                    sample_t show_den(sample_t a) {{
+                        return sample_t(a + "<" + str(a.d) + ">", a.d);
+                    }}
+
+                    sample_t x2(func_type m) {{
+                        auto a=m();
+                        icat(a,a);
+                        return a;
                     }}
                 ''')
 
-                # emit gfunc stubs
-                skip = set(['show_den', 'show_den_lazy'])
+                # emit func stub declarations
+                skip = set(['show_den', 'show_den_lazy', 'x2'])
                 for fname, nargs in self.gfs:
                     if fname not in skip:
                         args = ','.join('func_type arg%d' % i for i in range(nargs))
                         self.emit(f'sample_type {fname}({args});')
+                self.emit('''
+                    // gdfuncs
+                    
+                    // sample_t implicity passed via string_t variant constructor
+                    denotation_t get_den(sample_t s)  {
+                        return s.d;
+                    }
+                ''', trim=False)
+                for fname, nargs in self.gdfs:
+                    args = ','.join('denotation_type arg%d' % i for i in range(nargs))
+                    self.emit(f'denotation_type {fname}({args});')
 
         elif mode == 'definition':
-            # emit gfunc stub definitions
+            # emit func stub definitions
             self.emit('\n\n// implementation definition', trim=False)
             class_name = self.impl_name
-            skip = set(['show_den', 'show_den_lazy'])
+            skip = set(['show_den', 'show_den_lazy', 'x2'])
             for fname, nargs in self.gfs:
                 if fname not in skip:
                     args = ','.join('func_type arg%d' % i for i in range(nargs))
                     with self.indentation(f'{class_name}::sample_type {class_name}::{fname}({args}){{', '}'):
-                        self.emit('return {};')
+                        self.emit(f'return "({fname} stub)";')
+            for fname, nargs in self.gdfs:
+                args = ','.join('denotation_type arg%d' % i for i in range(nargs))
+                with self.indentation(f'{class_name}::denotation_type {class_name}::{fname}({args}){{', '}'):
+                    self.emit(f'return "({fname} stub)";')
+
+    def emit_sampler_start(self) -> None:
+        self.emit(f'''\
+            #include <utility>
+            #include <iostream>
+            #include <string>
+            #include <variant>
+
+            #include "gramma/gramma.hpp"
+            #include "gramma/sample.hpp"
+
+            class {self.sampler_name};
+        ''', trim=False)
 
     def write_monolithic_main(self, count: Optional[int] = 1, seed: Optional[int] = 1,
                               out: Union[None, str, IO[str]] = None,
@@ -465,17 +574,7 @@ class CppEmitter(Emitter):
         if out is not None:
             self.write_to(out, mode)
 
-        self.emit(f'''\
-            #include <string>
-            #include <iostream>
-            #include <utility>
-            
-            #include "gramma/gramma.hpp"
-            #include "gramma/sample.hpp"
-            
-            class {self.sampler_name};
-        ''', trim=False)
-
+        self.emit_sampler_start()
         self.emit_implementation('declaration')
         self.emit_sampler('declaration')
         self.emit_implementation('definition')
@@ -502,7 +601,18 @@ class CppEmitter(Emitter):
         ''')
 
 
-def main():
+def check_force(path: str, force_level: int, force_limit: int) -> bool:
+    if os.path.exists(path):
+        if force_level >= force_limit:
+            log.info(f'overwriting existing {path}')
+            return True
+        else:
+            log.info(f'using existing {path}, overwrite with -{"f" * force_limit}')
+            return False
+    return True
+
+
+def main(main_args: Optional[List[str]] = None) -> None:
     import argparse
     from argparse import RawTextHelpFormatter
 
@@ -510,15 +620,17 @@ def main():
 
     parser = argparse.ArgumentParser(description='generate a C++ sampler for a gramma GLF file',
                                      formatter_class=RawTextHelpFormatter)
+
     parser.add_argument('glf', metavar='GLF_IN', type=argparse.FileType(),
                         help='input GLF file')
+
     parser.add_argument('-s', '--sampler-name', dest='sampler_name', metavar='SAMPLER_NAME', default=None, type=str,
                         help='Name to use for sampler class (default is based on GLF)')
-    parser.add_argument('-i', '--impl-name', dest='impl_name', metavar='IMPL_NAME', default=None, type=str,
-                        help='Name to use for implementation class (default is based on sampler-name)')
 
-    parser.add_argument('-f', '--force', dest='force', action='store_true', default=False,
-                        help='force writing of sampler if it already exists')
+    parser.add_argument('-f', '--force', dest='force', action='count', default=0,
+                        help='once to overwrite generated *.inc if it already exists\n'
+                             'twice to overwrite generated files AND the implementation, *.cpp, where customizations '
+                             'belong')
 
     parser.add_argument('-m', '--main', dest='main', action='store_true', default=False,
                         help='add main (and build an executable instead of a library')
@@ -527,7 +639,7 @@ def main():
                         nargs='?', const=dummy_arg_value, default=None,
                         help='executable (exe or library) to build after generating C++ (default name based on GLF)')
 
-    args = parser.parse_args()
+    args = parser.parse_args(args=main_args)
 
     logging.basicConfig(format="glf2cpp [%(levelname)s]: %(message)s", level=logging.INFO)
 
@@ -544,16 +656,10 @@ def main():
     else:
         sampler_name = args.sampler_name
 
-    # compute impl_name
-    if args.impl_name is None:
-        impl_name = os.path.basename(glf_path_less_extension) + '_sampler'
-        log.info(f'using --impl-name {impl_name}')
-    else:
-        impl_name = args.impl_name
-
     # compute grammar
     glf_text = args.glf.read()
     grammar = GrammaGrammar(glf_text)
+    args.glf.close()
 
     sampler_decl_path = sampler_name + '_decl.inc'
     sampler_def_path = sampler_name + '_def.inc'
@@ -563,32 +669,17 @@ def main():
 
     emitter = CppEmitter(grammar, sampler_name)
 
-    with emitter.write_to(sampler_decl_path):
-        emitter.emit_sampler('declaration')
+    if check_force(sampler_decl_path, args.force, 1):
+        with emitter.write_to(sampler_decl_path):
+            emitter.emit_sampler('declaration')
 
-    with emitter.write_to(sampler_def_path):
-        emitter.emit_sampler('definition')
+    if check_force(sampler_def_path, args.force, 1):
+        with emitter.write_to(sampler_def_path):
+            emitter.emit_sampler('definition')
 
-    writing = True
-    if os.path.exists(sampler_path):
-        if args.force:
-            log.info(f'forced overwrite of {sampler_path}')
-        else:
-            log.info(f'{sampler_path} exists, not overwriting')
-            writing = False
-
-    if writing:
+    if check_force(sampler_path, args.force, 2):
         with emitter.write_to(sampler_path):
-            emitter.emit(f'''\
-                #include <string>
-                #include <iostream>
-                #include <utility>
-
-                #include "gramma/gramma.hpp"
-                #include "gramma/sample.hpp"
-
-                class {sampler_name};
-            ''')
+            emitter.emit_sampler_start()
             emitter.emit_implementation('declaration')
             emitter.emit(f'''\
                 #include "{sampler_decl_path}"
@@ -603,14 +694,12 @@ def main():
     build_bin = args.bin_path is not None
 
     if build_bin:
-        import shutil
         import subprocess
-        import re
 
         # compute bin_path
         if args.bin_path is dummy_arg_value:
             bin_path = sampler_name
-            if sys.executable.lower().endswith('.exe'):
+            if sys.executable.lower().endswith('.exe'):  # pragma: no cover
                 if args.main:
                     bin_path += '.exe'
                 else:
@@ -622,25 +711,14 @@ def main():
         else:
             bin_path = args.bin_path
 
-        # get the compiler
-        cxx = os.environ.get('CXX')
+        # get the compiler and build
+        cxx = get_compiler()
         if cxx is None:
-            cxx = shutil.which('g++') or shutil.which('clang++')
-        if cxx is None:
-            log.error('no compiler found')
-            sys.exit(2)
+            log.error('no compiler found!')
+        else:
+            cmd_args = [cxx] + CXXFLAGS + ['-O3', '-I', INCLUDE_DIR, '-o', bin_path, sampler_path]
+            if not args.main:
+                cmd_args[1:1] = ['-fPIC', '-shared']
 
-        call_args = [cxx, '-O3', '-I', INCLUDE_DIR, '-o', bin_path, sampler_path]
-        if not args.main:
-            call_args.extend(['-c', '-shared'])
-
-        def q(s: str) -> str:
-            if re.search(r'\s', s) is not None:
-                if '"' in s:
-                    s = s.replace('"', r'\"')
-                return f'"{s}"'
-            return s
-
-        cmd = ' '.join(q(a) for a in call_args)
-        log.info('  ' + cmd)
-        result = subprocess.call(call_args)
+            log.info('  ' + shell_join(cmd_args))
+            result = subprocess.call(cmd_args)

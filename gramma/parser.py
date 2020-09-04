@@ -343,8 +343,8 @@ class GExpr:
     def is_rule(self, rname=None):
         return False
 
-    def copy(self):
-        return None
+    def copy(self) -> 'GExpr':
+        return GExpr()
 
     def simplify(self):
         """copy self.. caller must ultimately set parent attribute"""
