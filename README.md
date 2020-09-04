@@ -60,21 +60,16 @@ pip3 install .
 
 For developement
 ```bash
-# to run from the repo
+# to run using repo contents (instead of copying to site-packages)
 pip3 install -e .
 
-# to test, install dependencies
-pip3 install tox pytest mypy
+# to nstall extra testing dependencies
+pip3 install -e .[tests]
 
-# for unit tests
-pytest
-
-# for static type checking
-mypy
-
-# for both
+# to run tests
 tox
 
+# coverage summary is at ./htmlcov/index.html
 ```
 
 

@@ -1,5 +1,6 @@
 htmlcov
 gramma.egg-info
+.eggs
 .idea
 .mypy_cache
 .ropeproject
