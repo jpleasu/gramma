@@ -14,6 +14,9 @@ log = logging.getLogger('gramma.samplers.interpreter')
 
 T = TypeVar('T')
 
+# the value used when the repetition isn't given an upper limit
+REP_HIGH = 2 ** 10
+
 
 class RandomAPI:
     """a proxy to numpy.random"""
@@ -48,11 +51,28 @@ class RandomAPI:
         return cast(int, self.generator.binomial(n, p))
 
 
+class Sample:
+    __slots__ = 's', 'd'
+
+    s: str
+    d: Any
+
+    def __init__(self, s: str, val: Any = None):
+        self.s = s
+        self.d = val
+
+    def __str__(self):
+        return self.s
+
+
+gcode_globals: Final[Dict[str, Any]] = {'Sample': Sample}
+
+
 class GrammaSamplerError(Exception):
     pass
 
 
-class FuncType(Protocol):
+class FuncType(Protocol):  # pragma: no cover
     def __call__(self, *args: Any, **kwargs: Any) -> Any:
         ...
 
@@ -68,19 +88,9 @@ class GFuncWrap:
         self.fname = fname
         self.lazy = lazy
 
-    def __call__(self, *args, **kw):
-        return self.func(*args, **kw)
-
-    def __str__(self):
-        return f'gfunc {self.fname}'
-
-    def copy(self):
-        return self.__class__(self.func, self.fname)
-
 
 class GDFuncWrap(GFuncWrap):
-    def __str__(self):
-        return f'gdfunc {self.fname}'
+    pass
 
 
 U = TypeVar('U', bound=Union[Type[GDFuncWrap], Type[GFuncWrap]])
@@ -105,8 +115,6 @@ def make_decorator(wrapper_class: U) -> Callable[..., Any]:
 gfunc = make_decorator(GFuncWrap)
 gdfunc = make_decorator(GDFuncWrap)
 
-gcode_globals: Final[Dict[str, Any]] = {}
-
 
 class GCodeWrap:
     __slots__ = 'code', 'compiled'
@@ -118,24 +126,11 @@ class GCodeWrap:
         self.compiled = compile(code.expr, '<GCode>', 'eval')
 
     def __call__(self, sampler: 'GrammaInterpreter') -> Any:
-        return eval(self.compiled, gcode_globals, sampler.__dict__)
+        return eval(self.compiled, gcode_globals,
+                    dict(sampler.__dict__, _=getattr(sampler, '_'), random=sampler.random))
 
 
-class Sample:
-    __slots__ = 's', 'd'
-
-    s: str
-    d: Any
-
-    def __init__(self, s: str, val: Any = None):
-        self.s = s
-        self.d = val
-
-    def __str__(self):
-        return self.s
-
-
-class SamplerInterface(Protocol):
+class SamplerInterface(Protocol):  # pragma: no cover
     random: RandomAPI
     grammar: GrammaGrammar
     gfuncmap: Dict[GFuncRef, GFuncWrap]
@@ -166,26 +161,9 @@ class SamplerInterface(Protocol):
         ...
 
 
-class GCodeHelpersSamplerMixin(SamplerInterface):
-    """
-    methods intended for use by GCode
-    """
-
-    def _(self, return_=None, **kw):
-        """
-        a convenience for assigning to the sampler from gcode
-            e.g.
-                `_(x=5)` returns None
-                `_(x, x=5)` returns the current value of sampler.x and updates x
-                `_(x, x=5)` same, but explicit
-                `_(x=5, _return=x)` return the value of x after update
-        """
-        self.__dict__.update(kw)
-        return return_
-
-
 # noinspection PyPep8Naming,PyMethodMayBeStatic
 class OperatorsImplementationSamplerMixin(SamplerInterface):
+    __slots__ = 'vars',
     vars: DictStack[str, Sample]
 
     def __init__(self):
@@ -194,7 +172,7 @@ class OperatorsImplementationSamplerMixin(SamplerInterface):
     def sample(self, ge: GExpr) -> Sample:
         handler_name = 'sample_' + ge.__class__.__name__
         m = cast(Optional[Callable[[GExpr], Sample]], getattr(self, handler_name, None))
-        if m is None:
+        if m is None:  # pragma: no cover
             msg = f'missing handler in {self.__class__.__name__}: {handler_name}'
             log.error(msg)
             raise GrammaSamplerError(msg)
@@ -237,10 +215,9 @@ class OperatorsImplementationSamplerMixin(SamplerInterface):
             if lo is None:
                 lo = 0
             if hi is None:
-                hi = 2 ** 32
+                hi = REP_HIGH
             n = self.random.integers(lo, hi + 1)
         elif dist.name.startswith('geom'):
-            # geom(n) samples have a mean of n
             n = self.random.geometric(1 / (dist.args[0].as_int() + 1)) - 1
         elif dist.name.startswith('norm'):
             n = int(.5 + self.random.normal(dist.args[0].as_float(), dist.args[1].as_float()))
@@ -249,7 +226,7 @@ class OperatorsImplementationSamplerMixin(SamplerInterface):
         elif dist.name == 'choose' or dist.name == 'choice':
             n = self.random.choice([a.as_int() for a in dist.args])
         else:
-            raise GrammaSamplerError(f"sampler has no handler for repetition distrituion {dist.name}")
+            raise GrammaSamplerError(f"sampler has no handler for repetition distribution {dist.name}")
 
         # truncate
         if lo is not None:
@@ -273,7 +250,8 @@ class OperatorsImplementationSamplerMixin(SamplerInterface):
         for b, c in ge.pairs:
             if i < c:
                 return self.create_sample(chr(b + i))
-        raise GrammaSamplerError('range exceeded')
+            i -= c
+        raise GrammaSamplerError('range exceeded')  # pragma: no cover
 
     def sample_GRuleRef(self, ge: GRuleRef) -> Sample:
         rule = self.grammar.ruledefs[ge.rname]
@@ -289,9 +267,16 @@ class OperatorsImplementationSamplerMixin(SamplerInterface):
         with self.vars.context(dict(zip(ge.vnames, dists))):
             return self.sample(ge.child)
 
+    def sample_GCode(self, ge: GCode) -> Sample:
+        v = self.exec(ge)
+        if isinstance(v, Sample):
+            return v
+        else:
+            return Sample(str(v))
+
     def sample_GVarRef(self, ge: GVarRef) -> Sample:
         s = self.vars.get(ge.vname)
-        if s is None:
+        if s is None:  # pragma: no cover
             raise GrammaSamplerError(f'undefined variable "{ge.vname}" ')
         return s
 
@@ -309,11 +294,10 @@ class OperatorsImplementationSamplerMixin(SamplerInterface):
         val = self.evaluate_denotation(ge.right)
         return self.denote(s, val)
 
-    # denotation
     def evaluate_denotation(self, ge: GExpr) -> Any:
         handler_name = 'evaluate_denotation_' + ge.__class__.__name__
         m = getattr(self, handler_name, None)
-        if m is None:
+        if m is None:  # pragma: no cover
             msg = f'missing handler in {self.__class__.__name__}: {handler_name}'
             log.error(msg)
             raise GrammaSamplerError(msg)
@@ -364,7 +348,7 @@ class OperatorsImplementationSamplerMixin(SamplerInterface):
         while True:
             handler_name = 'coro_evaluate_denotation_' + ge.__class__.__name__
             m = getattr(self, handler_name, None)
-            if m is None:
+            if m is None:  # pragma: no cover
                 msg = f'missing handler in {self.__class__.__name__}: {handler_name}'
                 log.error(msg)
                 raise GrammaSamplerError(msg)
@@ -410,22 +394,26 @@ class OperatorsImplementationSamplerMixin(SamplerInterface):
             hi = None
         else:
             hi = self.eval_int(ge.hi)
-        d = ge.dist.name
+        dist = ge.dist
         n: int
         if lo == hi and lo is not None:
             n = lo
-        elif d.startswith('unif'):
+        elif dist.name.startswith('unif'):
             if lo is None:
                 lo = 0
             if hi is None:
-                hi = 2 ** 32
+                hi = REP_HIGH
             n = self.random.integers(lo, hi + 1)
-        elif d.startswith('geom'):
-            n = int(0.5 + self.random.geometric(1 / (ge.dist.args[0].as_int
-                                                     () + 1)))
+        elif dist.name.startswith('geom'):
+            n = self.random.geometric(1 / (dist.args[0].as_int() + 1)) - 1
+        elif dist.name.startswith('norm'):
+            n = int(0.5 + self.random.normal(dist.args[0].as_float(), dist.args[1].as_float()))
+        elif dist.name.startswith('binom'):
+            n = self.random.binomial(dist.args[0].as_int(), dist.args[1].as_float())
+        elif dist.name == 'choose' or dist.name == 'choice':
+            n = self.random.choice([a.as_int() for a in dist.args])
         else:
-            raise GrammaSamplerError(
-                f'sampler has no handler for repetition distrituion {d}')
+            raise GrammaSamplerError(f'sampler has no handler for repetition distribution {dist.name}')
         if lo is not None:
             n = max(lo, n)
         if hi is not None:
@@ -445,6 +433,7 @@ class OperatorsImplementationSamplerMixin(SamplerInterface):
         for b, c in ge.pairs:
             if i < c:
                 yield self.create_sample(chr(b + i))
+            i -= c
         raise GrammaSamplerError('range exceeded')
 
     def coro_sample_GRuleRef(self, ge: GRuleRef) -> Generator[Union[GExpr, Sample], Sample, None]:
@@ -467,9 +456,16 @@ class OperatorsImplementationSamplerMixin(SamplerInterface):
         with self.vars.context(dict(zip(ge.vnames, dists))):
             yield (yield ge.child)
 
+    def coro_sample_GCode(self, ge: GCode) -> Generator[Union[GExpr, Sample], Sample, None]:
+        v = self.exec(ge)
+        if isinstance(v, Sample):
+            yield v
+        else:
+            yield Sample(str(v))
+
     def coro_sample_GVarRef(self, ge: GVarRef) -> Generator[Union[GExpr, Sample], Sample, None]:
         s = self.vars.get(ge.vname)
-        if s is None:
+        if s is None:  # pragma: no cover
             raise GrammaSamplerError(f'undefined variable "{ge.vname}" ')
         yield s
 
@@ -521,15 +517,17 @@ class OperatorsImplementationSamplerMixin(SamplerInterface):
         yield self.exec(ge)
 
 
-class GrammaInterpreter(OperatorsImplementationSamplerMixin, GCodeHelpersSamplerMixin, SamplerInterface):
+class GrammaInterpreter(OperatorsImplementationSamplerMixin, SamplerInterface):
     """
     A sampler that interprets GLF on the function stack.  It's slow, so only use it to prototype and debug a grammar.
     """
-    __slots__ = 'grammar', 'random', 'gfuncmap', 'gdfuncmap', 'gcodemap'
+    __slots__ = 'grammar', 'random', 'gfuncmap', 'coro_gfuncmap', 'gdfuncmap', 'coro_gdfuncmap', 'gcodemap'
     grammar: GrammaGrammar
     random: RandomAPI
     gfuncmap: Dict[GFuncRef, GFuncWrap]
+    coro_gfuncmap: Dict[GFuncRef, GFuncWrap]
     gdfuncmap: Dict[GDFuncRef, GDFuncWrap]
+    coro_gdfuncmap: Dict[GDFuncRef, GDFuncWrap]
     gcodemap: Dict[GCode, GCodeWrap]
 
     @staticmethod
@@ -552,7 +550,6 @@ class GrammaInterpreter(OperatorsImplementationSamplerMixin, GCodeHelpersSampler
         grammar is either a GrammaGrammar object, a string containing GLF, or a file handle to a GLF file.
         """
         OperatorsImplementationSamplerMixin.__init__(self)
-        GCodeHelpersSamplerMixin.__init__(self)
 
         self.grammar = GrammaGrammar.of(grammar)
         self.gfuncmap = {}
@@ -608,15 +605,22 @@ class GrammaInterpreter(OperatorsImplementationSamplerMixin, GCodeHelpersSampler
             log.error(msg)
             raise GrammaSamplerError(msg)
 
-    def _(self, return_=None, **kw):
+    def _(self, *args, return_=None, **kw):
         """
         a convenience for assigning to the sampler from gcode
             e.g.
                 `_(x=5)` returns None
                 `_(x, x=5)` returns the current value of sampler.x and updates x
         """
-        self.__dict__.update(kw)
-        return return_
+
+        ret = return_
+        if len(args) > 0:
+            ret = args[-1]
+
+        for k, v in kw.items():
+            setattr(self, k, v)
+
+        return ret
 
     def exec(self, gc: GCode) -> Any:
         return self.gcodemap[gc](self)

@@ -236,6 +236,13 @@ class TestNodes(unittest.TestCase):
 
 
 class TestMain(unittest.TestCase):
+    def setUp(self) -> None:
+        self.test_dir = tempfile.TemporaryDirectory()
+        os.chdir(self.test_dir.name)
+
+    def tearDown(self) -> None:
+        self.test_dir.cleanup()
+
     def assertFileExists(self, path: str) -> None:
         self.assertTrue(os.path.exists(path), f'file missing: {path}')
 

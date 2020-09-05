@@ -47,7 +47,7 @@ gramma_grammar = r"""
     
     ?denoted : cat ("/" denotation)*
     
-    ?denotation : number | string | identifier | code  | dfunc
+    ?denotation : number | string | identifier | code | dfunc
     dfunc.2 : identifier "(" dfunc_args? ")"
     dfunc_args : denotation ("," denotation)*
     
