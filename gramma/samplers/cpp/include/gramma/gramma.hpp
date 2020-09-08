@@ -88,7 +88,7 @@ namespace gramma {
     template <class SamplerT, class SampleT>
     class SamplerBase {
       public:
-        using func_type = std::function<SampleT()>;
+        using sample_factory_type = std::function<SampleT()>;
         using sample_type = SampleT;
         using denotation_type = typename sample_type::denotation_type;
 
@@ -100,6 +100,20 @@ namespace gramma {
         }
         void pop_vars() {
             vars.pop_front();
+        }
+        struct vars_guard_t {
+            SamplerBase &sampler;
+
+            vars_guard_t(SamplerBase &sampler) : sampler(sampler) {
+                sampler.push_vars();
+            }
+            ~vars_guard_t() {
+                sampler.pop_vars();
+            }
+        };
+
+        vars_guard_t vars_guard() {
+            return { *this };
         }
 
         template <class T>

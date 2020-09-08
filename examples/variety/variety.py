@@ -25,7 +25,7 @@ class VarietySampler(GrammaInterpreter):
         return self.create_sample('ff')
 
     def a_func(self):
-        return 2 if a else 1
+        return 2 if self.a else 1
 
 
 if __name__ == '__main__':

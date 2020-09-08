@@ -31,10 +31,10 @@ namespace gramma {
         basic_sample(int count, CharT c, denotation_type d = {}) : string_type(count, c), d(d) {
         }
 
-        // allows non-lazy (basic_sample) gfunc arguments by converting from lazy (func_type)
+        // allows non-lazy (basic_sample) gfunc arguments by converting from lazy (sample_factory_type)
         template <class T>
         basic_sample(T m) : basic_sample(m()) {
-            static_assert(std::is_base_of<basic_sample<denotation_type, CharT>, decltype(m())>::value,
+            static_assert(std::is_convertible<decltype(m()), basic_sample<denotation_type, CharT>>::value,
                           "callable-converting constructor argument must return sample");
         }
     };

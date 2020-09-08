@@ -123,6 +123,52 @@ glf2cpp --help
 
 TODO: example
 
+### function argument evaluation order
+Unfortunately, argument evaluation order cannot be prescribed in C++. In particular, we can't assume that `g1` is 
+executed first in the following expression:
+```C++
+f(g1(), g2(), g3());
+```
+We can force the order by injecting sequence points:
+```C++
+auto &&a1=g1();
+auto &&a2=g2();
+auto &&a3=g3();
+f(std::move(a1), std::move(a2), std::move(a3));
+```
+but there is a small performance hit -- the compiler can no longer perform copy/move elision.
+
+The `glf2cpp` option `--enforce_ltr` will generate this extra code.
+
+Even still, the converting constructor of `sample_t` might run into this as well. Calls to gfuncs are generated 
+with callable arguments:
+```C++
+f(g1,g2,g3)
+```
+This allows gfunc implementations to avoid ever sampling subexpressions.  It also allows the gfunc to prescribe 
+the evaluation order.
+
+For simpler gfunc implementations, `sample_t` has a coverting constructor, from callable to sample.  E.g. the following
+prototype for a gfunc is fine:
+```C++
+sample_t f(sample_t a1, sample_t a2, sample_t a3);
+```
+The problem is that the compiler will invoke the callable converting-constructor of `sample_t` for each argument, in
+the compiler's arbitrary argument evaluation order.
+
+So, **if the order of argument sampling matters** then use `--enforce_ltr` and define your gfuncs with 
+`sample_factor_type` argument types:
+```C++
+sample_t f(sample_factory_type a1f, sample_factory_type a2f, sample_factory_type a3f) {
+    auto &&a1=a1f();
+    auto &&a2=a2f();
+    auto &&a3=a3f();
+
+    return a1+a2+a3;
+}
+```
+
+
 
 # GLF syntax
 

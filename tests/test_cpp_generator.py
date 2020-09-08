@@ -67,12 +67,6 @@ class TestHandlers(unittest.TestCase):
             emitter = CppEmitter(grammar, 'dummy_sampler')
             emitter.emit_method(GFake(), 'definition')
 
-    def test_gdfunc_args(self):
-        with self.assertRaises(CppEmitterError):
-            grammar = GrammaGrammar("start := 'a';")
-            emitter = CppEmitter(grammar, 'dummy_sampler')
-            emitter.as_gdfunc_arg(GFake())
-
     def test_invoke_rep_dist(self):
         with self.assertRaises(GrammaParseError):
             grammar = GrammaGrammar("start := 'a'{fake(1,2,3)};")
@@ -82,11 +76,13 @@ class TestHandlers(unittest.TestCase):
                 emitter.write_monolithic_main()
 
 
+# noinspection PyArgumentEqualDefault
 class TestNodes(unittest.TestCase):
-    def assertSampleEquals(self, glf: str, expected: str, count: Optional[int] = 10, seed: int = 1) -> None:
+    def assertSampleEquals(self, glf: str, expected: str, count: Optional[int] = 10, seed: int = 1,
+                           enforce_ltr: bool = True) -> None:
         g = GrammaGrammar(glf)
         with tempfile.NamedTemporaryFile(mode='w', suffix='.cpp', encoding='utf8') as tmpsourcefile:
-            e = CppEmitter(g, 'test_grammar', out=tmpsourcefile, echo=sys.stdout)
+            e = CppEmitter(g, 'test_grammar', out=tmpsourcefile, echo=None, enforce_ltr=enforce_ltr)
 
             tmpexecutable = tempfile.NamedTemporaryFile(dir=os.getcwd(), delete=False)
 
@@ -228,11 +224,27 @@ class TestNodes(unittest.TestCase):
             start := show_den('a'/gdf(`1+1`));
         ''', 'a<(gdf stub)>', count=1)
 
-    def test_GRule(self):
+    def test_GRule_parameters(self):
         self.assertSampleEquals('''
-            start := r('a'|'b', 'c'|'d'). ' ';
-            r(x,y) := x.x.y.y;
-        ''', 'aacc aacc aadd aacc bbdd aadd bbcc aacc aadd aacc ')
+            start := r('a','b','c');
+            r(x,y,z) := x.x.y.y.z.z;
+        ''', 'aabbcc', count=1)
+
+    def test_GRule_evaluation_order(self):
+        """
+        The C++ compiler argument evaluation order effects this
+        """
+        expected_ltr = 'bcfg'
+        if 'clang' in CXX:
+            expected = expected_ltr
+        else:
+            expected = 'adeh'
+        G = '''
+            start := r('a'|'b', 'c'|'d', 'e'|'f', 'g'|'h');
+            r(w,x,y,z) := w.x.y.z;
+        '''
+        self.assertSampleEquals(G, expected, seed=3, count=1, enforce_ltr=False)
+        self.assertSampleEquals(G, expected_ltr, seed=3, count=1, enforce_ltr=True)
 
 
 class TestMain(unittest.TestCase):

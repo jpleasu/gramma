@@ -53,8 +53,7 @@ def shell_join(call_args: List[str]) -> str:
 def get_compiler() -> Optional[str]:
     cxx = os.environ.get('CXX')
     if cxx is None:
-        cxx = shutil.which('clang++') or shutil.which('g++')
-        # cxx = shutil.which('g++') or shutil.which('clang++')
+        cxx = shutil.which('g++') or shutil.which('clang++')
     return cxx
 
 
@@ -102,22 +101,30 @@ class CppEmitterError(Exception):
 
 # noinspection PyPep8Naming
 class CppEmitter(Emitter):
+    enforce_ltr: bool
+
     grammar: GrammaGrammar
     sampler_name: str
     impl_name: str
 
+    nlocals: int
     ident: Dict[GExpr, str]
     varids: Set[str]  # (vname)
     gdfs: Set[Tuple[str, int]]  # (fname, nargs)
     gfs: Set[Tuple[str, int]]  # (fname, nargs)
 
     def __init__(self, grammar: GrammaGrammar, sampler_name: str,
+                 enforce_ltr: bool = True,
                  out: Union[None, str, IO[str]] = None, echo: Optional[IO[str]] = None):
         Emitter.__init__(self, out, echo)
+
+        self.enforce_ltr = enforce_ltr
 
         self.grammar = grammar
         self.sampler_name = sampler_name
         self.impl_name = sampler_name + '_impl'
+
+        self.nlocals = 0
 
         # walk the AST to collect info
         self.ident = {}
@@ -191,32 +198,22 @@ class CppEmitter(Emitter):
             for ruledef in self.grammar.ruledefs.values():
                 self.emit_method(ruledef.rhs, mode='definition')
 
-                if len(ruledef.params) > 0:
-                    parms = ','.join(f'{sample_type} {vname}' for vname in ruledef.params)
-                    with self.indentation(f'''\
-                        // RuleDef {ruledef.locstr()}
-                        inline {sample_type} {class_name}::{ruledef.rname}({parms}) {{
-                    ''', '}'):
+                parms = ','.join(f'{sample_type} {vname}' for vname in ruledef.params)
+                with self.indentation(f'''\
+                    // RuleDef {ruledef.locstr()}
+                    inline {sample_type} {class_name}::{ruledef.rname}({parms}) {{
+                ''', '}'):
+                    if len(ruledef.params) > 0:
                         self.emit('''\
-                            push_vars();
-                        ''')
+                            vars_guard_t _vars_guard=vars_guard();
+                            ''')
                         for vname in ruledef.params:
                             self.emit(f'''\
                             set_var(varid_t::{vname}, {vname});
                             ''')
-                        self.emit(f'''
-                            auto result = {self.invoke(ruledef.rhs)};
-                            pop_vars();
-                            return result;
-                        ''')
-                else:
-                    with self.indentation(f'''\
-                        // RuleDef {ruledef.locstr()}
-                        inline {sample_type} {class_name}::{ruledef.rname}() {{
-                    ''', '}'):
-                        self.emit(f'''
-                            return {self.invoke(ruledef.rhs)};
-                        ''')
+                    self.emit(f'''
+                        return {self.invoke(ruledef.rhs)};
+                    ''')
 
     def emit_method(self, ge: GExpr, mode: EmitMode) -> None:
         # emit children first
@@ -312,22 +309,20 @@ class CppEmitter(Emitter):
             inline {self.sampler_name}::sample_type {self.sampler_name}::{gid}() {{
         ''', '}'):
             self.emit(f'''\
-                push_vars();
+                vars_guard_t _vars_guard=vars_guard();
             ''')
             for name, value_dist in zip(ge.vnames, ge.dists):
                 self.emit(f'''\
                 set_var(varid_t::{name}, {self.invoke(value_dist)});
                 ''')
             self.emit(f'''\
-                auto result = {self.invoke(ge.child)};
-                pop_vars();
-                return result;
+                return {self.invoke(ge.child)};
             ''')
 
     def emit_method_GRange(self, ge: GRange) -> None:
         gid = self.ident[ge]
 
-        # TODO we only handle multibyte mode.. "wide" chars are converted to multibyte with ENCODING
+        # TODO handle multibyte mode by inserting L all over
         encoded = [c.encode(ENCODING) for c in ge.chars]
         if any(len(c) > 1 for c in encoded):
             chars = ','.join(encode_as_cpp_str(c) for c in ge.chars)
@@ -355,22 +350,44 @@ class CppEmitter(Emitter):
             // GDenoted {ge.locstr()}
             inline {self.sampler_name}::sample_type {self.sampler_name}::{gid}() {{
         ''', '}'):
-            self.emit(f'''\
-                return denote({self.invoke(ge.left)}, {self.invoke(ge.right)});
-            ''')
+            if self.enforce_ltr:
+                arg = self.next_local()
+                self.emit(f'''\
+                    auto &&{arg}={self.invoke(ge.left)};
+                    return denote(std::move({arg}), {self.invoke(ge.right)});
+                ''')
+            else:
+                self.emit(f'''\
+                    return denote({self.invoke(ge.left)}, {self.invoke(ge.right)});
+                ''')
+
+    def next_local(self):
+        a = f'a{self.nlocals}'
+        self.nlocals += 1
+        return a
+
+    def invoke_function(self, name: str, gargs: List[GExpr]) -> str:
+        if self.enforce_ltr and len(gargs) >= 2:
+            argl = []
+            for c in gargs[:-1]:
+                arg = self.next_local()
+                self.emit(f'auto &&{arg}={self.invoke(c)};')
+                argl.append(f'std::move({arg})')
+            argl.append(self.invoke(gargs[-1]))
+        else:
+            argl = [self.invoke(c) for c in gargs]
+        return f'{name}({",".join(argl)})'
 
     def invoke(self, ge: GExpr) -> str:
         """
         return a C++ expression that samples the given GExpr when executed.
         """
         if isinstance(ge, GRuleRef):
-            args = ','.join(self.invoke(c) for c in ge.rargs)
-            return f'{ge.rname}({args})'
+            return self.invoke_function(ge.rname, ge.rargs)
         elif isinstance(ge, GDFuncRef):
-            args = ','.join(self.as_gdfunc_arg(c) for c in ge.fargs)
-            return f'{ge.fname}({args})'
+            return self.invoke_function(ge.fname, ge.fargs)
         elif isinstance(ge, GFuncRef):
-            args = ','.join(self.as_gfunc_arg(c) for c in ge.fargs)
+            args = ','.join(self.invoke_as_callable(c) for c in ge.fargs)
             return f'{ge.fname}({args})'
         elif isinstance(ge, GVarRef):
             return f'get_var(varid_t::{ge.vname})'
@@ -383,19 +400,7 @@ class CppEmitter(Emitter):
         else:
             return f'{self.ident[ge]}()'
 
-    def as_gdfunc_arg(self, ge: GExpr) -> str:
-        if isinstance(ge, GTok):
-            return self.invoke(ge)
-        elif isinstance(ge, GDFuncRef):
-            return self.invoke(ge)
-        elif isinstance(ge, GVarRef):
-            return self.invoke(ge)
-        elif isinstance(ge, GCode):
-            return self.invoke(ge)
-        else:
-            raise CppEmitterError('bad node in denotation tree: ' + ge.__class__.__name__)
-
-    def as_gfunc_arg(self, ge: GExpr) -> str:
+    def invoke_as_callable(self, ge: GExpr) -> str:
         """
         return a C++ callable to pass into a gfunc.
 
@@ -504,7 +509,7 @@ class CppEmitter(Emitter):
                     // gfuncs
 
                     // for testing
-                    sample_t show_den_lazy(func_type m) {{
+                    sample_t show_den_lazy(sample_factory_type m) {{
                         auto a=m();
                         return sample_t(a + "<" + str(a.d) + ">", a.d);
                     }}
@@ -515,7 +520,7 @@ class CppEmitter(Emitter):
                         return sample_t(a + "<" + str(a.d) + ">", a.d);
                     }}
 
-                    sample_t x2(func_type m) {{
+                    sample_t x2(sample_factory_type m) {{
                         auto a=m();
                         icat(a,a);
                         return a;
@@ -523,10 +528,10 @@ class CppEmitter(Emitter):
                 ''')
 
                 # emit func stub declarations
-                skip = set(['show_den', 'show_den_lazy', 'x2'])
+                skip = {'show_den', 'show_den_lazy', 'x2'}
                 for fname, nargs in self.gfs:
                     if fname not in skip:
-                        args = ','.join('func_type arg%d' % i for i in range(nargs))
+                        args = ','.join('sample_factory_type arg%d' % i for i in range(nargs))
                         self.emit(f'sample_type {fname}({args});')
                 self.emit('''
                     // gdfuncs
@@ -544,10 +549,10 @@ class CppEmitter(Emitter):
             # emit func stub definitions
             self.emit('\n\n// implementation definition', trim=False)
             class_name = self.impl_name
-            skip = set(['show_den', 'show_den_lazy', 'x2'])
+            skip = {'show_den', 'show_den_lazy', 'x2'}
             for fname, nargs in self.gfs:
                 if fname not in skip:
-                    args = ','.join('func_type arg%d' % i for i in range(nargs))
+                    args = ','.join('sample_factory_type arg%d' % i for i in range(nargs))
                     with self.indentation(f'{class_name}::sample_type {class_name}::{fname}({args}){{', '}'):
                         self.emit(f'return "({fname} stub)";')
             for fname, nargs in self.gdfs:
@@ -624,6 +629,10 @@ def main(main_args: Optional[List[str]] = None) -> None:
     parser.add_argument('glf', metavar='GLF_IN', type=argparse.FileType(),
                         help='input GLF file')
 
+    parser.add_argument('--enforce_ltr', dest='enforce_ltr', action='store_true', default=False,
+                        help='enforce left to right sampling of rule, denotation, and gdfunc arguments\n'
+                             'note: to prescribe gfunc argument sample order, use sample_factory_type arguments')
+
     parser.add_argument('-s', '--sampler-name', dest='sampler_name', metavar='SAMPLER_NAME', default=None, type=str,
                         help='Name to use for sampler class (default is based on GLF)')
 
@@ -667,7 +676,7 @@ def main(main_args: Optional[List[str]] = None) -> None:
 
     impl_path = sampler_name + '.cpp'
 
-    emitter = CppEmitter(grammar, sampler_name)
+    emitter = CppEmitter(grammar, sampler_name, enforce_ltr=args.enforce_ltr)
 
     if check_force(sampler_decl_path, args.force, 1):
         with emitter.write_to(sampler_decl_path):
