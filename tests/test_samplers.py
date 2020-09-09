@@ -2,7 +2,7 @@
 
 import unittest
 from functools import reduce
-from typing import Any, Callable, Protocol, List, Optional, Union
+from typing import Any, Callable, Protocol, List, Optional, Union, Generator
 
 from gramma.parser import GExpr
 from gramma.samplers import GrammaInterpreter, gfunc, gdfunc, Sample
@@ -11,6 +11,7 @@ from gramma.samplers.interpreter import GrammaSamplerError, OperatorsImplementat
 Denotation = int
 
 SampleT = Sample[Denotation]
+SampleFactory = Generator[Union[GExpr, SampleT], SampleT, None]
 
 
 class Arithmetic(GrammaInterpreter[SampleT, Denotation]):
@@ -136,6 +137,13 @@ class TestExceptionsBase(unittest.TestCase):
         with self.assertRaises(GrammaSamplerError):
             self.sample_start(s)
 
+    def test_GFunc_missing(self):
+        with self.assertRaises(GrammaSamplerError):
+            s = GrammaInterpreter('''
+                start := missing();
+            ''')
+            self.sample_start(s)
+
     def test_GDFunc_missing(self):
         with self.assertRaises(GrammaSamplerError):
             s = GrammaInterpreter('''
@@ -238,10 +246,14 @@ class BaseTestInterpreter(unittest.TestCase):
         self.assertEqual(self.sample_start(s).d, 17)
 
     def test_GFunc_lazy(self):
-        class G(GrammaInterpreter[SampleT,Denotation]):
+        class G(GrammaInterpreter[SampleT, Denotation]):
             @gfunc(lazy=True)
             def f(self, ge: GExpr) -> SampleT:
                 return self.cat(self.sample(ge), self.sample(ge))
+
+            @gfunc(lazy=True)
+            def coro_f(self, ge: GExpr) -> SampleFactory:
+                yield self.cat(self.sample(ge), self.sample(ge))
 
         s = G('''
             start := f('a'|'b');
@@ -288,6 +300,10 @@ class BaseTestInterpreter(unittest.TestCase):
             @gdfunc
             def f(self):
                 return 17
+
+            @gdfunc
+            def coro_f(self):
+                yield 17
 
         s = G('''
             start := 'a'/f();

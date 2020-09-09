@@ -175,6 +175,10 @@ class TestNodes(unittest.TestCase):
             start := show_den('a'/1 | 'b'/2 | 'c'/3). ' ';
         ''', 'a<1> a<1> b<2> a<1> b<2> c<3> b<2> a<1> b<2> b<2> ')
 
+        self.assertSampleEquals('''
+            start := show_den('a'/1 | 'b'/2 | 'c'/3). ' ';
+        ''', 'a<1> a<1> b<2> a<1> b<2> c<3> b<2> a<1> b<2> b<2> ', enforce_ltr=False)
+
     def test_GFunc(self):
         self.assertSampleEquals('''
             start := choose x~'c' in x2('a').x2(x2('b')).x2(x).x2(`"d"`).x2(r);

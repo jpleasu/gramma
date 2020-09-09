@@ -10,7 +10,8 @@ The GrammaGramma object indexes the GExpr of each defined rule and its parameter
 import io
 import logging
 from itertools import groupby
-from typing import Dict, List, Set, Union, Optional, Literal, cast, Tuple, IO, Iterator, ClassVar, Callable, TypeVar
+from typing import Dict, List, Set, Union, Optional, Literal, cast, Tuple, IO, Iterator, ClassVar, Callable, TypeVar, \
+    Type
 
 import lark
 
@@ -117,13 +118,10 @@ class LarkTransformer:
         self.rulenames = rulenames
 
     def visit(self, lt: lark.Tree) -> 'GExpr':
-        if isinstance(lt, lark.lexer.Token):
-            return GTok.from_ltok(lt)
-
         if hasattr(self, lt.data):
             f = cast(Callable[[lark.Tree], GExpr], getattr(self, lt.data))
             return f(lt)
-        raise GrammaParseError(f'''unrecognized Lark node "{lt.data}" during parse of glf: {lt}''')
+        raise GrammaParseError(f'''unrecognized Lark node "{lt.data}" during parse of glf: {lt}''')  # pragma: no cover
 
     def string(self, lt):
         return GTok('string', lt.children[0].value)
@@ -178,9 +176,6 @@ class LarkTransformer:
     def denoted(self, lt: lark.Tree) -> 'GDenoted':
         children = cast(List[lark.Tree], lt.children)
         return GDenoted(self.visit(children[0]), self.visit(children[1])).loc(Location.from_lark_tree(lt))
-
-    def denotation(self, lt):
-        return self.visit(lt.children[0]).loc(Location.from_lark_tree(lt))
 
     def cat(self, lt: lark.Tree) -> 'GCat':
         return GCat([self.visit(cast(lark.Tree, clt)) for clt in lt.children]).loc(Location.from_lark_tree(lt))
@@ -320,7 +315,7 @@ class GExpr:
 
     def locstr(self) -> str:
         if self.location is None:
-            return ''
+            raise GrammaParseError('node missing location information')  # pragma: no cover
         return f'line {self.location.line}, column {self.location.column}'
 
     def get_code(self) -> List['GCode']:
@@ -340,27 +335,22 @@ class GExpr:
     def walk(self) -> Iterator['GExpr']:
         yield self
 
-    def is_rule(self, rname=None):
+    def is_ruleref(self, rname=None):
         return False
 
-    def copy(self) -> 'GExpr':
-        return GExpr()
+    def copy(self: GExprT) -> GExprT:  # pragma: no cover
+        ...
 
-    def simplify(self):
-        """copy self.. caller must ultimately set parent attribute"""
+    def simplify(self: GExprT) -> GExprT:
         return self.copy()
 
-    def as_num(self):
-        raise GrammaParseError('''only tokens (literal ints and floats) have an as_num method''')
-
-    def as_float(self):
-        raise GrammaParseError('''only tokens (literal floats) have an as_float method''')
-
-    def as_int(self):
-        raise GrammaParseError('''only tokens (literal ints) have an as_int method''')
-
-    def as_str(self):
-        raise GrammaParseError('''only tokens (literal strings) have an as_str method''')
+    def with_parens(self, s: str, if_equals: bool = False) -> str:
+        if self.parent is not None:
+            p = GEXPR_PRECEDENCE_MAP[self.parent.__class__]
+            c = GEXPR_PRECEDENCE_MAP[self.__class__]
+            if if_equals and c <= p or c < p:
+                return '(' + s + ')'
+        return s
 
 
 class GTok(GExpr):
@@ -370,11 +360,10 @@ class GTok(GExpr):
     TypeEnum = Literal['INT', 'FLOAT', 'string']
     type: TypeEnum
     value: str
-    s: Optional[str]
+    s: str
 
     def __init__(self, token_type: str, value: str):
         GExpr.__init__(self)
-        # self.type='string' if type=='CHAR' else type
         self.type = GTok._typemap.get(token_type, cast(GTok.TypeEnum, token_type))
         self.value = value
         if self.type == 'string':
@@ -394,7 +383,7 @@ class GTok(GExpr):
         elif self.type == 'string':
             return self.as_str()
         else:
-            raise ValueError('''don't recognize GTok type %s''' % self.type)
+            raise GrammaParseError(f'''unknown GTok type {self.type}''')  # pragma: no cover
 
     def as_int(self) -> int:
         return int(self.value)
@@ -403,7 +392,7 @@ class GTok(GExpr):
         return float(self.value)
 
     def as_str(self) -> str:
-        if self.s is None:
+        if not hasattr(self, 's'):
             return '(None)'
         return self.s
 
@@ -454,7 +443,7 @@ class GInternal(GExpr):
         for c in self.children:
             c.parent = self
 
-    def __str__(self):
+    def __str__(self):  # pragma: no cover
         return '%s(%s)' % (self.__class__.__name__, ','.join(str(clt) for clt in self.children))
 
     def walk(self) -> Iterator['GExpr']:
@@ -487,11 +476,6 @@ class GCode(GExpr):
 
     def __str__(self):
         return '`%s`' % self.expr
-
-    def __add__(self, other):
-        if isinstance(other, (int, float)):
-            return GCode('(%s)+%f' % (self.expr, other))
-        return GCode('(%s)+(%s)' % (self.expr, other.expr))
 
     def copy(self):
         return GCode(self.expr).loc(self.location)
@@ -548,13 +532,23 @@ class GTern(GInternal):
         return [self.code]
 
     def __str__(self):
-        return '%s ? %s : %s' % (self.code, self.children[0], self.children[1])
+        return '%s?%s:%s' % (self.code, self.children[0], self.children[1])
 
     def simplify(self):
-        return GTern(self.code, [c.simplify() for c in self.children])
+        return GTern(self.code.copy(), [c.simplify() for c in self.children])
 
     def copy(self):
-        return GTern(self.code, [c.copy() for c in self.children]).loc(self.location)
+        return GTern(self.code.copy(), [c.copy() for c in self.children]).loc(self.location)
+
+
+def defloat(x: Union[int, float]) -> Union[int, float]:
+    """ 1.0 -> 1,  2.3 -> 2.3"""
+    if isinstance(x, int):
+        return x
+    i = int(x)
+    if i == x:
+        return i
+    return x
 
 
 class GAlt(GInternal):
@@ -574,15 +568,14 @@ class GAlt(GInternal):
     def __str__(self):
         weights = []
         for w in self.weights:
-            if isinstance(w, GTok) and w.type == 'INT' and w.as_int() == 1:
+            if isinstance(w, GTok) and (w.type == 'INT' and w.as_int() == 1 or
+                                        w.type == 'FLOAT' and w.as_float() == 1.0):
                 weights.append('')
             else:
                 weights.append(str(w) + ' ')
         s = '|'.join('%s%s' % (w, c) for w, c in zip(weights, self.children))
 
-        if self.parent is not None:  # and isinstance(self.parent, (GCat, GRep)):
-            return '(%s)' % s
-        return s
+        return self.with_parens(s, if_equals=True)
 
     def simplify(self):
         if self.dynamic:
@@ -591,7 +584,7 @@ class GAlt(GInternal):
 
     def simplify_dynamic(self):
         """
-        complicated normalizing factors could make the result less simple..
+        complicated normalizing factors could make the obvious thing much less simple..
 
             `f1` (`g1` a | `g2` b) | `f2` (`g3` c | `g4` d)
 
@@ -604,15 +597,23 @@ class GAlt(GInternal):
         weights = []
         children = []
 
-        for w, c in zip(self.weights, self.children):
+        # flatten
+        self_weights = cast(List[GTok], self.weights)
+        mult: Union[int, float] = 1
+        for w, c in zip(self_weights, self.children):
+            if w.as_num() == 0:
+                continue
             c = c.simplify()
             if isinstance(c, GAlt) and not c.dynamic:
-                t = sum(w.as_num() for w in c.weights)
-                weights.extend([float(w.as_num() * cw.as_num()) / t for cw in c.weights])
+                c_weights = cast(List[GTok], c.weights)
+                t = sum(cw.as_num() for cw in c_weights)
+                mult *= t
+                weights.extend([float(w.as_num() * cw.as_num()) / t for cw in c_weights])
                 children.extend(c.children)
             else:
                 weights.append(w.as_num())
                 children.append(c)
+        weights = [w * mult for w in weights]
         if len(children) == 0:
             return GTok.new_empty()
         if len(children) == 1:
@@ -627,8 +628,8 @@ class GAlt(GInternal):
             nweights.append(sum(tup[2] for tup in tups))
             nchildren.append(tups[0][1])
 
-        if len(nchildren) == 0:
-            return GTok.new_empty()
+        nweights = [defloat(w) for w in nweights]
+
         if len(nchildren) == 1:
             return nchildren[0]
         return GAlt([GTok.from_float(w) for w in nweights], nchildren)
@@ -646,32 +647,31 @@ class GDenoted(GInternal):
         GInternal.__init__(self, [left, right])
 
     @property
-    def left(self):
+    def left(self) -> GExpr:
         return self.children[0]
 
     @property
-    def right(self):
+    def right(self) -> GExpr:
         return self.children[1]
 
     def __str__(self):
         s = str(self.left) + '/' + str(self.right)
-        if self.parent is not None and isinstance(self.parent, GRep):
-            return '(%s)' % s
-        return s
+        return self.with_parens(s)
 
     def copy(self):
-        return GDenoted(self.left, self.right).loc(self.location)
+        return GDenoted(self.left.copy(), self.right.copy()).loc(self.location)
 
     def simplify(self):
-        return self.copy()
+        return GDenoted(self.left.simplify(), self.right.simplify()).loc(self.location)
 
 
 class GCat(GInternal):
     def __str__(self):
-        s = '.'.join(str(cge) for cge in self.children)
-        if self.parent is not None and isinstance(self.parent, GRep):
-            return '(%s)' % s
-        return s
+        if len(self.children) == 0:
+            s = "''"
+        else:
+            s = '.'.join(str(cge) for cge in self.children)
+        return self.with_parens(s)
 
     def copy(self):
         return GCat([c.copy() for c in self.children]).loc(self.location)
@@ -717,7 +717,8 @@ class GRep(GInternal):
     hi: Union[GTok, GCode, None]
     dist: RepDist
 
-    def __init__(self, child, lo, hi, dist):
+    def __init__(self, child: GExpr, lo: Union[GTok, GCode, None], hi: Union[GTok, GCode, None],
+                 dist: Optional[RepDist]):
         GInternal.__init__(self, [child])
         self.lo = lo
         self.hi = hi
@@ -731,10 +732,10 @@ class GRep(GInternal):
         return self.children[0]
 
     def copy(self):
-        return GRep([self.child.copy()], self.lo, self.hi, self.dist).loc(self.location)
+        return GRep(self.child.copy(), self.lo, self.hi, self.dist).loc(self.location)
 
     def simplify(self):
-        return GRep([self.child.simplify()], self.lo, self.hi, self.dist)
+        return GRep(self.child.simplify(), self.lo, self.hi, self.dist)
 
     def args_str(self):
         if self.lo == self.hi:
@@ -782,7 +783,16 @@ class GRange(GExpr):
         if len(self.pairs) == 1 and self.pairs[0][1] == 1:
             o = self.pairs[0][0]
             return GTok.from_str(chr(o))
-        return self.copy()
+        pairs = []
+        base, count = self.pairs[0]
+        for b, c in self.pairs[1:]:
+            if b == base + count:
+                count += c
+            else:
+                pairs.append((base, count))
+                base, count = b, c
+        pairs.append((base, count))
+        return GRange(pairs).loc(self.location)
 
     def __str__(self):
         parts = []
@@ -833,7 +843,7 @@ class GRuleRef(GInternal):
     a reference to a rule. The rule definition is part of the GrammaGrammar class.
     """
 
-    __slots__ = 'rname', 'rhs'
+    __slots__ = 'rname',
     rname: str
 
     def __init__(self, rname, rargs):
@@ -843,13 +853,13 @@ class GRuleRef(GInternal):
     def copy(self):
         return GRuleRef(self.rname, self.rargs).loc(self.location)
 
-    def is_rule(self, rname=None):
+    def is_ruleref(self, rname=None):
         if rname is None:
             return True
         return self.rname == rname
 
     @property
-    def rargs(self):
+    def rargs(self) -> List[GExpr]:
         return self.children
 
     def __str__(self):
@@ -877,6 +887,22 @@ class GVarRef(GExpr):
         return self.vname
 
 
+GEXPR_PRECEDENCE_MAP: Dict[Type['GExpr'], int] = {
+    GTok: 6,
+    GVarRef: 6,
+    GDFuncRef: -1,  # avoid parenthesizing arguments of functions
+    GFuncRef: -1,
+    GRuleRef: -1,
+
+    GRep: 5,
+    GCat: 4,
+    GDenoted: 3,
+    GTern: 2,
+    GAlt: 1,
+    GChooseIn: 0,
+}
+
+
 class RuleDef:
     __slots__ = 'rname', 'params', 'rhs', 'location'
 
@@ -898,7 +924,7 @@ class RuleDef:
 
     def locstr(self) -> str:
         if self.location is None:
-            return ''
+            raise GrammaParseError('ruledef missing location information')  # pragma: no cover
         return f'line {self.location.line}, column {self.location.column}'
 
 

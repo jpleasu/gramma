@@ -436,7 +436,7 @@ class OperatorsImplementationSamplerMixin(SamplerInterface[SampleType, Denotatio
             if i < c:
                 yield self.create_sample(chr(b + i))
             i -= c
-        raise GrammaSamplerError('range exceeded')
+        raise GrammaSamplerError('range exceeded')  # pragma: no cover
 
     def coro_sample_GRuleRef(self, ge: GRuleRef) -> Generator[Union[GExpr, SampleType], SampleType, None]:
         rule = self.grammar.ruledefs[ge.rname]

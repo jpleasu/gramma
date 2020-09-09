@@ -1,13 +1,48 @@
 #!/usr/bin/env python3
 
 import unittest
+from io import StringIO
 from typing import cast
 
 from gramma.parser import GrammaGrammar, GFuncRef, GRuleRef, GChooseIn, GVarRef, GAlt, GRep, RepDist, GRange, GDenoted, \
-    GTok, GCode, GDFuncRef
+    GTok, GCode, GDFuncRef, GrammaParseError, GCat, GTern, GExpr
 
 
 # from IPython import embed;embed()
+
+
+class TestExceptions(unittest.TestCase):
+    def test_missing_variable(self):
+        with self.assertRaises(GrammaParseError):
+            GrammaGrammar('''
+                start := x;
+            ''')
+
+    def test_grammar_of(self):
+        with self.assertRaises(TypeError):
+            GrammaGrammar.of(17)
+
+
+class TestTokens(unittest.TestCase):
+
+    def test_not_a_num(self):
+        with self.assertRaises(GrammaParseError):
+            GTok.from_str('astring').as_num()
+
+    def test_no_string(self):
+        self.assertEqual(GTok.from_int(17).as_str(), '(None)')
+
+    def test_empty(self):
+        e = GTok.new_empty()
+        self.assertEqual(e.s, '')
+
+    def test_join(self):
+        self.assertEqual(GTok.join([GTok.from_str('a'), GTok.from_str('b')]).s, 'ab')
+
+    def test_as_native(self):
+        self.assertEqual(GTok.from_str('a').as_native(), "a")
+        self.assertEqual(GTok.from_int(17).as_native(), 17)
+        self.assertEqual(GTok.from_float(14.2).as_native(), 14.2)
 
 
 class TestLarkParser(unittest.TestCase):
@@ -96,11 +131,18 @@ class TestLarkParser(unittest.TestCase):
         self.assertEqual(d.children[1].data, 'dfunc')
 
 
-class GDFunc(object):
-    pass
-
-
 class TestGrammaGrammar(unittest.TestCase):
+    def test_factory(self):
+        g = GrammaGrammar.of("start:='a';")
+        self.assertEqual(str(g.ruledefs['start'].rhs), "'a'")
+
+        fileobj = StringIO("start:='a';")
+        g = GrammaGrammar.of(fileobj)
+        self.assertEqual(str(g.ruledefs['start'].rhs), "'a'")
+
+        g = GrammaGrammar.of(g)
+        self.assertEqual(str(g.ruledefs['start'].rhs), "'a'")
+
     def test_ruledefs(self):
         g = GrammaGrammar('''
             r0:='a';
@@ -119,7 +161,7 @@ class TestGrammaGrammar(unittest.TestCase):
         self.assertEqual(str(g.ruledefs['r0'].rhs), """'a'""")
         self.assertEqual(str(g.ruledefs['r1'].rhs), """choose x~'a' in 'b'""")
         self.assertEqual(str(g.ruledefs['r2'].rhs), """'a'|'b'""")
-        self.assertEqual(str(g.ruledefs['r3'].rhs), """`True` ? 'a' : 'b'""")
+        self.assertEqual(str(g.ruledefs['r3'].rhs), """`True`?'a':'b'""")
         self.assertEqual(str(g.ruledefs['r4'].rhs), """'a'/'b'""")
         self.assertEqual(str(g.ruledefs['r5'].rhs), """'a'.'b'""")
         self.assertEqual(str(g.ruledefs['r6'].rhs), """'a'{1,3}""")
@@ -306,6 +348,350 @@ class TestGrammaGrammar(unittest.TestCase):
         self.assertIsInstance(d.right, GDFuncRef)
         self.assertEqual(d.right.fname, 'f')
         self.assertIsInstance(d.right.fargs[0], GVarRef)
+
+
+class TestCopyStrSimplify(unittest.TestCase):
+    def test_cat_alt(self):
+        g = GrammaGrammar('''
+            start := ('a'|'b').('c'|'d');
+        ''')
+
+        ge = cast(GCat, g.ruledefs['start'].rhs)
+        self.assertIsInstance(ge, GCat)
+        self.assertIsInstance(ge.children[0], GAlt)
+        self.assertEqual(str(ge), "('a'|'b').('c'|'d')")
+
+        ge2 = cast(GCat, ge.copy())
+        self.assertIsInstance(ge2, GCat)
+        self.assertIsInstance(ge2.children[0], GAlt)
+        self.assertEqual(str(ge2), str(ge))
+
+        ge3 = cast(GCat, ge.simplify())
+        self.assertIsInstance(ge3, GCat)
+        self.assertIsInstance(ge3.children[0], GAlt)
+        self.assertEqual(str(ge2), str(ge))
+
+    def test_rep_range(self):
+        g = GrammaGrammar('''
+            start := ['a'..'b']{1,3};
+        ''')
+
+        ge = cast(GRep, g.ruledefs['start'].rhs)
+        self.assertIsInstance(ge, GRep)
+        self.assertIsInstance(ge.children[0], GRange)
+        self.assertEqual(str(ge), "['a'..'b']{1,3}")
+
+        ge2 = cast(GRep, ge.copy())
+        self.assertIsInstance(ge2, GRep)
+        self.assertIsInstance(ge2.children[0], GRange)
+        self.assertEqual(str(ge2), str(ge))
+
+        ge3 = cast(GRep, ge.simplify())
+        self.assertIsInstance(ge3, GRep)
+        self.assertIsInstance(ge3.children[0], GRange)
+        self.assertEqual(str(ge3), str(ge))
+
+    def test_choosein_tern(self):
+        g = GrammaGrammar('''
+            start := choose x~'a' in `1`?x:'d';
+        ''')
+
+        ge = cast(GChooseIn, g.ruledefs['start'].rhs)
+        self.assertIsInstance(ge, GChooseIn)
+        self.assertIsInstance(ge.child, GTern)
+        self.assertEqual(str(ge), "choose x~'a' in `1`?x:'d'")
+
+        ge2 = cast(GChooseIn, ge.copy())
+        self.assertIsInstance(ge2, GChooseIn)
+        self.assertIsInstance(ge2.child, GTern)
+        self.assertEqual(str(ge2), str(ge))
+
+        ge3 = cast(GChooseIn, ge.simplify())
+        self.assertIsInstance(ge3, GChooseIn)
+        self.assertIsInstance(ge3.child, GTern)
+        self.assertEqual(str(ge3), str(ge))
+
+    def test_rule_denoted(self):
+        g = GrammaGrammar('''
+            start := r('a','b');
+            r(x,y) := x/`1`;
+        ''')
+
+        ge = cast(GRuleRef, g.ruledefs['start'].rhs)
+        self.assertIsInstance(ge, GRuleRef)
+        self.assertEqual(str(ge), "r('a','b')")
+
+        ge2 = cast(GRuleRef, ge.copy())
+        self.assertIsInstance(ge2, GRuleRef)
+        self.assertEqual(str(ge2), str(ge))
+
+        ge3 = cast(GRuleRef, ge.simplify())
+        self.assertIsInstance(ge3, GRuleRef)
+        self.assertEqual(str(ge3), str(ge))
+
+        ge = cast(GRuleRef, g.ruledefs['r'].rhs)
+        self.assertIsInstance(ge, GDenoted)
+        self.assertEqual(str(ge), "x/`1`")
+
+        ge2 = cast(GRuleRef, ge.copy())
+        self.assertIsInstance(ge2, GDenoted)
+        self.assertEqual(str(ge2), str(ge))
+
+        ge3 = cast(GRuleRef, ge.simplify())
+        self.assertIsInstance(ge3, GDenoted)
+        self.assertEqual(str(ge3), str(ge))
+
+    def test_reps(self):
+        g = GrammaGrammar('''
+            r0 := 'a'{,};
+            r1 := 'a'{1};
+            r2 := 'a'{1,2};
+            r3 := 'a'{,2};
+            r4 := 'a'{1,};
+            r5 := 'a'{1,2,geom(5)};
+            r6 := 'a'{geom(5)};
+        ''')
+        r: GRep
+
+        r = g.ruledefs['r0'].rhs
+        self.assertEqual(str(r), "'a'{,}")
+        self.assertEqual(str(r.copy()), "'a'{,}")
+        self.assertEqual(str(r.simplify()), "'a'{,}")
+
+        r = g.ruledefs['r1'].rhs
+        self.assertEqual(str(r), "'a'{1}")
+        self.assertEqual(str(r.copy()), "'a'{1}")
+        self.assertEqual(str(r.simplify()), "'a'{1}")
+
+        r = g.ruledefs['r2'].rhs
+        self.assertEqual(str(r), "'a'{1,2}")
+        self.assertEqual(str(r.copy()), "'a'{1,2}")
+        self.assertEqual(str(r.simplify()), "'a'{1,2}")
+
+        r = g.ruledefs['r3'].rhs
+        self.assertEqual(str(r), "'a'{,2}")
+        self.assertEqual(str(r.copy()), "'a'{,2}")
+        self.assertEqual(str(r.simplify()), "'a'{,2}")
+
+        r = g.ruledefs['r4'].rhs
+        self.assertEqual(str(r), "'a'{1,}")
+        self.assertEqual(str(r.copy()), "'a'{1,}")
+        self.assertEqual(str(r.simplify()), "'a'{1,}")
+
+        r = g.ruledefs['r5'].rhs
+        self.assertEqual(str(r), "'a'{1,2,geom(5)}")
+        self.assertEqual(str(r.copy()), "'a'{1,2,geom(5)}")
+        self.assertEqual(str(r.simplify()), "'a'{1,2,geom(5)}")
+
+        r = g.ruledefs['r6'].rhs
+        self.assertEqual(str(r), "'a'{geom(5)}")
+        self.assertEqual(str(r.copy()), "'a'{geom(5)}")
+        self.assertEqual(str(r.simplify()), "'a'{geom(5)}")
+
+    def test_alts(self):
+        g = GrammaGrammar('''
+            r1 := 'a'|'b';
+            r2 := 1 'a'|'b';
+            r3 := 2 'a'|'b';
+            r4 := 2.3 'a'|'b';
+            r5 := `1` 'a'|'b';
+            r6 := ('a' | 'b') | 'c';
+            r7 := 'a' | 'a' | 'b';
+            r8 := 'a' | 'a';
+            r9 := 'a' | 0 'b';
+            r10 := 0 'a' | 0 'b';
+        ''')
+        r: GAlt
+
+        r = g.ruledefs['r1'].rhs
+        self.assertEqual(str(r), "'a'|'b'")
+        self.assertEqual(str(r.copy()), "'a'|'b'")
+        self.assertEqual(str(r.simplify()), "'a'|'b'")
+
+        r = g.ruledefs['r2'].rhs
+        self.assertEqual(str(r), "'a'|'b'")
+        self.assertEqual(str(r.copy()), "'a'|'b'")
+        self.assertEqual(str(r.simplify()), "'a'|'b'")
+
+        r = g.ruledefs['r3'].rhs
+        self.assertEqual(str(r), "2 'a'|'b'")
+        self.assertEqual(str(r.copy()), "2 'a'|'b'")
+        self.assertEqual(str(r.simplify()), "2 'a'|'b'")
+
+        r = g.ruledefs['r4'].rhs
+        self.assertEqual(str(r), "2.3 'a'|'b'")
+        self.assertEqual(str(r.simplify()), "2.3 'a'|'b'")
+        self.assertEqual(str(r.copy()), "2.3 'a'|'b'")
+
+        r = g.ruledefs['r5'].rhs
+        self.assertEqual(str(r), "`1` 'a'|'b'")
+        self.assertEqual(str(r.copy()), "`1` 'a'|'b'")
+        self.assertEqual(str(r.simplify()), "`1` 'a'|'b'")
+
+        r = g.ruledefs['r6'].rhs
+        self.assertEqual(str(r), "('a'|'b')|'c'")
+        self.assertEqual(str(r.copy()), "('a'|'b')|'c'")
+        self.assertEqual(str(r.simplify()), "'a'|'b'|2 'c'")
+
+        r = g.ruledefs['r7'].rhs
+        self.assertEqual(str(r), "'a'|'a'|'b'")
+        self.assertEqual(str(r.copy()), "'a'|'a'|'b'")
+        self.assertEqual(str(r.simplify()), "2 'a'|'b'")
+
+        r = g.ruledefs['r8'].rhs
+        self.assertEqual(str(r), "'a'|'a'")
+        self.assertEqual(str(r.copy()), "'a'|'a'")
+        self.assertEqual(str(r.simplify()), "'a'")
+
+        r = g.ruledefs['r9'].rhs
+        self.assertEqual(str(r), "'a'|0 'b'")
+        self.assertEqual(str(r.copy()), "'a'|0 'b'")
+        self.assertEqual(str(r.simplify()), "'a'")
+
+        r = g.ruledefs['r10'].rhs
+        self.assertEqual(str(r), "0 'a'|0 'b'")
+        self.assertEqual(str(r.copy()), "0 'a'|0 'b'")
+        self.assertEqual(str(r.simplify()), "''")
+
+    def test_cats(self):
+        g = GrammaGrammar('''
+            r1 := ('a'.'b').'c';
+            r2 := (['a'..'c'].['d'..'f']).['g'..'i'];
+        ''')
+        r: GCat
+        r = g.ruledefs['r1'].rhs
+        self.assertEqual(str(r), "'a'.'b'.'c'")
+        self.assertEqual(str(r.copy()), "'a'.'b'.'c'")
+        self.assertEqual(str(r.simplify()), "'abc'")
+
+        r = g.ruledefs['r2'].rhs
+        self.assertEqual(str(r), "['a'..'c'].['d'..'f'].['g'..'i']")
+        self.assertEqual(str(r.copy()), "['a'..'c'].['d'..'f'].['g'..'i']")
+        self.assertEqual(str(r.simplify()), "['a'..'c'].['d'..'f'].['g'..'i']")
+
+        r = r.simplify()
+        del r.children[1:]
+        self.assertEqual(str(r), "['a'..'c']")
+        self.assertEqual(str(r.simplify()), "['a'..'c']")
+        del r.children[:]
+        self.assertEqual(str(r), "''")
+        self.assertEqual(str(r.simplify()), "''")
+
+    def test_ranges(self):
+        g = GrammaGrammar('''
+            r1 := ['a'..'b'];
+            r2 := ['a'];
+            r3 := ['a','b','c'];
+            r4 := ['a'..'c','d'..'f'];
+            r5 := ['a'..'b','d'..'e'];
+        ''')
+        r: GRange
+        r = g.ruledefs['r1'].rhs
+        self.assertEqual(str(r), "['a'..'b']")
+        self.assertEqual(str(r.copy()), "['a'..'b']")
+        self.assertEqual(str(r.simplify()), "['a'..'b']")
+
+        r = g.ruledefs['r2'].rhs
+        self.assertEqual(str(r), "['a']")
+        self.assertEqual(str(r.copy()), "['a']")
+        self.assertEqual(str(r.simplify()), "'a'")
+
+        r = g.ruledefs['r3'].rhs
+        self.assertEqual(str(r), "['a','b','c']")
+        self.assertEqual(str(r.copy()), "['a','b','c']")
+        self.assertEqual(str(r.simplify()), "['a'..'c']")
+
+        r = g.ruledefs['r4'].rhs
+        self.assertEqual(str(r), "['a'..'c','d'..'f']")
+        self.assertEqual(str(r.copy()), "['a'..'c','d'..'f']")
+        self.assertEqual(str(r.simplify()), "['a'..'f']")
+
+        r = g.ruledefs['r5'].rhs
+        self.assertEqual(str(r), "['a'..'b','d'..'e']")
+        self.assertEqual(str(r.copy()), "['a'..'b','d'..'e']")
+        self.assertEqual(str(r.simplify()), "['a'..'b','d'..'e']")
+
+    def test_nesting(self):
+        g = GrammaGrammar('''
+            r1:= ('a'/2).'b';
+            r2:= ('a'|'b'){3};
+        ''')
+        r: GExpr
+        r = g.ruledefs['r1'].rhs
+        self.assertEqual(str(r), "('a'/2).'b'")
+
+        r = g.ruledefs['r2'].rhs
+        self.assertEqual(str(r), "('a'|'b'){3}")
+
+    def test_terns(self):
+        g = GrammaGrammar('''
+            r1:=`1`?'a':'b';
+        ''')
+        r = g.ruledefs['r1'].rhs
+        self.assertEqual(str(r), "`1`?'a':'b'")
+        self.assertEqual(str(r.copy()), "`1`?'a':'b'")
+        self.assertEqual(str(r.simplify()), "`1`?'a':'b'")
+
+    def test_refs(self):
+        g = GrammaGrammar('''
+            r1:= r.f(r).r/df(`x`);
+            r := 'a';
+        ''')
+        r = g.ruledefs['r1'].rhs
+        # from IPython import embed;embed()
+        self.assertEqual(str(r), "r.f(r).r/df(`x`)")
+        self.assertEqual(str(r.copy()), "r.f(r).r/df(`x`)")
+        self.assertEqual(str(r.simplify()), "r.f(r).r/df(`x`)")
+
+
+class TestNavigation(unittest.TestCase):
+    def test_isruleref(self):
+        g = GrammaGrammar('''
+           start := r.('a'|'b').['a'..'b'].(choose x~'a' in x.x);
+           r:='b';
+        ''')
+        children = g.ruledefs['start'].rhs.children
+        self.assertTrue(children[0].is_ruleref())
+        self.assertTrue(children[0].is_ruleref('r'))
+        self.assertFalse(children[0].is_ruleref('s'))
+        self.assertFalse(children[1].is_ruleref())
+        self.assertFalse(children[2].is_ruleref())
+        self.assertFalse(children[3].is_ruleref())
+
+    def test_ancestry(self):
+        g = GrammaGrammar('''
+           r1 := choose x~'a' in (x.'a'|'b'){1,3};
+        ''')
+
+        ge1 = g.ruledefs['r1'].rhs
+        self.assertIsInstance(ge1, GChooseIn)
+        ge2 = ge1.child
+        self.assertIsInstance(ge2, GRep)
+        ge3 = ge2.child
+        self.assertIsInstance(ge3, GAlt)
+        ge4 = ge3.children[0]
+        self.assertIsInstance(ge4, GCat)
+        ge5 = ge4.children[0]
+        self.assertIsInstance(ge5, GVarRef)
+
+        self.assertIs(ge5.get_ancestor(GCat), ge4)
+        self.assertIs(ge5.get_ancestor(GAlt), ge3)
+        self.assertIs(ge5.get_ancestor(GRep), ge2)
+        self.assertIs(ge5.get_ancestor(GChooseIn), ge1)
+
+        self.assertIsNone(ge5.get_ancestor(GTok))
+
+    def test_walk(self):
+        g = GrammaGrammar('''
+           r1 := choose x~'a' in (x.'a'|'b'){1,3};
+        ''')
+
+        ge = g.ruledefs['r1'].rhs
+        gel = list(ge.walk())
+        self.assertEqual(len(gel), 8)
+
+        self.assertEqual(','.join(ge.__class__.__name__ for ge in gel),
+                         'GChooseIn,GTok,GRep,GAlt,GCat,GVarRef,GTok,GTok')
 
 
 if __name__ == '__main__':
