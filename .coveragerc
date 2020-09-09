@@ -1,0 +1,2 @@
+[run]
+omit = gramma/converters/antlr4/antlr4parser/*

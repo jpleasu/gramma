@@ -1,24 +1,12 @@
-
-__all__=[
+__all__ = [
     # modules
-    'pysa', 'util',
+    'util', 'parser',
 
-    # core symbols
-    'GrammaGrammar', 'gfunc',
-    'LarkTransformer',
-    'GExpr', 'GFunc', 'GCode', 'GInternal', 'GAlt', 'GDen', 'GCat', 'GRule', 'GTok',
-        'GRep', 'GRange', 'GTern', 'GChooseIn', 'GVar',
-    'RepDist',
-    'CacheConfig',
-    'GrammaSampler',
-    'Transformer',
-    'SideEffect',
-
-    # sideeffects
-    'Tracer',
-    'DepthTracker', 'RuleDepthTracker', 'GeneralDepthTracker',
+    'GrammaGrammar',
 ]
 
-from .core import *
-from .sideeffects import *
-from .samplers import *
+from . import parser
+from .parser import GrammaGrammar
+
+from . import util
+
