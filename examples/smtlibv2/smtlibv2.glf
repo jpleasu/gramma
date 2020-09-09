@@ -1,7 +1,6 @@
 start := equals(sort).'\n';
 equals(s) := '(= '.sexpr(s).' '.sexpr(s).' )';
 
-
 #### sexprs ####
 sexpr(s) := switch_sort(s, int_sexpr, bool_sexpr, array_sexpr(domain(s), range(s)));
 
@@ -20,13 +19,10 @@ array_sexpr(domain_sort, range_sort) :=
 array_wrap(s) := choose domain~sort in
             "( select " . array_sexpr(domain, s)." ".sexpr(domain).")";
 
-
 #### sorts ####
-
 int_sort := 'Int'/'i';
 bool_sort := 'Bool'/'b';
 array_sort(d, r) := '( Array '.d.' '.r.' )' / mk_array_sort(d,r);
 
 # random sort
 sort := int_sort | bool_sort | `sort_rec` array_sort(sort,sort);
-

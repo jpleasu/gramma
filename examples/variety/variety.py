@@ -1,13 +1,15 @@
 #!/usr/bin/env python3
 
-from gramma.samplers import GrammaInterpreter, gfunc
-
-import os
+from gramma.samplers import GrammaInterpreter, gfunc, Sample
 
 GLF = __file__[:-3] + '.glf'
 
 
-class VarietySampler(GrammaInterpreter):
+class Denotation:
+    pass
+
+
+class VarietySampler(GrammaInterpreter[Sample[Denotation], Denotation]):
     a: bool
 
     def __init__(self):
@@ -30,6 +32,7 @@ class VarietySampler(GrammaInterpreter):
 
 if __name__ == '__main__':
     import sys
+
     s = VarietySampler()
     while True:
         samp = s.coro_sample_start()

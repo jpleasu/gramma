@@ -2,14 +2,18 @@
 
 import unittest
 from functools import reduce
-from typing import Any, Callable, Protocol
+from typing import Any, Callable, Protocol, List, Optional, Union
 
 from gramma.parser import GExpr
 from gramma.samplers import GrammaInterpreter, gfunc, gdfunc, Sample
 from gramma.samplers.interpreter import GrammaSamplerError, OperatorsImplementationSamplerMixin
 
+Denotation = int
 
-class Arithmetic(GrammaInterpreter):
+SampleT = Sample[Denotation]
+
+
+class Arithmetic(GrammaInterpreter[SampleT, Denotation]):
     GLF = '''
         start := expr;
         expr := add;
@@ -29,16 +33,20 @@ class Arithmetic(GrammaInterpreter):
         return self.create_sample(str(self.random.integers(0, 100000)))
 
 
-def flatlist(a):
-    if a is None:
+SADenotation = Union[int, List[int]]
+SASampleT = Sample[SADenotation]
+
+
+def flatlist(d: Optional[SADenotation]) -> List[int]:
+    if d is None:
         return []
-    elif isinstance(a, list):
-        return a
+    elif isinstance(d, list):
+        return d
     else:
-        return [a]
+        return [d]
 
 
-class SemanticArithmetic(Arithmetic):
+class SemanticArithmetic(GrammaInterpreter[SASampleT, SADenotation]):
     """
         denotations are
             null for unadorned tokens
@@ -61,16 +69,25 @@ class SemanticArithmetic(Arithmetic):
         self.variables = dict()
 
     @staticmethod
-    def cat(a: Sample, b: Sample) -> Sample:
+    def cat(a: SASampleT, b: SASampleT) -> SASampleT:
         return Sample(a.s + b.s, flatlist(a.d) + flatlist(b.d))
 
-    def denote(self, a: Sample, b: Any) -> Sample:
+    def denote(self, a: SASampleT, b: Any) -> SASampleT:
+        d: int
         if b == 'variable':
             d = self.variables.get(a.s)
-        elif b == 'sum':
-            d = sum(a.d)
-        elif b == 'product':
-            d = reduce(lambda x, y: x * y, a.d)
+        else:
+            if a.d is None:
+                raise GrammaSamplerError('sum of None denotation')
+            elif isinstance(a.d, int):
+                raise GrammaSamplerError('sum of single int')
+
+            if b == 'sum':
+                d = sum(a.d)
+            elif b == 'product':
+                d = reduce(lambda x, y: x * y, a.d)
+            else:
+                raise GrammaSamplerError('unknown operation')
         return Sample(a.s, d)
 
     @gfunc
@@ -84,17 +101,17 @@ class GFake(GExpr):
 
 
 class SampleStartFunc(Protocol):
-    def __call__(self, __a: GrammaInterpreter) -> Sample:
+    def __call__(self, __a: GrammaInterpreter[SampleT, Denotation]) -> SampleT:
         ...
 
 
 class SampleFunc(Protocol):
-    def __call__(self, __a: GrammaInterpreter, __b: GExpr) -> Sample:
+    def __call__(self, __a: GrammaInterpreter[SampleT, Denotation], __b: GExpr) -> SampleT:
         ...
 
 
 class TestExceptionsBase(unittest.TestCase):
-    sample: SampleFunc
+    SampleT: SampleFunc
     sample_start: SampleStartFunc
 
     def test_sample(self):
@@ -221,9 +238,9 @@ class BaseTestInterpreter(unittest.TestCase):
         self.assertEqual(self.sample_start(s).d, 17)
 
     def test_GFunc_lazy(self):
-        class G(GrammaInterpreter):
+        class G(GrammaInterpreter[SampleT,Denotation]):
             @gfunc(lazy=True)
-            def f(self, ge: GExpr) -> Sample:
+            def f(self, ge: GExpr) -> SampleT:
                 return self.cat(self.sample(ge), self.sample(ge))
 
         s = G('''
@@ -236,12 +253,12 @@ class BaseTestInterpreter(unittest.TestCase):
     def test_GCode(self):
         class G(GrammaInterpreter):
             @gfunc
-            def f(self, ns: Sample) -> Sample:
+            def f(self, ns: SampleT) -> SampleT:
                 n = int(ns.s)
                 return Sample(str(2 * n))
 
             @gfunc
-            def g(self, ns: Sample) -> Sample:
+            def g(self, ns: SampleT) -> SampleT:
                 return ns
 
         s = G('''
@@ -257,7 +274,7 @@ class BaseTestInterpreter(unittest.TestCase):
                 self.x = 1
 
             @gfunc
-            def f(self, ns: Sample) -> Sample:
+            def f(self, ns: SampleT) -> SampleT:
                 return ns
 
         s = G('''
@@ -281,7 +298,7 @@ class BaseTestInterpreter(unittest.TestCase):
     def test_GDenoted_choosein(self):
         class G(GrammaInterpreter):
             @gdfunc
-            def f(self, x: Sample) -> str:
+            def f(self, x: SampleT) -> str:
                 return x.s
 
         s = G('''

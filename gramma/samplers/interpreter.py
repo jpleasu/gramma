@@ -1,6 +1,7 @@
 from functools import reduce
 from types import CodeType
-from typing import Union, IO, Final, Dict, Any, Callable, List, TypeVar, Protocol, Type, Generator, cast, Optional
+from typing import Union, IO, Final, Dict, Any, Callable, List, TypeVar, Protocol, Type, Generator, cast, Optional, \
+    Generic
 
 import numpy as np
 
@@ -51,19 +52,24 @@ class RandomAPI:
         return cast(int, self.generator.binomial(n, p))
 
 
-class Sample:
+DenotationType = TypeVar('DenotationType', contravariant=True)
+
+
+class Sample(Generic[DenotationType]):
     __slots__ = 's', 'd'
 
     s: str
-    d: Any
+    d: Optional[DenotationType]
 
-    def __init__(self, s: str, val: Any = None):
+    def __init__(self, s: str, val: Optional[DenotationType] = None):
         self.s = s
         self.d = val
 
-    def __str__(self):
+    def __str__(self) -> str:
         return self.s
 
+
+SampleType = TypeVar('SampleType', bound=Sample[Any])
 
 gcode_globals: Final[Dict[str, Any]] = {'Sample': Sample}
 
@@ -125,12 +131,8 @@ class GCodeWrap:
         self.code = code
         self.compiled = compile(code.expr, '<GCode>', 'eval')
 
-    def __call__(self, sampler: 'GrammaInterpreter') -> Any:
-        return eval(self.compiled, gcode_globals,
-                    dict(sampler.__dict__, _=getattr(sampler, '_'), random=sampler.random))
 
-
-class SamplerInterface(Protocol):  # pragma: no cover
+class SamplerInterface(Protocol[SampleType, DenotationType]):  # pragma: no cover
     random: RandomAPI
     grammar: GrammaGrammar
     gfuncmap: Dict[GFuncRef, GFuncWrap]
@@ -139,16 +141,16 @@ class SamplerInterface(Protocol):  # pragma: no cover
     coro_gdfuncmap: Dict[GDFuncRef, GDFuncWrap]
     gcodemap: Dict[GCode, GCodeWrap]
 
-    def create_sample(self, *args: Any, **kwargs: Any) -> Sample:
+    def create_sample(self, *args: Any, **kwargs: Any) -> SampleType:
         ...
 
-    def get_unit(self) -> Sample:
+    def get_unit(self) -> SampleType:
         ...
 
-    def cat(self, a: Sample, b: Sample) -> Sample:
+    def cat(self, a: SampleType, b: SampleType) -> SampleType:
         ...
 
-    def denote(self, a: Sample, b: Any) -> Sample:
+    def denote(self, a: SampleType, b: DenotationType) -> SampleType:
         ...
 
     def exec(self, gc: GCode) -> Any:
@@ -162,40 +164,40 @@ class SamplerInterface(Protocol):  # pragma: no cover
 
 
 # noinspection PyPep8Naming,PyMethodMayBeStatic
-class OperatorsImplementationSamplerMixin(SamplerInterface):
+class OperatorsImplementationSamplerMixin(SamplerInterface[SampleType, DenotationType]):
     __slots__ = 'vars',
-    vars: DictStack[str, Sample]
+    vars: DictStack[str, SampleType]
 
     def __init__(self):
         self.vars = DictStack()
 
-    def sample(self, ge: GExpr) -> Sample:
+    def sample(self, ge: GExpr) -> SampleType:
         handler_name = 'sample_' + ge.__class__.__name__
-        m = cast(Optional[Callable[[GExpr], Sample]], getattr(self, handler_name, None))
+        m = cast(Optional[Callable[[GExpr], SampleType]], getattr(self, handler_name, None))
         if m is None:  # pragma: no cover
             msg = f'missing handler in {self.__class__.__name__}: {handler_name}'
             log.error(msg)
             raise GrammaSamplerError(msg)
         return m(ge)
 
-    def sample_GTok(self, ge: GTok) -> Sample:
+    def sample_GTok(self, ge: GTok) -> SampleType:
         return self.create_sample(ge.as_str())
 
-    def sample_GCat(self, ge: GCat) -> Sample:
+    def sample_GCat(self, ge: GCat) -> SampleType:
         samples = [self.sample(c) for c in ge.children]
         return reduce(self.cat, samples, self.get_unit())
 
-    def sample_GAlt(self, ge: GAlt) -> Sample:
+    def sample_GAlt(self, ge: GAlt) -> SampleType:
         weights = [self.eval_num(c) for c in ge.weights]
         return self.sample(self.random.choice(ge.children, weights))
 
-    def sample_GTern(self, ge: GTern) -> Sample:
+    def sample_GTern(self, ge: GTern) -> SampleType:
         if self.exec(ge.code):
             return self.sample(ge.children[0])
         else:
             return self.sample(ge.children[1])
 
-    def sample_GRep(self, ge: GRep) -> Sample:
+    def sample_GRep(self, ge: GRep) -> SampleType:
         lo: Union[int, None]
         hi: Union[int, None]
         if ge.lo is None:
@@ -244,7 +246,7 @@ class OperatorsImplementationSamplerMixin(SamplerInterface):
             n -= 1
         return s
 
-    def sample_GRange(self, ge: GRange) -> Sample:
+    def sample_GRange(self, ge: GRange) -> SampleType:
         n = sum(c for b, c in ge.pairs)
         i = self.random.integers(0, n)
         for b, c in ge.pairs:
@@ -253,7 +255,7 @@ class OperatorsImplementationSamplerMixin(SamplerInterface):
             i -= c
         raise GrammaSamplerError('range exceeded')  # pragma: no cover
 
-    def sample_GRuleRef(self, ge: GRuleRef) -> Sample:
+    def sample_GRuleRef(self, ge: GRuleRef) -> SampleType:
         rule = self.grammar.ruledefs[ge.rname]
         args = [self.sample(c) for c in ge.rargs]
         if len(rule.params) != len(args):
@@ -262,34 +264,34 @@ class OperatorsImplementationSamplerMixin(SamplerInterface):
             samp = self.sample(rule.rhs)
         return samp
 
-    def sample_GChooseIn(self, ge: GChooseIn) -> Sample:
+    def sample_GChooseIn(self, ge: GChooseIn) -> SampleType:
         dists = [self.sample(c) for c in ge.dists]
         with self.vars.context(dict(zip(ge.vnames, dists))):
             return self.sample(ge.child)
 
-    def sample_GCode(self, ge: GCode) -> Sample:
+    def sample_GCode(self, ge: GCode) -> SampleType:
         v = self.exec(ge)
         if isinstance(v, Sample):
-            return v
+            return cast(SampleType, v)
         else:
-            return Sample(str(v))
+            return self.create_sample(str(v))
 
-    def sample_GVarRef(self, ge: GVarRef) -> Sample:
+    def sample_GVarRef(self, ge: GVarRef) -> SampleType:
         s = self.vars.get(ge.vname)
         if s is None:  # pragma: no cover
             raise GrammaSamplerError(f'undefined variable "{ge.vname}" ')
         return s
 
-    def sample_GFuncRef(self, ge: GFuncRef) -> Sample:
+    def sample_GFuncRef(self, ge: GFuncRef) -> SampleType:
         gfw = self.gfuncmap[ge]
-        func = cast(Callable[..., Sample], gfw.func)
+        func = cast(Callable[..., SampleType], gfw.func)
         if gfw.lazy:
             fargs = ge.fargs
         else:
             fargs = [self.sample(c) for c in ge.fargs]
         return func(self, *fargs)
 
-    def sample_GDenoted(self, ge: GDenoted) -> Sample:
+    def sample_GDenoted(self, ge: GDenoted) -> SampleType:
         s = self.sample(ge.left)
         val = self.evaluate_denotation(ge.right)
         return self.denote(s, val)
@@ -322,8 +324,8 @@ class OperatorsImplementationSamplerMixin(SamplerInterface):
     # the sample_* methods.
     #######################################################
 
-    def coro_sample(self, ge: GExpr) -> Sample:
-        stack: List[Generator[Union[GExpr, Sample], Sample, None]] = []
+    def coro_sample(self, ge: GExpr) -> SampleType:
+        stack: List[Generator[Union[GExpr, SampleType], SampleType, None]] = []
 
         while True:
             handler_name = 'coro_sample_' + ge.__class__.__name__
@@ -333,14 +335,14 @@ class OperatorsImplementationSamplerMixin(SamplerInterface):
                 log.error(msg)
                 raise GrammaSamplerError(msg)
             coro = m(ge)
-            x: Union[Sample, GExpr] = next(coro)
+            x: Union[SampleType, GExpr] = next(coro)
             while isinstance(x, Sample):
                 if len(stack) == 0:
-                    return x
+                    return cast(SampleType, x)
                 coro = stack.pop()
                 x = coro.send(x)
             stack.append(coro)
-            ge = x
+            ge = cast(GExpr, x)
 
     def coro_evaluate_denotation(self, ge: GExpr) -> Any:
         stack: List[Generator[Union[GExpr, Any], Any, None]] = []
@@ -364,26 +366,26 @@ class OperatorsImplementationSamplerMixin(SamplerInterface):
 
     ##################
 
-    def coro_sample_GTok(self, ge: GTok) -> Generator[Union[GExpr, Sample], Sample, None]:
+    def coro_sample_GTok(self, ge: GTok) -> Generator[Union[GExpr, SampleType], SampleType, None]:
         yield self.create_sample(ge.as_str())
 
-    def coro_sample_GCat(self, ge: GCat) -> Generator[Union[GExpr, Sample], Sample, None]:
+    def coro_sample_GCat(self, ge: GCat) -> Generator[Union[GExpr, SampleType], SampleType, None]:
         samples = []
         for c in ge.children:
             samples.append((yield c))
         yield reduce(self.cat, samples, self.get_unit())
 
-    def coro_sample_GAlt(self, ge: GAlt) -> Generator[Union[GExpr, Sample], Sample, None]:
+    def coro_sample_GAlt(self, ge: GAlt) -> Generator[Union[GExpr, SampleType], SampleType, None]:
         weights = [self.eval_num(c) for c in ge.weights]
         yield (yield self.random.choice(ge.children, weights))
 
-    def coro_sample_GTern(self, ge: GTern) -> Generator[Union[GExpr, Sample], Sample, None]:
+    def coro_sample_GTern(self, ge: GTern) -> Generator[Union[GExpr, SampleType], SampleType, None]:
         if self.exec(ge.code):
             yield (yield ge.children[0])
         else:
             yield (yield ge.children[1])
 
-    def coro_sample_GRep(self, ge: GRep) -> Generator[Union[GExpr, Sample], Sample, None]:
+    def coro_sample_GRep(self, ge: GRep) -> Generator[Union[GExpr, SampleType], SampleType, None]:
         lo: Union[int, None]
         hi: Union[int, None]
         if ge.lo is None:
@@ -427,7 +429,7 @@ class OperatorsImplementationSamplerMixin(SamplerInterface):
             n -= 1
         yield s
 
-    def coro_sample_GRange(self, ge: GRange) -> Generator[Union[GExpr, Sample], Sample, None]:
+    def coro_sample_GRange(self, ge: GRange) -> Generator[Union[GExpr, SampleType], SampleType, None]:
         n = sum(c for b, c in ge.pairs)
         i = self.random.integers(0, n)
         for b, c in ge.pairs:
@@ -436,7 +438,7 @@ class OperatorsImplementationSamplerMixin(SamplerInterface):
             i -= c
         raise GrammaSamplerError('range exceeded')
 
-    def coro_sample_GRuleRef(self, ge: GRuleRef) -> Generator[Union[GExpr, Sample], Sample, None]:
+    def coro_sample_GRuleRef(self, ge: GRuleRef) -> Generator[Union[GExpr, SampleType], SampleType, None]:
         rule = self.grammar.ruledefs[ge.rname]
         args = []
         for c in ge.rargs:
@@ -449,27 +451,27 @@ class OperatorsImplementationSamplerMixin(SamplerInterface):
             samp = yield rule.rhs
         yield samp
 
-    def coro_sample_GChooseIn(self, ge: GChooseIn) -> Generator[Union[GExpr, Sample], Sample, None]:
+    def coro_sample_GChooseIn(self, ge: GChooseIn) -> Generator[Union[GExpr, SampleType], SampleType, None]:
         dists = []
         for c in ge.dists:
             dists.append((yield c))
         with self.vars.context(dict(zip(ge.vnames, dists))):
             yield (yield ge.child)
 
-    def coro_sample_GCode(self, ge: GCode) -> Generator[Union[GExpr, Sample], Sample, None]:
+    def coro_sample_GCode(self, ge: GCode) -> Generator[Union[GExpr, SampleType], SampleType, None]:
         v = self.exec(ge)
         if isinstance(v, Sample):
-            yield v
+            yield cast(SampleType, v)
         else:
-            yield Sample(str(v))
+            yield self.create_sample(str(v))
 
-    def coro_sample_GVarRef(self, ge: GVarRef) -> Generator[Union[GExpr, Sample], Sample, None]:
+    def coro_sample_GVarRef(self, ge: GVarRef) -> Generator[Union[GExpr, SampleType], SampleType, None]:
         s = self.vars.get(ge.vname)
         if s is None:  # pragma: no cover
             raise GrammaSamplerError(f'undefined variable "{ge.vname}" ')
         yield s
 
-    def coro_sample_GFuncRef(self, ge: GFuncRef) -> Generator[Union[GExpr, Sample], Sample, None]:
+    def coro_sample_GFuncRef(self, ge: GFuncRef) -> Generator[Union[GExpr, SampleType], SampleType, None]:
         gfw = self.coro_gfuncmap.get(ge, None)
         coro = True
         if gfw is None:
@@ -488,7 +490,7 @@ class OperatorsImplementationSamplerMixin(SamplerInterface):
         else:
             yield gfw.func(self, *fargs)
 
-    def coro_sample_GDenoted(self, ge: GDenoted) -> Generator[Union[GExpr, Sample], Sample, None]:
+    def coro_sample_GDenoted(self, ge: GDenoted) -> Generator[Union[GExpr, SampleType], SampleType, None]:
         s = yield ge.left
         val = self.coro_evaluate_denotation(ge.right)
         yield self.denote(s, val)
@@ -517,7 +519,8 @@ class OperatorsImplementationSamplerMixin(SamplerInterface):
         yield self.exec(ge)
 
 
-class GrammaInterpreter(OperatorsImplementationSamplerMixin, SamplerInterface):
+class GrammaInterpreter(OperatorsImplementationSamplerMixin[SampleType, DenotationType],
+                        SamplerInterface[SampleType, DenotationType]):
     """
     A sampler that interprets GLF on the function stack.  It's slow, so only use it to prototype and debug a grammar.
     """
@@ -531,19 +534,23 @@ class GrammaInterpreter(OperatorsImplementationSamplerMixin, SamplerInterface):
     gcodemap: Dict[GCode, GCodeWrap]
 
     @staticmethod
-    def create_sample(*args: Any, **kwargs: Any) -> Sample:
-        return Sample(*args, **kwargs)
+    def create_sample(*args: Any, **kwargs: Any) -> SampleType:
+        """Override with SampleType constructor"""
+        return cast(SampleType, Sample(*args, **kwargs))
 
     @staticmethod
-    def get_unit() -> Sample:
-        return Sample('')
+    def get_unit() -> SampleType:
+        """Override with SampleType constructor"""
+        return cast(SampleType, Sample(''))
 
     @staticmethod
-    def cat(a: Sample, b: Sample) -> Sample:
-        return Sample(a.s + b.s)
+    def cat(a: SampleType, b: SampleType) -> SampleType:
+        """Override with SampleType cat"""
+        return cast(SampleType, Sample(a.s + b.s))
 
-    def denote(self, a: Sample, b: Any) -> Sample:
-        return Sample(a.s, b)
+    def denote(self, a: SampleType, b: DenotationType) -> SampleType:
+        """Override with SampleType denotation"""
+        return cast(SampleType, Sample(a.s, b))
 
     def __init__(self, grammar: Union[IO[str], str, GrammaGrammar]):
         """
@@ -623,7 +630,8 @@ class GrammaInterpreter(OperatorsImplementationSamplerMixin, SamplerInterface):
         return ret
 
     def exec(self, gc: GCode) -> Any:
-        return self.gcodemap[gc](self)
+        gcw = self.gcodemap[gc]
+        return eval(gcw.compiled, gcode_globals, dict(self.__dict__, _=getattr(self, '_'), random=self.random))
 
     def eval_int(self, ge: Union[GTok, GCode]) -> int:
         return ge.as_int() if isinstance(ge, GTok) else cast(int, self.exec(ge))
@@ -631,10 +639,10 @@ class GrammaInterpreter(OperatorsImplementationSamplerMixin, SamplerInterface):
     def eval_num(self, ge: Union[GTok, GCode]) -> Union[float, int]:
         return ge.as_num() if isinstance(ge, GTok) else cast(Union[float, int], self.exec(ge))
 
-    def sample_start(self) -> Sample:
+    def sample_start(self) -> SampleType:
         ge = self.grammar.ruledefs['start'].rhs
         return self.sample(ge)
 
-    def coro_sample_start(self) -> Sample:
+    def coro_sample_start(self) -> SampleType:
         ge = self.grammar.ruledefs['start'].rhs
         return self.coro_sample(ge)
