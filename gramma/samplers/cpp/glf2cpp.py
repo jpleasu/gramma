@@ -416,10 +416,8 @@ class CppEmitter(Emitter):
         elif isinstance(ge, GCode):
             return f'[&]() {{return {self.invoke(ge)};}}'
         elif isinstance(ge, GRuleRef):
-            # return f'std::bind(&{ge.rname}, this)'
-            return f'[this]() -> sample_type {{return {ge.rname}();}}'
+            return f'[this]() {{return {self.invoke(ge)};}}'
         else:
-            # return f'(std::bind(&{self.ident[ge]}, this))'
             return f'[this]() -> sample_type {{return {self.ident[ge]}();}}'
 
     def invoke_rep_bound(self, x: Union[GTok, GCode, None], default: int) -> str:

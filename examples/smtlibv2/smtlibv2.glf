@@ -1,4 +1,4 @@
-start := equals(sort);
+start := equals(sort).'\n';
 equals(s) := '(= '.sexpr(s).' '.sexpr(s).' )';
 
 

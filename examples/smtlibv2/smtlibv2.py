@@ -53,7 +53,7 @@ if __name__ == '__main__':
     sys.setrecursionlimit(10000)
     s = SMTSampler()
     s.random.seed(1)
-    for i in range(100):
+    while True:
         samp = s.sample_start()
         # samp = s.coro_sample_start()
         print(samp.s)
