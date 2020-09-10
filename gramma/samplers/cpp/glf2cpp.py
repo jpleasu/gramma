@@ -374,14 +374,19 @@ class CppEmitter(Emitter):
     def invoke_function(self, name: str, gargs: List[GExpr]) -> str:
         if self.enforce_ltr and len(gargs) >= 2:
             argl = []
+            tmps = ''
             for c in gargs[:-1]:
                 arg = self.next_local()
-                self.emit(f'auto &&{arg}={self.invoke(c)};')
+                tmps += f'auto &&{arg}={self.invoke(c)};'
                 argl.append(f'std::move({arg})')
             argl.append(self.invoke(gargs[-1]))
+            # using the widely implemented, but non-standard "statement expression"
+            # return '({' + tmps + f'{name}({",".join(argl)})' + ';})'
+            # using a this bound lambda (IIFE)
+            return '[this](){' + tmps + 'return ' + f'{name}({",".join(argl)})' + ';}()'
         else:
             argl = [self.invoke(c) for c in gargs]
-        return f'{name}({",".join(argl)})'
+            return f'{name}({",".join(argl)})'
 
     def invoke(self, ge: GExpr) -> str:
         """
