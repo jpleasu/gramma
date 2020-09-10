@@ -63,6 +63,11 @@ namespace gramma {
             return u01(rand);
         }
 
+        // [0, n)
+        int weighted(const double *weights, size_t n) {
+            return std::discrete_distribution<int>(weights, weights + n)(rand);
+        }
+
         // inclusive, [lo,hi]
         int uniform(int lo, int hi) {
             return std::uniform_int_distribution<int>(lo, hi)(rand);

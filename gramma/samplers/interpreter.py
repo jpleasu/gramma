@@ -28,6 +28,9 @@ class RandomAPI:
     def __init__(self, seed=None):
         self.generator = np.random.Generator(np.random.MT19937(np.random.SeedSequence(seed)))
 
+    def seed(self, v: int) -> None:
+        self.generator = np.random.Generator(np.random.MT19937(np.random.SeedSequence(v)))
+
     def choice(self, choices: List[T], weights: Union[None, List[Union[int, float]], np.ndarray] = None) -> T:
         if weights is None:
             weights = np.ones(len(choices))
@@ -35,9 +38,6 @@ class RandomAPI:
             weights = np.array(weights)
         p = weights / weights.sum()
         return cast(T, self.generator.choice(choices, p=p))
-
-    def seed(self, v: int) -> None:
-        self.generator = np.random.Generator(np.random.MT19937(np.random.SeedSequence(v)))
 
     def integers(self, lo: int, hi: int) -> int:
         return cast(int, self.generator.integers(lo, hi))

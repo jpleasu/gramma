@@ -27,6 +27,7 @@ log = logging.getLogger('gramma.samplers.cpp')
 
 # TODO this is used to encode "wide" chars as UTF8 in multibyte mode
 ENCODING = 'utf8'
+DEFAULT_CHAR_TYPE: Literal['multibyte', 'wide'] = 'multibyte'
 
 INCLUDE_DIR = os.path.join(os.path.dirname(__file__), 'include')
 
@@ -57,7 +58,9 @@ def get_compiler() -> Optional[str]:
     return cxx
 
 
-def encode_as_cpp(s: Union[str, bytes, int], quote: str) -> str:
+def encode_as_cpp(s: Union[str, bytes, int], quote: str, char_type: Literal['multibyte', 'wide']) -> str:
+    if char_type == 'wide':
+        raise NotImplemented("wide string output hasn't been implemented yet")
     quoteord = ord(quote)
     r = quote
     b: Iterable[int]
@@ -87,12 +90,12 @@ def encode_as_cpp(s: Union[str, bytes, int], quote: str) -> str:
     return r + quote
 
 
-def encode_as_cpp_str(s: Union[str, bytes]) -> str:
-    return encode_as_cpp(s, quote='"')
+def encode_as_cpp_str(s: Union[str, bytes], char_type: Literal['multibyte', 'wide']) -> str:
+    return encode_as_cpp(s, quote='"', char_type=char_type)
 
 
-def encode_as_cpp_char(c: str) -> str:
-    return encode_as_cpp(ord(c), quote="'")
+def encode_as_cpp_char(c: str, char_type: Literal['multibyte', 'wide']) -> str:
+    return encode_as_cpp(ord(c), quote="'", char_type=char_type)
 
 
 class CppEmitterError(Exception):
@@ -325,7 +328,7 @@ class CppEmitter(Emitter):
         # TODO handle multibyte mode by inserting L all over
         encoded = [c.encode(ENCODING) for c in ge.chars]
         if any(len(c) > 1 for c in encoded):
-            chars = ','.join(encode_as_cpp_str(c) for c in ge.chars)
+            chars = ','.join(encode_as_cpp_str(c, char_type=DEFAULT_CHAR_TYPE) for c in ge.chars)
             with self.indentation(f'''\
                 // GRange {ge.locstr()}
                 inline {self.sampler_name}::sample_type {self.sampler_name}::{gid}() {{
@@ -334,7 +337,7 @@ class CppEmitter(Emitter):
                     return random.choice({{{chars}}});
                 ''')
         else:
-            chars = ','.join(encode_as_cpp_char(c) for c in ge.chars)
+            chars = ','.join(encode_as_cpp_char(c, char_type=DEFAULT_CHAR_TYPE) for c in ge.chars)
             with self.indentation(f'''\
                 // GRange {ge.locstr()}
                 inline {self.sampler_name}::sample_type {self.sampler_name}::{gid}() {{
@@ -395,7 +398,7 @@ class CppEmitter(Emitter):
             return ge.expr
         elif isinstance(ge, GTok):
             if ge.type == 'string':
-                return encode_as_cpp_str(ge.as_str())
+                return encode_as_cpp_str(ge.as_str(), char_type=DEFAULT_CHAR_TYPE)
             return str(ge)  # ints and floats
         else:
             return f'{self.ident[ge]}()'
@@ -487,7 +490,7 @@ class CppEmitter(Emitter):
                     return {{}};
                 }}
 
-                using sample_t = gramma::basic_sample<denotation_t, char>;
+                using sample_t = gramma::basic_sample<denotation_t, char_t>;
 
                 class {self.impl_name}: public gramma::SamplerBase<{self.sampler_name}, sample_t> {{
             ''', '};'):
@@ -627,7 +630,7 @@ def main(main_args: Optional[List[str]] = None) -> None:
     parser.add_argument('glf', metavar='GLF_IN', type=argparse.FileType(),
                         help='input GLF file')
 
-    parser.add_argument('--enforce_ltr', dest='enforce_ltr', action='store_true', default=False,
+    parser.add_argument('--enforce-ltr', dest='enforce_ltr', action='store_true', default=False,
                         help='enforce left to right sampling of rule, denotation, and gdfunc arguments\n'
                              'note: to prescribe gfunc argument sample order, use sample_factory_type arguments')
 
@@ -684,7 +687,7 @@ def main(main_args: Optional[List[str]] = None) -> None:
         with emitter.write_to(sampler_def_path):
             emitter.emit_sampler('definition')
 
-    if check_force(sampler_path, args.force, 2):
+    if check_force(sampler_path, args.force, 5):
         with emitter.write_to(sampler_path):
             emitter.emit_sampler_start()
             emitter.emit_implementation('declaration')

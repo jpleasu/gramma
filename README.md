@@ -31,20 +31,8 @@ Gramma is a probabilistic programming language for grammar based fuzzing.
 
 # Overview
 Expressions in Gramma are probabilistic programs with string value.  They
-are written in GLF, an extensible syntax for formal language description
-that resembles extend Backus-Naur form (EBNF).  Gramma is like a parser generator, 
-but instead of generating a parser from a grammar, Gramma generates a (parameterized) fuzzer
-from a grammar.
-
-A typical application of Gramma in fuzzing would be as follows:
-
-1. Create a GLF grammar based on the input grammar for the application under test.
-2. Feed the instrumented application samples and compute a measure of interest
-   for each.
-3. Tweak numerical parameters of the grammar and/or use previous samples as
-   templates to update the grammar.
-4. Repeat.
-
+are written in GLF, an extensible syntax that resembles extended Backus-Naur form (EBNF).  Gramma is like a parser 
+generator, but instead of generating a parser from a grammar, Gramma generates a fuzzer from a grammar.
 
 # Setup
 
@@ -56,14 +44,24 @@ cd gramma
 
 # to install
 pip3 install .
+
+# .. or to run using repo contents (instead of copying to site-packages)
+pip3 install -e .
 ```
 
-For developement
+## Quick start
 ```bash
-# to run using repo contents (instead of copying to site-packages)
-pip3 install -e .
+cd examples/smtlibv2
+# the Python interpreter implementation in ./smtlibv2.py reads ./smtlibv2.glf every run
+./smtlibv2.py | head
 
-# to nstall extra testing dependencies
+# the C++ sampler implementation in ./smtlibv2_sampler.cpp relies on code generated from ./smtlibv2.glf
+glf2cpp ./smtlibv2.glf -m -b
+./smtlibv2_sampler | head
+```
+
+## for testing and developement
+```bash
 pip3 install -e .[tests]
 
 # to run tests
@@ -74,8 +72,10 @@ tox
 
 
 # samplers
-Gramma is like an ordinary programming language, except it isn't evaluated, it's _sampled_.  Instead of an execution 
-engine, interpreter, or compiler, we use a _sampler_ to get a string from a GLF expression.
+Gramma is like an ordinary programming language, except it isn't evaluated, it's _sampled_.  Sampling the same 
+expression twice can result in different results.  By including variables in our expression we
+parameterize its distribution -- as input to an application with measurable outputs, fuzzing with Gramma becomes 
+statistical regression: how do I tweak my grammar to make the application do more of *that*?
 
 ## Python
 The Python interpretering sampler provides a fast way to prototype a grammar with a straightforward interpreter.  If 
@@ -103,25 +103,140 @@ class Arithmetic(GrammaInterpreter):
     def randint(self):
         return self.create_sample(str(self.random.integers(0, 100000)))
 
+    @gfunc
+    def coro_randint(self):
+        yield self.create_sample(str(self.random.integers(0, 100000)))
+
 if __name__ == '__main__':
     sampler=Arithmetic()
     print(sampler.sample_start())
+    # or to avoid stack exhaustion, sample with coroutines:
+    print(sampler.coro_sample_start()) 
 ```
 
 ## C++ sampler generator
-The C++ sampler generator produces C++17 source that depends on `include/gramma/gramma.hpp`.
+The C++ sampler generator produces C++20 source that depends on `include/gramma/gramma.hpp`.  There are 3 parts to 
+the sampler code for a grammar `X.glf`:
+1. generated node declarations`X_sampler_decl.inc`
+1. generated node definitions `X_sampler_decl.inc`
+1. implementation `X_sampler.cpp`
 
-`glf2cpp` can generate a template sampler class and `main` to produce samples with it, but non-trivial grammars,
-in particular those with denotations, will require more work.
-
-The generated samplers use template parameters `ImplT`, `SampleT`, and `DenotationT` in a CRTP pattern, where 
-the implementation, `ImplT` is expected to provide `cat` and `denote` methods.
-
+`glf2cpp` can generate a template implementation and `main` to sample with it:
 ```bash
-glf2cpp --help
+# create a simple grammar
+echo "start:=choose x~'*'{,10} in x.' Hello world! '.x.'\n';" > X.glf
+# -m includes main
+# -b attempts to build with g++ or clang++
+glf2cpp X.glf -m -b
+./X_sampler
+```
+For non-trivial grammars, start by writing a GLF file, using functions and variables that *make sense*. `glf2cpp` will 
+generate stubs for your functions, but you will have to add variables.
+
+For example,
+```bash
+# create a grammar
+cat <<'EOT' > Y.glf
+    start   := command.snap.'\n';
+    color   := 'Red' | 'Green' | 'Blue';
+    command := color.' '.code();
+    snap    := 'hut!'{`minsnap`,`maxsnap`};
+EOT
+glf2cpp Y.glf -m -b
+```
+The build will fail, since `minsnap` and `maxsnap` are undeclared.  So add them to `Y_sampler.cpp`:
+```c++
+...
+class Y_sampler_impl: public gramma::SamplerBase<Y_sampler, sample_t> {
+    protected:       // <<< must be either public or protected, since child class must have access
+    int minsnap=1;   // <<<
+    int maxsnap=4;   // <<<
+...
+```
+and try again
+```bash
+# note, glf2cpp won't overwrite anything without being "forced", so the following is just invoking the compiler
+glf2cpp Y.glf -m -b
+./Y_sampler | head
+```
+It should build and generate random colors and 1 to 4 "huts", but the `code()` call is generating, `(code stub)`.
+
+Let's edit `Y_sampler.cpp` again, and modify `code`
+```c++
+Y_sampler_impl::sample_type Y_sampler_impl::code(){
+    // replace following generated line with something a little more interesting
+    // return "(code stub)";
+    int x = random.uniform(10,99);
+    if(x&1) {
+        minsnap=3;
+        maxsnap=4;
+    } else {
+        minsnap=1;
+        maxsnap=2;
+    }
+    return std::to_string(x);
+}
 ```
 
-TODO: example
+and try again
+```bash
+glf2cpp Y.glf -m -b
+./Y_sampler | head
+```
+Now if the code is even we get 1 or 2 "huts", and if it's odd we get 3 or 4.
+
+Unfortunately, there's no seperator after `command`, so we get `Blue 32hut!hut!` where we might want 
+`Blue 32, hut!hut!`.  We can change the GLF and  regenerate just the `.inc` files.  First, change the grammar `Y.glf`:
+```
+    #  while we're at it, let's allow multiple commands
+    # start   := command.snap.'\n';
+    start   := (command.", "){1,3}.snap.'\n';
+    color   := 'Red' | 'Green' | 'Blue';
+    command := color.' '.code();
+    snap    := 'hut!'{`minsnap`,`maxsnap`};
+```
+
+run once more, but force overwrite the `.inc` files this time with `-f`:
+```bash
+glf2cpp Y.glf -m -b -f
+./Y_sampler | head
+```
+Now we can get from 1 to 3 color/code combos, and the last code determines how many "hut"s we get.
+
+
+### the design of generated code
+The generated sampler uses a "curiously recurring template", where the implementation class, `X_sampler_impl`, is in 
+the middle.  This way, the implementation class can be developed independently and there is no runtime overhead.
+```c++
+// X_sampler.cpp
+#include <gramma/gramma.hpp>
+#include <gramma/sample.hpp>
+
+using char_t = char;
+using string_t = std::basic_string<char_t>;
+struct denotation_t : public std::variant<int,double,string_t> {...};
+using sample_t = gramma::basic_sample<denotation_t, char_t>;
+
+// declaration of implementation
+class X_sampler_impl: public gramma::SamplerBase<X_sampler, sample_t> {
+    // sampler API
+    void icat(sample_t &a, const sample_t &b) {...}
+    sample_t denote(const sample_t &a, const denotation_t &b) {...}
+    ...
+}
+
+// declaration of generated sampler - X_sampler_decl.inc
+class X_sampler : public X_sampler_impl {...}
+
+// definition of implementation
+...
+
+// definition of generated sampler - X_sampler_def.inc
+// GRep line 1, column 17
+inline X_sampler::sample_type X_sampler::f1() {...}
+...
+
+```
 
 ### function argument evaluation order
 Unfortunately, argument evaluation order cannot be prescribed in C++. In particular, we can't assume that `g1` is 
@@ -138,7 +253,7 @@ f(std::move(a1), std::move(a2), std::move(a3));
 ```
 but there is a small performance hit -- the compiler can no longer perform copy/move elision.
 
-The `glf2cpp` option `--enforce_ltr` will generate this extra code.
+The `glf2cpp` option `--enforce-ltr` will generate this extra code.
 
 Even still, the converting constructor of `sample_t` might run into this as well. Calls to gfuncs are generated 
 with callable arguments:
@@ -226,17 +341,19 @@ this sets the recurse branch weight to `1` if `depth <5`, and `0` otherwise (bec
 
 ## denotation (`/`) - denotation
 ```
-    x / y
+x / y
 ```
 Denotes the value `x` with `y`.
 
-The following pseudo code demonstrates how a sampler would interpret the expression above:
+In pseudocode, this is how a sampler interprets the expression above:
 ```
-    sampler.sample('x/y') -> sampler.sample('x').denote('y')
+sampler.sample('x/y') -> sampler.sample('x').denote('y')
 ```
+We should think of the syntax, `-/-` as defining the mapping relation for denotational semantics of the generated 
+language.
 
-We can interpret the syntax, `-/-` as defining the mapping relation for denotational semantics of the generated 
-language.  Semantics can influence sampling by accessing denotations in gfuncs.
+A sampler implementation defines the *sample type* and the *denotation type*.  The sampler method `denote` handles 
+the association.
 
 ## concatenation (`.`) - definite concatenation
 ```
@@ -317,17 +434,22 @@ q(a,b) := a . (b | q(a,b));
 
 not_r := q('->'|'=>','stop');
 ```
-Rules can take parameters which are bound on call. In particular, `not_r` is not the same thing as `r` in the previous
+Rules can take parameters which are bound on "call". In particular, `not_r` is not the same thing as `r` in the previous
 grammar, because `'->'|'=>'` is sampled and bound *once* when `not_r` is invoked.
 
 
-## function call (gfuncs) - defined outside of the GLF
+## function call (gfuncs) - defined outside of GLF, in the implementation language (Python or C++)
 ```
 f(x)
 ```
-- in Python, inherit from the `GrammaGrammar` class and add decorated functions, see below.
-- functions can be stateful, meaning they rely on information stored in the `SamplerInterface` object.
-- evaluation is left to right.
+- in Python, inherit from the `GrammaInterpreter` class and add decorated functions, see below.
+- functions can be stateful, using and changing sampler instance variables.
+- functions are only invoked when sampled, e.g. only one of `f` or `g` is called for each sample of `f() | g()`.
+- concatenations invoke functions left to right, e.g. each sample of `first().second().third()` calls `first` then 
+`second` then `third`
+- with the C++ generator, invocation order for denotations and function arguments must be enforced with the 
+`--enforce-ltr` switch, see [this section](#function-argument-evaluation-order) for more detail.
+
      
 # creating grammars
 

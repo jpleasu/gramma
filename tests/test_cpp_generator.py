@@ -32,15 +32,15 @@ class TestUtils(unittest.TestCase):
         self.assertEqual(shell_join(['a', 'b', 'c']), 'a b c')
         self.assertEqual(shell_join(['a""a', "b''b", 'c c']), r'''"a\"\"a" "b''b" "c c"''')
 
-    def test_encode_as_cpp(self):
-        self.assertEqual(encode_as_cpp('', '"'), '""')
-        self.assertEqual(encode_as_cpp(b'abc', '"'), r'"abc"')
-        self.assertEqual(encode_as_cpp(b'a\x00c', '"'), r'"a\0c"')
-        self.assertEqual(encode_as_cpp(b'a\xffc', '"'), r'"a\xffc"')
-        self.assertEqual(encode_as_cpp(ord('a'), '"'), r'"a"')
-        self.assertEqual(encode_as_cpp('"', '"'), r'"\""')
-        self.assertEqual(encode_as_cpp('\\', '"'), r'"\\"')
-        self.assertEqual(encode_as_cpp('"\\\n\r\t', '"'), r'"\"\\\n\r\t"')
+    def test_encode_as_cpp_multibyte(self):
+        self.assertEqual(encode_as_cpp('', '"', char_type='multibyte'), '""')
+        self.assertEqual(encode_as_cpp(b'abc', '"', char_type='multibyte'), r'"abc"')
+        self.assertEqual(encode_as_cpp(b'a\x00c', '"', char_type='multibyte'), r'"a\0c"')
+        self.assertEqual(encode_as_cpp(b'a\xffc', '"', char_type='multibyte'), r'"a\xffc"')
+        self.assertEqual(encode_as_cpp(ord('a'), '"', char_type='multibyte'), r'"a"')
+        self.assertEqual(encode_as_cpp('"', '"', char_type='multibyte'), r'"\""')
+        self.assertEqual(encode_as_cpp('\\', '"', char_type='multibyte'), r'"\\"')
+        self.assertEqual(encode_as_cpp('"\\\n\r\t', '"', char_type='multibyte'), r'"\"\\\n\r\t"')
 
     def test_cpp_emitter(self):
         sio = StringIO()
@@ -382,7 +382,7 @@ class TestMain(unittest.TestCase):
                 self.assertLess(mtime, os.path.getmtime(path))
             mtimes = [os.path.getmtime(path) for path in generated_files]
 
-            glf2cpp_main([glf_path, '-m', '-b', '-ff'])
+            glf2cpp_main([glf_path, '-m', '-b', '-fffff'])
             for mtime, path in zip(mtimes, generated_files):
                 self.assertLess(mtime, os.path.getmtime(path))
             mtimes = [os.path.getmtime(path) for path in generated_files]
