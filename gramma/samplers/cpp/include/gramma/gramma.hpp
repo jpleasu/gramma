@@ -58,14 +58,14 @@ namespace gramma {
             return std::discrete_distribution<int>(weights, weights + N)(rand);
         }
 
+        int weighted_select(const double *weights, size_t n) {
+            return std::discrete_distribution<int>(weights, weights + n)(rand);
+        }
+
+
         std::uniform_real_distribution<double> u01{ 0.0, 1.0 };
         double uniform() {
             return u01(rand);
-        }
-
-        // [0, n)
-        int weighted(const double *weights, size_t n) {
-            return std::discrete_distribution<int>(weights, weights + n)(rand);
         }
 
         // inclusive, [lo,hi]

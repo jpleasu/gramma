@@ -246,7 +246,9 @@ class CppEmitter(Emitter):
             inline {self.sampler_name}::sample_type {self.sampler_name}::{gid}() {{
         ''', '}'):
             self.emit(f'''\
-                int n={self.invoke_rep_dist(ge)};
+                int lo = {self.invoke_rep_bound(ge.lo, 0)};
+                int hi = {self.invoke_rep_bound(ge.hi, 2 ** 10)};
+                int n = lo==hi?lo:{self.invoke_rep_dist(ge)};
 
                 sample_type s;
                 while(n-->0) {{
@@ -435,15 +437,13 @@ class CppEmitter(Emitter):
         """
         generate C++ source to sample the given RepDist.
 
-        assume random is in scope
+        assume lo,hi, and random are in scope
         """
         dist = ge.dist
-        lo = self.invoke_rep_bound(ge.lo, 0)
-        hi = self.invoke_rep_bound(ge.hi, 2 ** 10)
 
-        fstr = f'std::min(std::max({lo}, {{0}}), {hi})'
+        fstr = f'std::min(std::max(lo, {{0}}), hi)'
         if dist.name.startswith('unif'):
-            return f'random.uniform({lo},{hi})'
+            return f'random.uniform(lo,hi)'
         elif dist.name.startswith('geom'):
             # "a"{geom(n)} has an average of n copies of "a"
             parm = 1 / float(dist.args[0].as_num() + 1)
@@ -731,4 +731,4 @@ def main(main_args: Optional[List[str]] = None) -> None:
                 cmd_args[1:1] = ['-fPIC', '-shared']
 
             log.info('  ' + shell_join(cmd_args))
-            result = subprocess.call(cmd_args)
+            retcode = subprocess.call(cmd_args)

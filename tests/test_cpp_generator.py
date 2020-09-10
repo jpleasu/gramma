@@ -1,23 +1,22 @@
 #!/usr/bin/env python3
 
 import os
-import shutil
 import subprocess
-import sys
 import tempfile
 import unittest
 from io import StringIO
 from typing import cast, Optional
 
 from gramma.parser import GrammaGrammar, GExpr, GrammaParseError
-from gramma.samplers.cpp.glf2cpp import CppEmitter, INCLUDE_DIR, CXXFLAGS, shell_join, get_compiler, encode_as_cpp, \
+from gramma.samplers.cpp.glf2cpp import CppEmitter, INCLUDE_DIR, CXXFLAGS, shell_join, encode_as_cpp, \
     CppEmitterError
 
 from gramma.samplers.cpp.glf2cpp import main as glf2cpp_main
 
-EXAMPLE_DIR = os.path.join(os.path.dirname(__file__), '..', 'examples')
 
-CXX: Optional[str] = get_compiler()
+from .cpp_testing_common import CppTestMixin, CXX
+
+EXAMPLE_DIR = os.path.join(os.path.dirname(__file__), '..', 'examples')
 
 
 def returns_none(*args):
@@ -77,30 +76,7 @@ class TestHandlers(unittest.TestCase):
 
 
 # noinspection PyArgumentEqualDefault
-class TestNodes(unittest.TestCase):
-    def assertSampleEquals(self, glf: str, expected: str, count: Optional[int] = 10, seed: int = 1,
-                           enforce_ltr: bool = True) -> None:
-        g = GrammaGrammar(glf)
-        with tempfile.NamedTemporaryFile(mode='w', suffix='.cpp', encoding='utf8') as tmpsourcefile:
-            e = CppEmitter(g, 'test_grammar', out=tmpsourcefile, echo=None, enforce_ltr=enforce_ltr)
-
-            tmpexecutable = tempfile.NamedTemporaryFile(dir=os.getcwd(), delete=False)
-
-            cmd_args = [cast(str, CXX)] + CXXFLAGS + ['-I', INCLUDE_DIR, '-o', tmpexecutable.name, tmpsourcefile.name]
-            e.emit('// ' + shell_join(cmd_args))
-            e.write_monolithic_main(count=count, seed=seed, close=False)
-
-            try:
-                result = subprocess.call(cmd_args)
-                self.assertEqual(result, 0, 'failed to build')
-                tmpexecutable.close()
-
-                out = subprocess.check_output([tmpexecutable.name], encoding='utf8')
-                self.assertEqual(out, expected)
-            finally:
-                if os.path.exists(tmpexecutable.name):
-                    os.unlink(tmpexecutable.name)
-
+class TestNodes(unittest.TestCase, CppTestMixin):
     def test_GCat(self):
         self.assertSampleEquals('''
             start := 'a' . 'b';
@@ -243,12 +219,12 @@ class TestNodes(unittest.TestCase):
             expected = expected_ltr
         else:
             expected = 'adeh'
-        G = '''
+        glf = '''
             start := r('a'|'b', 'c'|'d', 'e'|'f', 'g'|'h');
             r(w,x,y,z) := w.x.y.z;
         '''
-        self.assertSampleEquals(G, expected, seed=3, count=1, enforce_ltr=False)
-        self.assertSampleEquals(G, expected_ltr, seed=3, count=1, enforce_ltr=True)
+        self.assertSampleEquals(glf, expected, seed=3, count=1, enforce_ltr=False)
+        self.assertSampleEquals(glf, expected_ltr, seed=3, count=1, enforce_ltr=True)
 
 
 class TestMain(unittest.TestCase):
@@ -385,7 +361,6 @@ class TestMain(unittest.TestCase):
             glf2cpp_main([glf_path, '-m', '-b', '-fffff'])
             for mtime, path in zip(mtimes, generated_files):
                 self.assertLess(mtime, os.path.getmtime(path))
-            mtimes = [os.path.getmtime(path) for path in generated_files]
 
         finally:
             for path in generated_files:
