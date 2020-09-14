@@ -280,17 +280,18 @@ class Location:
     line: int
     column: int
 
-    def __init__(self, line: int, column: int):
+    def __init__(self, line: int, column: int, pos: int):
         self.line = line
         self.column = column
+        self.pos = pos
 
     @staticmethod
     def from_lark_token(tok: lark.Token) -> 'Location':
-        return Location(tok.line, tok.column)
+        return Location(tok.line, tok.column, tok.pos_in_stream)
 
     @staticmethod
     def from_lark_tree(lt: lark.Tree) -> 'Location':
-        return Location(lt.meta.line, lt.meta.column)
+        return Location(lt.meta.line, lt.meta.column, lt.meta.start_pos)
 
 
 GExprT = TypeVar('GExprT', bound='GExpr')
@@ -446,8 +447,11 @@ class GInternal(GExpr):
     def __str__(self):  # pragma: no cover
         return '%s(%s)' % (self.__class__.__name__, ','.join(str(clt) for clt in self.children))
 
-    def walk(self) -> Iterator['GExpr']:
+    def walk(self, upto: Optional[Callable[[GExpr], bool]] = None) -> Iterator['GExpr']:
         yield self
+        if upto is not None:
+            if upto(self):
+                return
         for c in self.children:
             yield from c.walk()
 

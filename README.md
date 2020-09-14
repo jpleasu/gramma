@@ -151,7 +151,7 @@ glf2cpp Y.glf -m -b
 The build will fail, since `minsnap` and `maxsnap` are undeclared.  So add them to `Y_sampler.cpp`:
 ```c++
 ...
-class Y_sampler_impl: public gramma::SamplerBase<Y_sampler, sample_t> {
+class Y_sampler_impl: public gramma::sampler_base<Y_sampler, sample_t> {
     protected:       // <<< must be either public or protected, since child class must have access
     int minsnap=1;   // <<<
     int maxsnap=4;   // <<<
@@ -207,7 +207,6 @@ glf2cpp Y.glf -m -b -f
 ```
 Now we can get from 1 to 3 color/code combos, and the last code determines how many "hut"s we get.
 
-
 ### the design of generated code
 The generated sampler uses a "curiously recurring template", where the implementation class, `X_sampler_impl`, is in 
 the middle.  This way, the implementation class can be developed independently and there is no runtime overhead.
@@ -222,10 +221,13 @@ struct denotation_t : public std::variant<int,double,string_t> {...};
 using sample_t = gramma::basic_sample<denotation_t, char_t>;
 
 // declaration of implementation
-class X_sampler_impl: public gramma::SamplerBase<X_sampler, sample_t> {
-    // sampler API
+class X_sampler_impl: public gramma::sampler_base<X_sampler, sample_t> {
+    // sampler interface
     void icat(sample_t &a, const sample_t &b) {...}
     sample_t denote(const sample_t &a, const denotation_t &b) {...}
+    void enter_rule(auto ruleid) {...}
+    void exit_rule() {...}
+    
     ...
 }
 
@@ -253,7 +255,7 @@ We can force the order by injecting sequence points:
 auto &&a1=g1();
 auto &&a2=g2();
 auto &&a3=g3();
-f(std::move(a1), std::move(a2), std::move(a3));
+f(std::forward<decltype(a1)>(a1), std::forward<decltype(a3)>(a2), std::forward<decltype(a3)>(a3));
 ```
 but there is a small performance hit -- the compiler can no longer perform copy/move elision.
 
@@ -276,7 +278,7 @@ The problem is that the compiler will invoke the callable converting-constructor
 the compiler's arbitrary argument evaluation order.
 
 So, **if the order of argument sampling matters** then use `--enforce_ltr` and define your gfuncs with 
-`sample_factor_type` argument types:
+`sample_factory_type` argument types:
 ```C++
 sample_t f(sample_factory_type a1f, sample_factory_type a2f, sample_factory_type a3f) {
     auto &&a1=a1f();

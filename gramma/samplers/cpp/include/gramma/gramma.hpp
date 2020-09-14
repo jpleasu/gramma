@@ -7,6 +7,8 @@
 #include <sstream>
 #include <string>
 
+#include <stdexcept>
+
 #include <functional>
 #include <type_traits>
 
@@ -19,10 +21,16 @@
 #include <random>
 
 namespace gramma {
+    template <typename EnumT>
+    constexpr auto to_underlying(EnumT e) noexcept {
+        return static_cast<std::underlying_type_t<EnumT>>(e);
+    }
+
+    template <typename RandomEngineT = std::mt19937_64>
     class RandomAPI {
       public:
-        using rand_t = std::mt19937_64;
-        rand_t rand;
+        using random_engine_type = RandomEngineT;
+        random_engine_type rand;
 
         template <size_t N>
         void normalize(double (&weights)[N]) {
@@ -31,9 +39,10 @@ namespace gramma {
                 x /= sum;
         }
 
-        void set_seed(rand_t::result_type seed) {
+        void set_seed(typename random_engine_type::result_type seed) {
             rand.seed(seed);
         }
+
         std::string get_state() {
             std::ostringstream oss;
             oss << rand;
@@ -62,7 +71,6 @@ namespace gramma {
             return std::discrete_distribution<int>(weights, weights + n)(rand);
         }
 
-
         std::uniform_real_distribution<double> u01{ 0.0, 1.0 };
         double uniform() {
             return u01(rand);
@@ -90,11 +98,13 @@ namespace gramma {
         }
     };
 
-    template <class SamplerT, class SampleT>
-    class SamplerBase {
+    template <typename SamplerT, typename SampleT, typename RandomEngineT = std::mt19937_64>
+    class sampler_base {
       public:
         using sample_factory_type = std::function<SampleT()>;
+        using sampler_type = SamplerT;
         using sample_type = SampleT;
+        using random_engine_type = RandomEngineT;
         using denotation_type = typename sample_type::denotation_type;
 
         std::deque<std::map<int, sample_type>> vars;
@@ -106,42 +116,74 @@ namespace gramma {
         void pop_vars() {
             vars.pop_front();
         }
-        struct vars_guard_t {
-            SamplerBase &sampler;
+        struct var_ctx_t {
+            sampler_base &sampler;
 
-            vars_guard_t(SamplerBase &sampler) : sampler(sampler) {
+            var_ctx_t(sampler_base &sampler) : sampler(sampler) {
                 sampler.push_vars();
             }
-            ~vars_guard_t() {
+            ~var_ctx_t() {
                 sampler.pop_vars();
             }
         };
 
-        vars_guard_t vars_guard() {
+        var_ctx_t var_ctx() {
             return { *this };
         }
 
-        template <class T>
-        void set_var(int varid, T value) {
-            static_assert(std::is_base_of<sample_type, T>::value, "set_var values must be samples");
-            vars.back()[varid] = std::forward<T>(value);
+        template <typename RuleIdT>
+        struct rule_ctx_t {
+            sampler_base &sampler;
+
+            rule_ctx_t(sampler_base &sampler, RuleIdT ruleid) : sampler(sampler) {
+                sampler._impl().enter_rule(ruleid);
+            }
+            ~rule_ctx_t() {
+                sampler._impl().exit_rule();
+            }
+        };
+
+        template <typename RuleIdT>
+        rule_ctx_t<RuleIdT> rule_ctx(RuleIdT ruleid) {
+            return { *this, ruleid };
         }
 
-        sample_type get_var(int varid) {
+        template <typename T>
+        using is_sample_t =
+            std::enable_if_t<std::is_base_of<sample_type, std::remove_cv_t<std::remove_reference_t<T>>>::value, int>;
+
+        template <typename T>
+        using is_convertible_to_sample_t = std::enable_if_t<
+            !std::is_base_of<sample_type, std::remove_cv_t<std::remove_reference_t<T>>>::value &&
+                std::is_constructible<sample_type, std::remove_cv_t<std::remove_reference_t<T>>>::value,
+            int>;
+
+        template <typename EnumT, typename T, is_sample_t<T> = 0>
+        void set_var(EnumT varid, T &&value) {
+            vars.back()[to_underlying(varid)] = std::forward<T>(value);
+        }
+
+        template <typename EnumT, typename T, is_convertible_to_sample_t<T> = 0>
+        void set_var(EnumT varid, T &&value) {
+            vars.back()[to_underlying(varid)] = sample_type(std::forward<T>(value));
+        }
+
+        template <typename EnumT>
+        sample_type get_var(EnumT varid) {
             for (auto &m : vars) {
-                auto it = m.find(varid);
+                auto it = m.find(to_underlying(varid));
                 if (it != m.end())
                     return it->second;
             }
-            return {}; // raise bad grammar exception?
+            throw std::runtime_error("no var defined with id " + std::to_string(to_underlying(varid)));
         }
 
         // access to the generated class in the implementation
-        SamplerT &_generated() {
+        SamplerT &_impl() {
             return *static_cast<SamplerT *>(this);
         }
 
-        RandomAPI random;
+        RandomAPI<RandomEngineT> random;
     };
 } // namespace gramma
 #endif // GRAMMA_HPP

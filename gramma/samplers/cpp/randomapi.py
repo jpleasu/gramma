@@ -21,7 +21,7 @@ def get_dll() -> Any:
         cxx = get_compiler()
         if cxx is None:
             raise OSError('no compiler found')  # pragma: no cover
-        cmd_args = [cxx] + CXXFLAGS + ['-O3', '-fPIC', '-shared', '-I', INCLUDE_DIR, '-o', DLL_PATH, SOURCE_PATH]
+        cmd_args = [cxx] + CXXFLAGS + ['-fPIC', '-shared', '-o', DLL_PATH, SOURCE_PATH]
         retcode = subprocess.call(cmd_args)
         if retcode != 0:
             raise OSError(f'build returned {retcode}')  # pragma: no cover

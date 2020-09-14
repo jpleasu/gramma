@@ -25,16 +25,19 @@ import logging
 
 log = logging.getLogger('gramma.samplers.cpp')
 
+VERSION = '1.0.0'
+
 # TODO this is used to encode "wide" chars as UTF8 in multibyte mode
 ENCODING = 'utf8'
 DEFAULT_CHAR_TYPE: Literal['multibyte', 'wide'] = 'multibyte'
 
 INCLUDE_DIR = os.path.join(os.path.dirname(__file__), 'include')
 
-# generated code is only C++11
-# for std::variant denotation_t, need C++17
-# for auto parameter gdfuncs, need c++20
-CXXFLAGS = ['-std=c++20']
+# generated code uses C++11
+# for std::variant denotation_t needs C++17
+# auto parameter gfuncs/gdfuncs need c++20
+CXXSTD = '-std=c++20'
+CXXFLAGS = [CXXSTD, '-O3', '-I', INCLUDE_DIR]
 
 EmitMode = Literal['definition', 'declaration']
 
@@ -155,66 +158,60 @@ class CppEmitter(Emitter):
             for c in ge.children:
                 self.walk_ast(c)
 
-    def emit_sampler(self, mode: EmitMode) -> None:
-        if mode == 'declaration':
-            self.emit('\n\n// sampler declaration', trim=False)
-            with self.indentation(f'''\
+    def emit_sampler_declaration(self) -> None:
+        self.emit('\n\n// sampler declaration', trim=False)
+        with self.indentation(f'''\
                 class {self.sampler_name} : public {self.impl_name} {{
             ''', '};'):
-                self.emit(f'''\
+            self.emit(f'''\
                     public:
                     using base_type = {self.impl_name};
                     using typename base_type::sample_type;
+                    using typename base_type::random_engine_type;
                     
                 ''', trim=False)
 
-                rules = ','.join(sorted(self.grammar.ruledefs.keys()))
-                varids = ','.join(sorted(self.varids))
+            rules = ','.join(sorted(self.grammar.ruledefs.keys()))
+            varids = ','.join(sorted(self.varids))
 
-                self.emit(f'''\
-                    enum class rule_t {{{rules}}};
+            self.emit(f'''\
+                    enum class ruleid_t {{{rules}}};
                     enum class varid_t {{{varids}}};
 
-                    // wrappers to convert type
-                    sample_type get_var(varid_t varid) {{
-                        return base_type::base_type::get_var(static_cast<int>(varid));
-                    }}
-                    void set_var(varid_t varid, const sample_type &value) {{
-                        return base_type::base_type::set_var(static_cast<int>(varid), value);
-                    }}
                 ''')
 
-                self.emit('\n/* === nodes === */', trim=False)
-                for ruledef in self.grammar.ruledefs.values():
-                    self.emit_method(ruledef.rhs, mode='declaration')
-
-                self.emit('\n/* === ruledefs === */', trim=False)
-                for ruledef in self.grammar.ruledefs.values():
-                    parms = ','.join(f'sample_type {vname}' for vname in ruledef.params)
-                    self.emit(f'sample_type {ruledef.rname}({parms});')
-
-        elif mode == 'definition':
-            class_name = self.sampler_name
-            sample_type = f'{class_name}::sample_type'
-
-            self.emit('\n\n// sampler definition', trim=False)
+            self.emit('\n/* === nodes === */', trim=False)
             for ruledef in self.grammar.ruledefs.values():
-                self.emit_method(ruledef.rhs, mode='definition')
+                self.emit_method(ruledef.rhs, mode='declaration')
 
-                parms = ','.join(f'{sample_type} {vname}' for vname in ruledef.params)
-                with self.indentation(f'''\
+            self.emit('\n/* === ruledefs === */', trim=False)
+            for ruledef in self.grammar.ruledefs.values():
+                parms = ','.join(f'sample_type {vname}' for vname in ruledef.params)
+                self.emit(f'sample_type {ruledef.rname}({parms});')
+
+    def emit_sampler_definition(self) -> None:
+        class_name = self.sampler_name
+        sample_type = f'{class_name}::sample_type'
+
+        self.emit('\n\n// sampler definition', trim=False)
+        for ruledef in self.grammar.ruledefs.values():
+            self.emit_method(ruledef.rhs, mode='definition')
+
+            parms = ','.join(f'{sample_type} {vname}' for vname in ruledef.params)
+            with self.indentation(f'''\
                     // RuleDef {ruledef.locstr()}
                     inline {sample_type} {class_name}::{ruledef.rname}({parms}) {{
                 ''', '}'):
-                    if len(ruledef.params) > 0:
-                        self.emit('''\
-                            vars_guard_t _vars_guard=vars_guard();
+                if len(ruledef.params) > 0:
+                    self.emit('''\
+                            var_ctx_t _var_ctx=var_ctx();
                             ''')
-                        for vname in ruledef.params:
-                            self.emit(f'''\
+                    for vname in ruledef.params:
+                        self.emit(f'''\
                             set_var(varid_t::{vname}, {vname});
                             ''')
-                    self.emit(f'''
+                self.emit(f'''
+                        auto _rule_ctx=rule_ctx(ruleid_t::{ruledef.rname});
                         return {self.invoke(ruledef.rhs)};
                     ''')
 
@@ -292,8 +289,7 @@ class CppEmitter(Emitter):
                        case {i}:
                          return {self.invoke(c)};
                    ''')
-
-            self.emit('return {}; // throw exception?')
+            self.emit('throw std::runtime_error("index too large in GAlt");')
 
     def emit_method_GTern(self, ge: GTern) -> None:
         gid = self.ident[ge]
@@ -314,7 +310,7 @@ class CppEmitter(Emitter):
             inline {self.sampler_name}::sample_type {self.sampler_name}::{gid}() {{
         ''', '}'):
             self.emit(f'''\
-                vars_guard_t _vars_guard=vars_guard();
+                var_ctx_t _var_ctx=var_ctx();
             ''')
             for name, value_dist in zip(ge.vnames, ge.dists):
                 self.emit(f'''\
@@ -359,7 +355,7 @@ class CppEmitter(Emitter):
                 arg = self.next_local()
                 self.emit(f'''\
                     auto &&{arg}={self.invoke(ge.left)};
-                    return denote(std::move({arg}), {self.invoke(ge.right)});
+                    return denote(std::forward<decltype({arg})>({arg}), {self.invoke(ge.right)});
                 ''')
             else:
                 self.emit(f'''\
@@ -378,7 +374,7 @@ class CppEmitter(Emitter):
             for c in gargs[:-1]:
                 arg = self.next_local()
                 tmps += f'auto &&{arg}={self.invoke(c)};'
-                argl.append(f'std::move({arg})')
+                argl.append(f'std::forward<decltype({arg})>({arg})')
             argl.append(self.invoke(gargs[-1]))
             # using the widely implemented, but non-standard "statement expression"
             # return '({' + tmps + f'{name}({",".join(argl)})' + ';})'
@@ -465,10 +461,9 @@ class CppEmitter(Emitter):
         else:
             raise GrammaParseError('unknown repdist %s' % dist.name)
 
-    def emit_implementation(self, mode: EmitMode) -> None:
-        if mode == 'declaration':
-            self.emit('\n\n// implementation declaration', trim=False)
-            with self.indentation(f'''\
+    def emit_implementation_declaration(self, extra_class_body: str = '', skip_stubs: Iterable[str] = []) -> None:
+        self.emit('\n\n// implementation declaration', trim=False)
+        with self.indentation(f'''\
                 using char_t = char;
 
                 using string_t = std::basic_string<char_t>;
@@ -479,7 +474,7 @@ class CppEmitter(Emitter):
                     using base_type::variant;
                 }};
 
-                template<class T>
+                template<typename T>
                 string_t str(T && arg) {{
                     return std::to_string(std::forward<T>(arg));
                     //return std::to_wstring(std::forward<T>(arg));
@@ -492,54 +487,42 @@ class CppEmitter(Emitter):
                         case 1: return str(std::get<double>(d));
                         case 2: return std::get<string_t>(d);
                     }}
-                    return {{}};
+                    throw std::runtime_error("unexpcted variant index");
                 }}
 
                 using sample_t = gramma::basic_sample<denotation_t, char_t>;
 
-                class {self.impl_name}: public gramma::SamplerBase<{self.sampler_name}, sample_t> {{
+                class {self.impl_name}: public gramma::sampler_base<{self.sampler_name}, sample_t, std::mt19937_64> {{
             ''', '};'):
-                self.emit(f'''\
-                    public:
-                    using base_type = gramma::SamplerBase<{self.sampler_name}, sample_t>;
-                    using trace_type = bool;
 
-                    // sampler API
+            self.emit(f'''\
+                    public:
+                    using base_type = gramma::sampler_base<sampler_type, sample_type, random_engine_type>;
+
+                    // sampler interface
                     void icat(sample_t &a, const sample_t &b) {{
                         a+=b;
                     }}
+
                     sample_t denote(const sample_t &a, const denotation_t &b) {{
                         return sample_t(a,b);
                     }}
 
-                    // gfuncs
-
-                    // for testing
-                    sample_t show_den_lazy(sample_factory_type m) {{
-                        auto a=m();
-                        return sample_t(a + "<" + str(a.d) + ">", a.d);
+                    template<typename RuleIdT>
+                    void enter_rule(RuleIdT ruleid) {{
                     }}
 
-                    // this non-lazy form of the previous gfunc relies on a
-                    // callable-converting constructor of sample_t
-                    sample_t show_den(sample_t a) {{
-                        return sample_t(a + "<" + str(a.d) + ">", a.d);
-                    }}
-
-                    sample_t x2(sample_factory_type m) {{
-                        auto a=m();
-                        icat(a,a);
-                        return a;
+                    void exit_rule() {{
                     }}
                 ''')
+            self.emit(extra_class_body)
 
-                # emit func stub declarations
-                skip = {'show_den', 'show_den_lazy', 'x2'}
-                for fname, nargs in self.gfs:
-                    if fname not in skip:
-                        args = ','.join('sample_factory_type arg%d' % i for i in range(nargs))
-                        self.emit(f'sample_type {fname}({args});')
-                self.emit('''
+            # emit func stub declarations
+            for fname, nargs in self.gfs:
+                if fname not in skip_stubs:
+                    args = ','.join('sample_factory_type arg%d' % i for i in range(nargs))
+                    self.emit(f'sample_type {fname}({args});')
+            self.emit('''
                     // gdfuncs
                     
                     // sample_t implicity passed via string_t variant constructor
@@ -547,24 +530,23 @@ class CppEmitter(Emitter):
                         return s.d;
                     }
                 ''', trim=False)
-                for fname, nargs in self.gdfs:
-                    args = ','.join('denotation_type arg%d' % i for i in range(nargs))
-                    self.emit(f'denotation_type {fname}({args});')
-
-        elif mode == 'definition':
-            # emit func stub definitions
-            self.emit('\n\n// implementation definition', trim=False)
-            class_name = self.impl_name
-            skip = {'show_den', 'show_den_lazy', 'x2'}
-            for fname, nargs in self.gfs:
-                if fname not in skip:
-                    args = ','.join('sample_factory_type arg%d' % i for i in range(nargs))
-                    with self.indentation(f'{class_name}::sample_type {class_name}::{fname}({args}){{', '}'):
-                        self.emit(f'return "({fname} stub)";')
             for fname, nargs in self.gdfs:
                 args = ','.join('denotation_type arg%d' % i for i in range(nargs))
-                with self.indentation(f'{class_name}::denotation_type {class_name}::{fname}({args}){{', '}'):
+                self.emit(f'denotation_type {fname}({args});')
+
+    def emit_implementation_definition(self, skip_stubs: Iterable[str] = []) -> None:
+        # emit func stub definitions
+        self.emit('\n\n// implementation definition', trim=False)
+        class_name = self.impl_name
+        for fname, nargs in self.gfs:
+            if fname not in skip_stubs:
+                args = ','.join('sample_factory_type arg%d' % i for i in range(nargs))
+                with self.indentation(f'{class_name}::sample_type {class_name}::{fname}({args}){{', '}'):
                     self.emit(f'return "({fname} stub)";')
+        for fname, nargs in self.gdfs:
+            args = ','.join('denotation_type arg%d' % i for i in range(nargs))
+            with self.indentation(f'{class_name}::denotation_type {class_name}::{fname}({args}){{', '}'):
+                self.emit(f'return "({fname} stub)";')
 
     def emit_sampler_start(self) -> None:
         self.emit(f'''\
@@ -579,17 +561,19 @@ class CppEmitter(Emitter):
             class {self.sampler_name};
         ''', trim=False)
 
-    def write_monolithic_main(self, count: Optional[int] = 1, seed: Optional[int] = 1,
+    def write_monolithic_main(self, extra_class_body: str = '', skip_stubs: Iterable[str] = [],
+                              count: Optional[int] = 1,
+                              seed: Optional[int] = 1,
                               out: Union[None, str, IO[str]] = None,
                               mode: str = 'w', close: bool = True) -> None:
         if out is not None:
             self.write_to(out, mode)
 
         self.emit_sampler_start()
-        self.emit_implementation('declaration')
-        self.emit_sampler('declaration')
-        self.emit_implementation('definition')
-        self.emit_sampler('definition')
+        self.emit_implementation_declaration(extra_class_body=extra_class_body, skip_stubs=skip_stubs)
+        self.emit_sampler_declaration()
+        self.emit_implementation_definition(skip_stubs=skip_stubs)
+        self.emit_sampler_definition()
         self.emit_main(count, seed)
         if close:
             self.close()
@@ -621,6 +605,30 @@ def check_force(path: str, force_level: int, force_limit: int) -> bool:
             log.info(f'using existing {path}, overwrite with -{"f" * force_limit}')
             return False
     return True
+
+
+def config(config_args: Optional[List[str]] = None) -> None:
+    import argparse
+    from argparse import RawTextHelpFormatter
+    parser = argparse.ArgumentParser(description="config information for programs generating and compiling programs "
+                                                 "that use Gramma's glf2cpp",
+                                     formatter_class=RawTextHelpFormatter)
+    parser.add_argument('--version', dest='version', action='store_true', default=False,
+                        help='glf2cpp version')
+
+    parser.add_argument('--includedir', dest='includedir', action='store_true', default=False,
+                        help='include directory for Gramma headers')
+
+    parser.add_argument('--cxxflags', dest='cxxflags', action='store_true', default=False,
+                        help='C++ flags for building generated code')
+
+    args = parser.parse_args(args=config_args)
+    if args.version:
+        print(VERSION)
+    if args.includedir:
+        print(INCLUDE_DIR)
+    if args.cxxflags:
+        print(shell_join(CXXFLAGS))
 
 
 def main(main_args: Optional[List[str]] = None) -> None:
@@ -686,20 +694,20 @@ def main(main_args: Optional[List[str]] = None) -> None:
 
     if check_force(sampler_decl_path, args.force, 1):
         with emitter.write_to(sampler_decl_path):
-            emitter.emit_sampler('declaration')
+            emitter.emit_sampler_declaration()
 
     if check_force(sampler_def_path, args.force, 1):
         with emitter.write_to(sampler_def_path):
-            emitter.emit_sampler('definition')
+            emitter.emit_sampler_definition()
 
     if check_force(sampler_path, args.force, 5):
         with emitter.write_to(sampler_path):
             emitter.emit_sampler_start()
-            emitter.emit_implementation('declaration')
+            emitter.emit_implementation_declaration()
             emitter.emit(f'''\
                 #include "{sampler_decl_path}"
             ''')
-            emitter.emit_implementation('definition')
+            emitter.emit_implementation_definition()
             emitter.emit(f'''\
                 #include "{sampler_def_path}"
             ''')
@@ -731,9 +739,11 @@ def main(main_args: Optional[List[str]] = None) -> None:
         if cxx is None:
             log.error('no compiler found!')
         else:
-            cmd_args = [cxx] + CXXFLAGS + ['-O3', '-I', INCLUDE_DIR, '-o', bin_path, sampler_path]
+            cmd_args = [cxx] + CXXFLAGS + ['-o', bin_path, sampler_path]
             if not args.main:
                 cmd_args[1:1] = ['-fPIC', '-shared']
 
             log.info('  ' + shell_join(cmd_args))
             retcode = subprocess.call(cmd_args)
+            if retcode != 0:
+                sys.exit(retcode)

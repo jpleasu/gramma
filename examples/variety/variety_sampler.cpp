@@ -40,9 +40,9 @@ string_t str<denotation_t &>(denotation_t &d) {
 
 using sample_t = gramma::basic_sample<denotation_t, char>;
 
-class variety_sampler_impl : public gramma::SamplerBase<variety_sampler, sample_t> {
+class variety_sampler_impl : public gramma::sampler_base<variety_sampler, sample_t> {
   public:
-    using base_type = gramma::SamplerBase<variety_sampler, sample_t>;
+    using base_type = gramma::sampler_base<variety_sampler, sample_t>;
     using trace_type = bool;
 
     // sampler API
@@ -52,37 +52,18 @@ class variety_sampler_impl : public gramma::SamplerBase<variety_sampler, sample_
     sample_t denote(const sample_t &a, const denotation_t &b) {
         return sample_t(a, b);
     }
+    int rule_depth = 0;
+    void enter_rule(auto rule_id) {
+        ++rule_depth;
+    }
+    void exit_rule() {
+        --rule_depth;
+    }
 
     // gfuncs
-
-    // for testing
-    sample_t show_den_lazy(sample_factory_type m) {
-        auto a = m();
-        return sample_t(a + "<" + str(a.d) + ">", a.d);
-    }
-
-    // this non-lazy form of the previous gfunc relies on a
-    // callable-converting constructor of sample_t
-    sample_t show_den(sample_t a) {
-        return sample_t(a + "<" + str(a.d) + ">", a.d);
-    }
-
-    sample_t x2(sample_factory_type m) {
-        auto a = m();
-        icat(a, a);
-        return a;
-    }
     sample_type ff();
     sample_type f();
 
-    // gdfuncs
-
-    // sample_t implicity passed via string_t variant constructor
-    denotation_t get_den(sample_t s) {
-        return s.d;
-    }
-
-    int rule_depth = 1000;
     bool a = false;
     int a_func() {
         return a ? 2 : 1;

@@ -56,9 +56,9 @@ denotation_t::denotation_t(const sample_t &domain, const sample_t &range) {
     this->range = std::make_unique<sample_t>(range);
 }
 
-class smtlibv2_sampler_impl : public gramma::SamplerBase<smtlibv2_sampler, sample_t> {
+class smtlibv2_sampler_impl : public gramma::sampler_base<smtlibv2_sampler, sample_t, std::mt19937_64> {
   public:
-    using base_type = gramma::SamplerBase<smtlibv2_sampler, sample_t>;
+    using base_type = gramma::sampler_base<sampler_type, sample_type, random_engine_type>;
     using trace_type = bool;
 
     static constexpr double array_sexpr_rec = .001;
@@ -69,6 +69,12 @@ class smtlibv2_sampler_impl : public gramma::SamplerBase<smtlibv2_sampler, sampl
     }
     sample_t denote(const sample_t &a, const denotation_t &b) {
         return sample_t(a, b);
+    }
+
+    void enter_rule(auto ruleid) {
+    }
+
+    void exit_rule() {
     }
 
     sample_type domain(sample_factory_type arg0);

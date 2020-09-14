@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
-import os
+
+import unittest
 
 import filelock
 
 from gramma.samplers import GrammaInterpreter
-from gramma.samplers.cpp.randomapi import RandomAPI, DLL_PATH, get_dll
-import unittest
+from gramma.samplers.cpp.randomapi import RandomAPI, DLL_PATH
 
 try:
     from .cpp_testing_common import CppTestMixin

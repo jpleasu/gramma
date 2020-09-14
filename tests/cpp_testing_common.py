@@ -25,10 +25,27 @@ class CppTestMixin:
             tmpexecutable = tempfile.NamedTemporaryFile(delete=False)
 
             try:
-                cmd_args = [cast(str, CXX)] + CXXFLAGS + ['-I', INCLUDE_DIR, '-o', tmpexecutable.name,
-                                                          tmpsourcefile.name]
+                cmd_args = [cast(str, CXX)] + CXXFLAGS + ['-o', tmpexecutable.name, tmpsourcefile.name]
                 e.emit('// ' + shell_join(cmd_args))
-                e.write_monolithic_main(count=count, seed=seed, close=False)
+                e.write_monolithic_main(extra_class_body='''
+                    // for testing
+                    sample_t show_den_lazy(sample_factory_type m) {
+                        auto a=m();
+                        return sample_t(a + "<" + str(a.d) + ">", a.d);
+                    }
+
+                    // this non-lazy form of the previous gfunc relies on a
+                    // callable-converting constructor of sample_t
+                    sample_t show_den(sample_t a) {
+                        return sample_t(a + "<" + str(a.d) + ">", a.d);
+                    }
+
+                    sample_t x2(sample_factory_type m) {
+                        auto a=m();
+                        icat(a,a);
+                        return a;
+                    }
+                ''', skip_stubs={'show_den', 'show_den_lazy', 'x2'}, count=count, seed=seed, close=False)
 
                 result = subprocess.call(cmd_args)
                 self.assertEqual(result, 0, 'failed to build')

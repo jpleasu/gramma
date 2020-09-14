@@ -6,13 +6,13 @@ import tempfile
 import unittest
 from io import StringIO
 from typing import cast, Optional
+from unittest.mock import patch
 
 from gramma.parser import GrammaGrammar, GExpr, GrammaParseError
 from gramma.samplers.cpp.glf2cpp import CppEmitter, INCLUDE_DIR, CXXFLAGS, shell_join, encode_as_cpp, \
-    CppEmitterError
+    CppEmitterError, VERSION
 
-from gramma.samplers.cpp.glf2cpp import main as glf2cpp_main
-
+from gramma.samplers.cpp.glf2cpp import main as glf2cpp_main, config as glf2cpp_config
 
 from .cpp_testing_common import CppTestMixin, CXX
 
@@ -225,6 +225,16 @@ class TestNodes(unittest.TestCase, CppTestMixin):
         '''
         self.assertSampleEquals(glf, expected, seed=3, count=1, enforce_ltr=False)
         self.assertSampleEquals(glf, expected_ltr, seed=3, count=1, enforce_ltr=True)
+
+
+class TestConfig(unittest.TestCase):
+    def test_all(self):
+        out = StringIO()
+        s: str = ''
+        with patch('sys.stdout', new=StringIO()) as self.fakeOutput:
+            glf2cpp_config(['--version', '--includedir', '--cxxflags'])
+            s = self.fakeOutput.getvalue()
+        self.assertEqual(s.strip().split('\n'), [VERSION, INCLUDE_DIR, shell_join(CXXFLAGS)])
 
 
 class TestMain(unittest.TestCase):
