@@ -16,13 +16,15 @@ array_sexpr(domain_sort, range_sort) :=
             ;
 
 # generate an sexpr of the given sort by invoking an array with random domain and the given range
-array_wrap(s) := choose domain~sort in
-            "( select " . array_sexpr(domain, s)." ".sexpr(domain).")";
+array_wrap(r) := choose d~array_domain_sort in
+            "( select " . array_sexpr(d, r)." ".sexpr(d).")";
 
 #### sorts ####
 int_sort := 'Int'/'i';
 bool_sort := 'Bool'/'b';
+array_domain_sort := int_sort | bool_sort;
 array_sort(d, r) := '( Array '.d.' '.r.' )' / mk_array_sort(d,r);
 
 # random sort
-sort := int_sort | bool_sort | `sort_rec` array_sort(sort,sort);
+sort := int_sort | bool_sort | `sort_rec` array_sort(array_domain_sort,sort);
+
