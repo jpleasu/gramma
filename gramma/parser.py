@@ -279,19 +279,37 @@ class LarkTransformer:
 class Location:
     line: int
     column: int
+    start_pos: int
+    end_pos: int
 
-    def __init__(self, line: int, column: int, pos: int):
+    def __init__(self, line: int, column: int, start_pos: int, end_pos: int):
         self.line = line
         self.column = column
-        self.pos = pos
+        self.start_pos = start_pos
+        self.end_pos = end_pos
 
     @staticmethod
     def from_lark_token(tok: lark.Token) -> 'Location':
-        return Location(tok.line, tok.column, tok.pos_in_stream)
+        return Location(tok.line, tok.column, tok.pos_in_stream, tok.end_pos)
 
     @staticmethod
     def from_lark_tree(lt: lark.Tree) -> 'Location':
-        return Location(lt.meta.line, lt.meta.column, lt.meta.start_pos)
+        return Location(lt.meta.line, lt.meta.column, lt.meta.start_pos, lt.meta.end_pos)
+
+    def whole_lines(self, s: str):
+        """
+        expand location to whole lines
+        """
+        b = self.start_pos
+        while b - 1 >= 0 and s[b - 1] != '\n':
+            b -= 1
+        e = self.end_pos
+        while e < len(s) and s[e] != '\n':
+            e += 1
+        return Location(self.line, 1, b, e)
+
+    def __call__(self, s: str):
+        return s[self.start_pos:self.end_pos]
 
 
 GExprT = TypeVar('GExprT', bound='GExpr')
