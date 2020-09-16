@@ -32,6 +32,9 @@ namespace gramma {
         using random_engine_type = RandomEngineT;
         random_engine_type rand;
 
+        RandomAPI() : rand{} {
+        }
+
         template <size_t N>
         void normalize(double (&weights)[N]) {
             double sum = std::accumulate(weights, weights + N, 0.0);
