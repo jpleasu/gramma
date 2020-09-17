@@ -124,7 +124,7 @@ class LarkTransformer:
         raise GrammaParseError(f'''unrecognized Lark node "{lt.data}" during parse of glf: {lt}''')  # pragma: no cover
 
     def string(self, lt):
-        return GTok('string', lt.children[0].value)
+        return GTok('string', lt.children[0].value).loc(Location.from_lark_tree(lt))
 
     def code(self, lt: lark.Tree) -> 'GCode':
         t = cast(lark.Token, lt.children[0])

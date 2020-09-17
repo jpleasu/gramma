@@ -1,4 +1,4 @@
-import textwrap
+import sys
 from functools import cached_property
 from typing import Tuple, Union, List, Set, cast, Optional, Dict, Any
 
@@ -24,6 +24,11 @@ class Rewriter:
         self.src = src
         self.ops = []
 
+    def insert_at_start_of_line_containing(self, pos: int, s: str) -> None:
+        while pos - 1 >= 0 and self.src[pos - 1] != '\n':
+            pos -= 1
+        self.insert(pos, s)
+
     def insert(self, pos: int, s: str) -> None:
         self.ops.append(('i', pos, s))
 
@@ -36,7 +41,7 @@ class Rewriter:
     def doit(self) -> str:
         src = self.src
         parts = []
-        for op in reversed(self.ops):
+        for op in sorted(self.ops, reverse=True, key=lambda t: t[1]):
             c = op[0]
             if c == 'i':
                 pos = op[1]
@@ -54,6 +59,28 @@ class Rewriter:
                 src = src[:pos0]
         parts.append(src)
         return ''.join(reversed(parts))
+
+    def reset(self):
+        self.ops.clear()
+
+
+class GLFRewriter(Rewriter):
+    def __init__(self, glf: str):
+        super().__init__(glf)
+        self.glf = self.src
+        self.grammar = GrammaGrammar(self.glf)
+
+    def insert_at_start_of_line_containing(self, ge: GExpr, s: str) -> None:
+        self.insert_at_start_of_line_containing(ge.location.start_pos, s)
+
+    def replace_node(self, ge: GExpr, s: str):
+        self.replace(ge.location.start_pos, ge.location.end_pos, s)
+
+    def insert_before_node(self, ge: GExpr, s: str):
+        self.insert(ge.location.start_pos, s)
+
+    def insert_after_node(self, ge: GExpr, s: str):
+        self.insert(ge.location.end_pos, s)
 
 
 class DFSNode:
@@ -334,7 +361,7 @@ class GLFAnalyzer:
         print()
 
 
-def main(main_args: Optional[List[str]] = None) -> None:
+def glfanalyzer(main_args: Optional[List[str]] = None) -> None:
     import argparse
     from argparse import RawTextHelpFormatter
 
@@ -344,7 +371,7 @@ def main(main_args: Optional[List[str]] = None) -> None:
     parser.add_argument('glf', metavar='GLF_IN', type=argparse.FileType(),
                         help='input GLF file')
     parser.add_argument('--color', type=str, choices=['always', 'auto', 'never'], default='auto',
-                        help='input GLF file')
+                        help='colorize the output. "never", "auto" (the default), or "always"')
     parser.add_argument('-dc', '--dump-cycles', dest='dump_cycles', action='store_true', default=False,
                         help='show all cycles due to recursion')
     parser.add_argument('-cba', '--find-cycle-breaking-alternatives', dest='find_cycle_breaking_alts',
@@ -352,7 +379,7 @@ def main(main_args: Optional[List[str]] = None) -> None:
                         default=False,
                         help='find alternation coefficients that can be used to break cycles due to recursion\n'
                              'by first eliminating cycles broken by dynamic weights, then proceeding through \n'
-                             'alternatives greedly, that is, in decreasing number of cycles broken'
+                             'alternatives greedly, that is, in decreasing number of cycles broken.'
                         )
 
     parser.add_argument('-v', dest='verbosity', action='count', default=0,
@@ -377,3 +404,56 @@ def main(main_args: Optional[List[str]] = None) -> None:
 
     if not did_anything:
         parser.print_help()
+
+
+def glfrewriter(main_args: Optional[List[str]] = None) -> None:
+    import argparse
+    from argparse import RawTextHelpFormatter
+
+    parser = argparse.ArgumentParser(description='Rewrite a gramma GLF file',
+                                     formatter_class=RawTextHelpFormatter)
+
+    parser.add_argument('glf', metavar='GLF_IN', type=argparse.FileType(),
+                        help='input GLF file')
+
+    parser.add_argument('-p', '--parameter-format', dest='parameter_format', type=str, default='param[{n}]',
+                        help='a python format string for weight parameters, uses variables n, a, and i:\n'
+                             '   given two glf expressions, "a | b"  and  "c | d", in the input GLF,\n'
+                             '     p[{n}]  ->  "`p[0]` a | `p[1]` b" and "`p[2]` c | `p[3]` d"\n'
+                             '     p[{a}][{i}]  ->  "`p[0][0]` a | `p[0][1]` b" and "`p[1][0]` c | `p[1][1]` d"\n'
+                             '     p{a}[{i}]  ->  "`p0[0]` a | `p0[1]` b" and "`p1[0]` c | `p1[1]` d"\n'
+                        )
+    parser.add_argument('-n', '--non-homogenous-params', dest='non_homogenous', action='store_true', default=False,
+                        help='leave the last weight constant in each alternation')
+
+    args = parser.parse_args(args=main_args)
+    rw = GLFRewriter(args.glf.read())
+    nparams = 0
+    nalts = 0
+    peralt = []
+    for ge in rw.grammar.walk():
+        if isinstance(ge, GAlt):
+            nweights = len(ge.weights)
+            if args.non_homogenous:
+                na = len(ge.weights) - 1
+            else:
+                na = len(ge.weights)
+            for i, w in enumerate(ge.weights[:na]):
+                name = args.parameter_format.format(n=nparams, a=nalts, i=i)
+                if w.location is None:
+                    rw.insert_before_node(ge.children[i], f'`{name}` ')
+                    nparams += 1
+                else:
+                    rw.replace_node(w, f'`{name}`')
+                    nparams += 1
+            if args.non_homogenous:
+                w = ge.weights[-1]
+                if w.location is not None:
+                    rw.replace_node(w, '')
+
+            peralt.append(i + 1)
+            nalts += 1
+    rw.insert(0, f'# {nparams} params, {nalts} alts,  params per alt {",".join(str(x) for x in peralt)}\n')
+
+    out = sys.stdout
+    out.write(rw.doit())
