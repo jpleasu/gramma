@@ -163,12 +163,12 @@ namespace gramma {
 
         template <typename EnumT, typename T, is_sample_t<T> = 0>
         void set_var(EnumT varid, T &&value) {
-            vars.back()[to_underlying(varid)] = std::forward<T>(value);
+            vars.front()[to_underlying(varid)] = std::forward<T>(value);
         }
 
         template <typename EnumT, typename T, is_convertible_to_sample_t<T> = 0>
         void set_var(EnumT varid, T &&value) {
-            vars.back()[to_underlying(varid)] = sample_type(std::forward<T>(value));
+            vars.front()[to_underlying(varid)] = sample_type(std::forward<T>(value));
         }
 
         template <typename EnumT>
