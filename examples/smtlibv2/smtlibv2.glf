@@ -1,4 +1,9 @@
-start := equals(sort).'\n';
+start := '(assert '
+        .equals(sort)
+        .')\n'
+        .'(check-sat)\n'
+    ;
+
 equals(s) := '(= '.sexpr(s).' '.sexpr(s).' )';
 
 #### sexprs ####
